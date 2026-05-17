@@ -66,12 +66,18 @@ const (
 	Window2Y  WindowName = "2y"
 	Window5Y  WindowName = "5y"
 	Window10Y WindowName = "10y"
+
+	// WindowOOS labels the Anchored Holdout window. NOT part of cascade
+	// evaluation — held separately on EvaluablePlan.OosWindow and never
+	// returned by AllWindowsInEvalOrder().
+	WindowOOS WindowName = "oos"
 )
 
-// AllWindowsInEvalOrder returns the four crucible windows in the FIXED
+// AllWindowsInEvalOrder returns the four IS crucible windows in the FIXED
 // cascade evaluation order (6m → 2y → 5y → 10y). Any code that iterates
-// windows must use this helper; declaring an alternate order silently
-// breaks the SkippedBy cascade enum semantics.
+// IS windows must use this helper; declaring an alternate order silently
+// breaks the SkippedBy cascade enum semantics. WindowOOS is intentionally
+// excluded.
 func AllWindowsInEvalOrder() []WindowName {
 	return []WindowName{Window6M, Window2Y, Window5Y, Window10Y}
 }
@@ -112,10 +118,11 @@ func (s DecisionStatus) IsValid() bool {
 	return false
 }
 
-// IsValid reports whether w is one of the four crucible windows.
+// IsValid reports whether w is one of the four IS crucible windows or
+// the OOS Anchored Holdout window.
 func (w WindowName) IsValid() bool {
 	switch w {
-	case Window6M, Window2Y, Window5Y, Window10Y:
+	case Window6M, Window2Y, Window5Y, Window10Y, WindowOOS:
 		return true
 	}
 	return false
