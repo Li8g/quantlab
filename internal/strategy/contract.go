@@ -7,8 +7,8 @@
 // 铁律 2 (no wall clock in Step()): Step() must derive "current time" only
 // from StrategyInput.NowMs.
 //
-// The EvolvableStrategy and Adapter interfaces themselves are deferred to
-// Phase 5A (evolvable.go); this file holds only the value-typed contract
+// The EvolvableStrategy and Adapter interfaces live in evolvable.go
+// (defined in Phase 5A); this file holds only the value-typed contract
 // shared between strategy and engine.
 package strategy
 
