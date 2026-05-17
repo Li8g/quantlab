@@ -1,0 +1,218 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Behavioral Guidelianes
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## Project Overview
+
+**QuantLab** is a Go-only server-side evolutionary trading system ("进化系统"). It uses a Genetic Algorithm (GA) to optimize quantitative trading strategy parameters (chromosome/gene), then evaluates challengers across four time windows and supports human-gated Promote workflows. The current phase is "原型迭代期" (prototype iteration).
+
+Primary reference documents (in `docs/`):
+- `进化计算引擎.md` (H1: 进化系统_程序框架规划_v5.4.1) — system architecture, module duties, interface contracts (source of truth for design)
+- `进化计算引擎_数据契约.md` (H1: 进化系统 v5.3.3 Go-only JSON Schema) — frozen JSON schema v5.3.3 for all external boundaries
+- `进化计算引擎_Go_struct_草案.md` (H1: Go struct 冻结版定义草案 v3) — frozen Go struct definitions for `api/types.go` and `resultpkg/types.go`
+- `Coding-plan-dev-phases-prompts_v3_2_2.md` — phased implementation plan and prompt guide
+
+## Architecture
+
+### Two-Layer Hard Boundary
+
+The system is split at a strict interface boundary. **The engine layer must never import strategy internals.**
+
+- **Engine Layer** (`/engine`, `/fitness`, `/data`, `/repository`, `/api`): manages population lifecycle, window construction, fitness scheduling, result packaging, Promote workflow.
+- **Strategy Layer** (`/strategy`): implements `EvolvableStrategy` interface (14 verbs) and the `Adapter` interface. Defines gene semantics, Clamp/Validate/Crossover/Mutate/Fingerprint/Evaluate logic.
+
+### Planned Package Structure
+
+```
+/domain        # Gene, SegmentInfo, SpawnPoint, SliceScore, Bar, CrucibleWindow, EvaluablePlan
+/engine        # Epoch lifecycle, worker pool, convergence detection, population management
+/strategy      # EvolvableStrategy interface, Adapter interface
+/fitness       # Single-window scoring, DCA dual baseline, ScoreTotal aggregation, consistency penalty
+/verification  # OOS backtest, ReviewBacktest, DSR, stress tests
+/data          # K-line reading, Gap detection, EvaluablePlan construction
+/repository    # DB access, result package persistence, SharpeBank
+/report        # Challenger report generation, diagnostics output
+/api           # HTTP handlers: task create/query, Promote
+/tests         # All tests (priority list in §10.1 of framework doc)
+/research      # Python offline analysis scripts (never enters server path)
+```
+
+Package split for boundary types:
+- `api/types.go` — `CreateEvolutionTaskRequest`, `EvolutionTaskStatusResponse`, `PromoteChallengerRequest`, `RetireChampionRequest`
+- `resultpkg/types.go` — all result package structs (see struct doc)
+- `resultpkg/enums.go` — all shared enum constants
+- `internal/resultpkg/versions.go` — version constants (`SchemaVersionV533`, `FitnessVersionV1RawStd`, `FingerprintVersionV1`)
+- `internal/quant/canonical_json.go` — `bars_hash` serialization boundary (file-top comment is a frozen contract)
+
+### Core Interfaces
+
+**`EvolvableStrategy`** (14 verbs — engine only calls these):
+`StrategyID`, `Segments`, `Sample`, `Clamp`, `Validate`, `Crossover`, `Mutate`, `Fingerprint`, `Evaluate`, `ReviewBacktest`, `EncodeResult`, `DecodeElite`, `MinEvalBars`, `NewAdapter`
+
+**`Adapter`**:
+```go
+type Adapter interface {
+    Reset(plan *EvaluablePlan) error
+    Evaluate(gene Gene) (*RawEvaluateResult, error)  // NO ScoreTotal field
+    Close() error
+}
+```
+
+### Evaluation Pipeline (Two-Stage — Critical Separation)
+
+| Stage | Who | Output type |
+|---|---|---|
+| Per-gene multi-window eval | `Adapter.Evaluate(gene)` | `*RawEvaluateResult` |
+| Cascade short-circuit + window combine | `EvolvableStrategy.Evaluate(ctx, gene, plan)` | `*RawEvaluateResult` |
+| ScoreTotal aggregation | `fitness.AggregateScoreTotal(...)` (engine) | `ScoreTotal` |
+| Result package evaluation layer assembly | engine `RunEpoch` | `EvaluationLayer` |
+
+**`RawEvaluateResult` physically has no `ScoreTotal` field** — the type system enforces that strategies cannot write aggregate scores.
+
+### Four-Window Crucible (Cascade Short-Circuit)
+
+Evaluation runs in fixed order: `6m → 2y → 5y → 10y`. On Fatal (`MDD >= FatalMDD`), immediately terminate and mark subsequent windows with `SkippedBy`. Weights: 0.10 / 0.20 / 0.30 / 0.40.
+
+### Fatal Sorting — Nil Safety Requirement
+
+`SliceScore.Value` is `*float64`, nil when `Fatal=true` or cascaded-skipped. **Never dereference `*Value` in sort comparisons.** Always use the encapsulated `CompareFitness(a, b ScoreTotal) int` function. **Never write sentinel values (`-99999`, `-1e18`) into `Value`.**
+
+`SliceScore` three-state semantics (mutually exclusive):
+1. Normal: `Fatal=false, SkippedBy=nil → Value != nil`
+2. Cascade-skipped: `SkippedBy != nil → Fatal=false, Value=nil`
+3. Self-Fatal: `Fatal=true, SkippedBy=nil → Value=nil`
+
+### Result Package Structure
+
+```
+ChallengerResultPackage
+├── core         (ResultCore: champion_gene, spawn_point, reproducibility_metadata, ga_config)
+├── evaluation   (EvaluationLayer: window_scores, score_total [engine-filled], friction_actual)
+├── verification (VerificationLayer: oos_result, review_summary)
+├── diagnostics  (DiagnosticsLayer: mutation_ramp_log, fatal_audit_samples, ...)
+└── promote      (PromoteLayer: decision_status ∈ {pending, promoted, rejected})
+```
+
+### Version Constants (schema v5.3.3 baseline)
+
+```go
+SchemaVersion      = "v5.3.3"
+FitnessVersion     = "v1-raw-std"   // λ_cons = 0.3 (raw std dev)
+FingerprintVersion = "fp-v1"
+```
+
+Challengers with different `fitness_version` must **not** be compared by score.
+
+## Key Invariants
+
+- `GAConfigSnapshot` stores **effective values**, not request mirrors: `test_mode=true → taker_fee_bps=0, slippage_bps=0`. User's original request intent goes to `EvolutionTask.requested_taker_fee_bps/slippage_bps` (DB only, never in result package).
+- `test_mode=true` results **cannot be Promoted**.
+- `decision_status` enum: `{pending, promoted, rejected}` — `retired` is NOT here; Champion retirement is managed in `champion_history` table via a separate API.
+- `bars_hash`: SHA256 over canonical JSON of complete OHLCV + `OpenTime`. `Bar.IsGap`/`Bar.GapType` are **excluded**. Defined in `/internal/quant/canonical_json.go` top comment.
+- `plan_hash`: SHA256 over canonical JSON of `EvaluablePlan`.
+- Worker pool: each worker gets its own `Adapter` via `NewAdapter(plan)`. Engine calls `adapter.Reset(plan)` before every `Evaluate`. **Incomplete Reset breaks determinism.**
+- `Adapter.Evaluate` must not launch goroutines internally. All float accumulations must be serial (no concurrent reduce).
+- All sorting must use `sort.SliceStable`, not `sort.Slice`.
+- Evaluation window order is fixed (`6m→2y→5y→10y`); violating it breaks `SkippedBy` enum semantics.
+
+## Priority Tests (Must Ship First — §10.1)
+
+1. `TestEvaluateDeterministic`
+2. `TestEvaluateOrderInvariance`
+3. `TestAdapterResetIsolation`
+4. `TestClampValidateContract`
+5. `TestSegmentsCoverage`
+6. `TestCrossoverBlockFidelity`
+7. `TestReplayWithinTolerance`
+8. `TestGapHandlingNoFakeTrades`
+9. `TestMutationScaleLinearity`
+10. `TestCascadeShortCircuit`
+11. `TestCompareFitnessNilSafe` (all Fatal/Normal combos including double-Fatal must not panic)
+12. `TestBarsHashExcludesMetadata`
+
+## HTTP API
+
+```
+POST /api/v1/evolution/tasks
+GET  /api/v1/evolution/tasks/:task_id
+GET  /api/v1/challengers/:challenger_id
+GET  /api/v1/challengers/:challenger_id/package
+POST /api/v1/challengers/:challenger_id/promote
+POST /api/v1/champions/:champion_id/retire
+```
+
+## Database Tables (Prototype)
+
+`evolution_tasks`, `challengers`, `challenger_result_packages` (JSON blob), `champion_history`, `sharpe_bank`
+
+## Open Questions (Not Blocking Phase 1)
+
+Tracked in schema doc Appendix B: `pair` type, `fatal_reason` enumeration, `score_raw` definition, `risk_bounds` struct, `alpha_breakdown`/`dsr_summary`/`stress_summary` formalization (Phase 2).

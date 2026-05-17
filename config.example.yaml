@@ -1,0 +1,59 @@
+# QuantLab runtime configuration example. Copy to config.yaml and fill in
+# secrets before starting the SaaS binary.
+#
+# AppRole drives behavior splits (see docs/系统总体拓扑结构.md §2):
+#   saas — production
+#   lab  — offline backtest, no WS Hub, no Cron
+#   dev  — local development
+app_role: dev
+
+database:
+  host: localhost
+  port: 5432
+  user: quantlab
+  password: change-me-in-real-deploy
+  database: quantlab
+  ssl_mode: disable
+  max_open_conns: 50
+  max_idle_conns: 10
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+jwt:
+  # MUST be >= 32 bytes when app_role=saas (HS256 / RFC 7518).
+  # Generate with: openssl rand -hex 32
+  secret: change-me-to-a-random-string-of-at-least-32-bytes
+  ttl: 24h
+
+server:
+  http_listen: ":8080"
+  ws_listen: ":8081"
+  metrics_listen: ":9090"
+  shutdown_timeout: 30s
+
+# Default friction values used when a CreateEvolutionTaskRequest does not
+# override them. Per coding plan §I-3.11.
+friction:
+  taker_fee_bps: 10
+  slippage_bps: 5
+
+# Engine-wide GA defaults; per-task overrides via API request body.
+ga:
+  pop_size: 200
+  max_generations: 30
+  elite_ratio: 0.05
+  fatal_mdd: 0.70
+  oos_days: 60
+  fatal_audit_sample_rate: 0.05
+  sbb_block_len_fallback: 12
+
+# Datafeeder defaults (Phase 1.5).
+data_feed:
+  binance_archive_base_url: https://data.binance.vision
+  binance_api_base_url: https://api.binance.com
+  api_rate_interval: 150ms
+  default_symbol: BTCUSDT
+  default_interval: 1m
