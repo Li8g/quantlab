@@ -36,6 +36,20 @@ import (
 )
 
 // EngineConfig holds the per-Epoch knobs. Defaults match Part I §I-5.
+//
+// Mutation ramp + early-stop (§I-3.12 layer 1):
+//   - When the per-generation best fails to improve by EarlyStopMinDelta,
+//     a no-improvement counter increments AND the current mutation
+//     probability/scale are multiplied by MutationRampFactor, clamped to
+//     MutationProbabilityMax / MutationScaleMax.
+//   - Any subsequent improvement resets the counter to 0 and the
+//     mutation parameters back to their base values.
+//   - When the counter reaches EarlyStopPatience, the generation loop
+//     exits before MaxGenerations.
+//
+// Setting EarlyStopPatience = 0 disables early-stop and the ramp; the
+// engine falls back to fixed-mutation behaviour and runs all
+// MaxGenerations.
 type EngineConfig struct {
 	PopSize             int
 	MaxGenerations      int
@@ -46,6 +60,16 @@ type EngineConfig struct {
 	LambdaCons          float64
 	EpochSeed           int64
 
+	// Layer 1 convergence rescue (§I-3.12). Zero values for any of the
+	// ramp/patience fields disable the corresponding behaviour, which
+	// is what the v3.1 "prototype phase only requires layer 1" line
+	// allows callers to opt out of for unit tests.
+	MutationProbabilityMax float64
+	MutationScaleMax       float64
+	MutationRampFactor     float64
+	EarlyStopPatience      int
+	EarlyStopMinDelta      float64
+
 	// OnProgress is called after the per-generation sort with the
 	// best individual. Optional.
 	OnProgress func(gen int, bestFp string, best resultpkg.ScoreTotal)
@@ -54,14 +78,19 @@ type EngineConfig struct {
 // DefaultConfig returns Part I §I-5 frozen defaults.
 func DefaultConfig() EngineConfig {
 	return EngineConfig{
-		PopSize:             300,
-		MaxGenerations:      25,
-		EliteRatio:          0.05,
-		TournamentSize:      3,
-		MutationProbability: 0.15,
-		MutationScale:       1.0,
-		LambdaCons:          0.3,
-		EpochSeed:           1,
+		PopSize:                300,
+		MaxGenerations:         25,
+		EliteRatio:             0.05,
+		TournamentSize:         3,
+		MutationProbability:    0.15,
+		MutationScale:          1.0,
+		LambdaCons:             0.3,
+		EpochSeed:              1,
+		MutationProbabilityMax: 0.55,
+		MutationScaleMax:       3.0,
+		MutationRampFactor:     1.25,
+		EarlyStopPatience:      5,
+		EarlyStopMinDelta:      0.001,
 	}
 }
 
@@ -145,6 +174,8 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 	var (
 		bestIdx int
 		bestFp  string
+		conv    = newConvergenceState(e.cfg)
+		actualGens int
 	)
 	for gen := 0; gen < e.cfg.MaxGenerations; gen++ {
 		fingerprints := make([]string, len(pop))
@@ -160,9 +191,18 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		})
 		bestIdx = order[0]
 		bestFp = fingerprints[bestIdx]
+		actualGens = gen + 1
 
 		if e.cfg.OnProgress != nil {
 			e.cfg.OnProgress(gen, bestFp, scores[bestIdx])
+		}
+
+		// Layer 1 convergence rescue (§I-3.12): observe the new
+		// best, ramp mutation params on stagnation, early-stop on
+		// patience exhaustion. Updates conv in-place.
+		shouldStop := conv.observe(scores[bestIdx], e.cfg)
+		if shouldStop {
+			break
 		}
 
 		// On the final generation we don't need to build the next one.
@@ -170,7 +210,7 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 			break
 		}
 
-		next := e.produceNextGeneration(pop, scores, fingerprints, order, masterRng)
+		next := e.produceNextGeneration(pop, scores, fingerprints, order, masterRng, conv.mutProb, conv.mutScale)
 		pop = next
 		scores, err = e.evaluatePopulation(ctx, plan, pop, adapters)
 		if err != nil {
@@ -182,7 +222,7 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		BestGene:        append(domain.Gene(nil), pop[bestIdx]...),
 		BestScore:       scores[bestIdx],
 		BestFingerprint: bestFp,
-		Generations:     e.cfg.MaxGenerations,
+		Generations:     actualGens,
 	}, nil
 }
 
@@ -247,12 +287,17 @@ func (e *Engine) evaluatePopulation(
 // produceNextGeneration builds the next population: deep-copied elites
 // followed by Tournament → Crossover → Mutate offspring filling the rest.
 // All operations use the master RNG and run on the calling goroutine.
+//
+// mutProb / mutScale come from the convergence-state ramp (§I-3.12 layer
+// 1) rather than the static cfg values, so a stagnating GA explores more
+// aggressively as patience drops.
 func (e *Engine) produceNextGeneration(
 	pop []domain.Gene,
 	scores []resultpkg.ScoreTotal,
 	fingerprints []string,
 	order []int,
 	rng *rand.Rand,
+	mutProb, mutScale float64,
 ) []domain.Gene {
 	n := len(pop)
 	nElite := int(float64(n) * e.cfg.EliteRatio)
@@ -271,7 +316,7 @@ func (e *Engine) produceNextGeneration(
 		p1 := e.tournamentSelect(rng, scores, fingerprints)
 		p2 := e.tournamentSelect(rng, scores, fingerprints)
 		child := e.strat.Crossover(pop[p1], pop[p2], rng)
-		child = e.strat.Mutate(child, e.cfg.MutationProbability, e.cfg.MutationScale, rng)
+		child = e.strat.Mutate(child, mutProb, mutScale, rng)
 		next = append(next, child)
 	}
 	return next

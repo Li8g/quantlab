@@ -91,6 +91,81 @@ func TestRunEpochDeterministic(t *testing.T) {
 	}
 }
 
+// TestEarlyStopShortensRunOnPlateau drives the toy GA past its
+// convergence point with a generous MaxGenerations cap and asserts
+// the run terminates ≤ a fraction of that cap because the patience
+// counter trips. Toy converges to (0.42, -0.3) within ~10 gens; with
+// EarlyStopPatience=5 the engine should exit well before 100.
+func TestEarlyStopShortensRunOnPlateau(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 30
+	cfg.MaxGenerations = 100
+	cfg.EarlyStopPatience = 5
+	cfg.EarlyStopMinDelta = 0.001
+	cfg.EpochSeed = 42
+
+	eng := engine.New(toy.New(), cfg)
+	result, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatalf("RunEpoch: %v", err)
+	}
+	// Anything ≥ 50 means early stop didn't fire — toy converges fast
+	// so 50 is a very loose ceiling.
+	if result.Generations >= 50 {
+		t.Errorf("Generations = %d, want < 50 (early stop should fire)",
+			result.Generations)
+	}
+	t.Logf("toy converged in %d gens (cap 100, patience 5)", result.Generations)
+}
+
+// TestEarlyStopDisabledRunsToMaxGen confirms that EarlyStopPatience=0
+// keeps the engine at its prior fixed-loop behaviour — the default
+// values can't accidentally bind on callers who don't want them.
+func TestEarlyStopDisabledRunsToMaxGen(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 10
+	cfg.MaxGenerations = 8
+	cfg.EarlyStopPatience = 0 // disabled
+	cfg.EpochSeed = 1
+
+	eng := engine.New(toy.New(), cfg)
+	result, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatalf("RunEpoch: %v", err)
+	}
+	if result.Generations != cfg.MaxGenerations {
+		t.Errorf("Generations = %d, want %d (patience disabled)",
+			result.Generations, cfg.MaxGenerations)
+	}
+}
+
+// TestMutationRampPreservesDeterminism — adding the ramp must not
+// break the (seed, config) → BestGene contract. The ramp state is
+// driven by best-score observations which are themselves
+// deterministic under a fixed seed.
+func TestMutationRampPreservesDeterminism(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 20
+	cfg.MaxGenerations = 15
+	cfg.EpochSeed = 99
+
+	eng := engine.New(toy.New(), cfg)
+	r1, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !geneEqual(r1.BestGene, r2.BestGene) {
+		t.Errorf("ramp broke determinism:\n  r1=%v\n  r2=%v", r1.BestGene, r2.BestGene)
+	}
+	if r1.Generations != r2.Generations {
+		t.Errorf("early-stop nondeterministic: %d vs %d", r1.Generations, r2.Generations)
+	}
+}
+
 func TestRunEpoch_RejectsBadConfig(t *testing.T) {
 	cases := []struct {
 		name string
