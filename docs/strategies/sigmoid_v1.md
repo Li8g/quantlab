@@ -117,9 +117,9 @@ OrderIntent{
 
 | 索引 | 字段名 | 类型 | 范围 | 默认 | 语义 |
 |---:|---|---|---|---|---|
-| 0 | `a1` | float | [-2, 2] | 0.5 | 价格偏离度权重 |
-| 1 | `a2` | float | [-2, 2] | 0.3 | 短期对数收益率权重 |
-| 2 | `a3` | float | [-2, 2] | 0.2 | 波动率比率（中心化）权重 |
+| 0 | `a1` | float | [-1, 1] | 0.5 | 价格偏离度权重（v1 不归一，见 §4.3） |
+| 1 | `a2` | float | [-1, 1] | 0.3 | 短期对数收益率权重 |
+| 2 | `a3` | float | [-1, 1] | 0.2 | 波动率比率（中心化）权重 |
 | 3 | `beta` | float | [0.5, 5] | 2.0 | Sigmoid 激进系数 β |
 | 4 | `gamma` | float | [0, 3] | 0.5 | 仓位均值回归系数 γ |
 | 5 | `ema_short_period` | int* | [5, 200] | 20 | 短期 EMA 周期 |
@@ -143,7 +143,7 @@ OrderIntent{
         QuantizationStep: []float64{0.05, 0.05, 0.05},
         GeneStep:         []float64{0.2, 0.2, 0.2},
         IsCritical:       true,
-        Description:      "信号合成权重 a1, a2, a3；Clamp 后 L2 归一",
+        Description:      "信号合成权重 a1, a2, a3（v1 不归一）",
     },
     {
         Name:             "micro_dynamics",
@@ -190,12 +190,30 @@ OrderIntent{
 步骤 1（边界裁剪）: 每维 ClipFloat64(gene[i], lo[i], hi[i])
 步骤 2（块内约束）:
     - feature_periods: 取整 + 若 short ≥ long 则 long = short + 1，再截到 hi
-    - signal_weights:  L2 归一到 ||a||₂ = 1（保留方向，去除尺度）
+    - signal_weights:  无块内约束（v1 不做 L2 归一）
 步骤 3（跨段约束）:
     - 暂无（v1 不做跨段约束）
 ```
 
-L2 归一的副作用：`signal_weights` 段的边界 `[-2, 2]` 实际上仅在归一前有意义。归一后 `aᵢ ∈ [-1, 1]` 且 `Σaᵢ² = 1`。这是 `[INVENTED v1]` 决策——也可以选择不归一让 GA 自由调整 Signal 总尺度。归一的优点是把"信号方向"与"信号强度（由 β 承担）"解耦，让两个 Segment 各自学习一件事。
+**v1 不做 L2 归一**的设计理由（决策 #6 评审记录）：
+
+1. **保护 CLAUDE.md §10.1 必落测试 #6 `TestCrossoverBlockFidelity`**——归一会让 Clamp 后的 signal_weights 段不再字节级等于父代源段（被 norm 改写过），等于在引擎层引入了一个"块级交叉非保真"的例外。v1 阶段优先保护测试合约。
+2. **保证 mutation 局部性**——归一让 `Mutate(a₁)` 隐式扰动 a₂、a₃，破坏 GA 的"per-dim 独立高斯"假设，配置的 `GeneStep` 实际步长缩水 30-60% 且非平稳。
+3. **Fingerprint 量化稳定**——归一会让 a₃ 的微小变化跨桶推动 a₁ 的量化结果，让"基因型身份证"不稳。
+
+代价：β 与 signal_weights 之间存在 redundant ridge（同一 Exponent 对应一根连续参数曲线），GA 可能在山脊上浪费 5-10 代收敛预算。可接受。
+
+**人类可读性问题**（β 的语义被 magnitude 混淆）通过**报告生成器**解决：报告时算 `direction = a/||a||₂, intensity = β·||a||₂`，**不强求基因自身归一**。
+
+### 4.3.x v2 何时引入归一（见 §13 演进路径）
+
+当下列任一条件满足时，sigmoid_v1 → sigmoid_v2 升级，**届时引入 L2 归一**：
+
+- Champion 库规模超过 ~50 个，需要做跨 Champion 聚类 / 相似度去重
+- 跨版本（signal 维度数变化）对比需求出现
+- GA 在 30 代预算内反复无法收敛、诊断显示原因是 β-signal_weights 山脊
+
+v2 引入归一时**必须同步重定义** `TestCrossoverBlockFidelity` 为 cosine-similarity 比较（不再是 `reflect.DeepEqual`）。
 
 ### 4.4 Validate（硬边界）
 
@@ -204,7 +222,8 @@ Validate 必须保证 Clamp 后的 Gene 满足：
 - 所有维度落在 §4.1 表格的范围内
 - `ema_short_period < ema_long_period`
 - `mav_short_period < mav_long_period`
-- `||a1, a2, a3||₂ ∈ [1 - 1e-6, 1 + 1e-6]`（数值容差）
+
+（v1 不再做 `||a||₂ ≈ 1` 检查——归一已经移除，见 §4.3）
 
 Validate 失败时返回明确的 `error` 描述哪一项违反（用于 `TestClampValidateContract` 调试）。
 
@@ -465,7 +484,7 @@ func (s *Sigmoid) MinEvalBars() int {
 |---|---|
 | `TestChromosomeClampIdempotent` | Clamp(Clamp(g)) == Clamp(g) |
 | `TestChromosomeValidateAfterClamp` | Clamp 后 Validate 必过 |
-| `TestL2NormalizationPreservesDirection` | signal_weights L2 归一后符号方向不变 |
+| `TestSignalWeightsRangeRespected` | 三个 a 维度 Clamp 后落在 `[-1, 1]`（v2 引入归一后改 cosine 测试） |
 | `TestSegmentsCoverage` | 所有 13 维都在某个 Segment 中 |
 | `TestStepNoWallClock` | grep 检查 Step() 内无 time.Now/time.Since |
 | `TestStepDeterministic` | 同输入两次 Step() 输出字节相同 |
@@ -491,7 +510,7 @@ func (s *Sigmoid) MinEvalBars() int {
 | 3 | 月度触发用 UTC 月历 | UTC | 与 Binance 数据时区对齐 |
 | 4 | 死线兜底窗口 | 60 天 | 真实数据回测后调 |
 | 5 | 死线兜底注入比例 | 0.5 × `macro_inject_usd` | 真实数据回测后调 |
-| 6 | `signal_weights` L2 归一 | 是 | 跑通后比较"归一 vs 不归一"GA 收敛速度 |
+| 6 | `signal_weights` 归一与范围 | **不归一**，范围 `[-1, 1]` | v2 升级时引入 L2 归一（见 §4.3.x / §13） |
 | 7 | EMA 周期范围 | [5,200] / [50,500] | sweep 后定 |
 | 8 | NAV peak 滑窗 | 30×1440（30 天） | 与释放冷却期协同调 |
 | 9 | 释放冷却期 | 7 天 | 跑通后看是否过紧 |
@@ -521,6 +540,7 @@ func (s *Sigmoid) MinEvalBars() int {
 |---|---|---|
 | v1 | 2026-05-18 | 初版草案，13 维染色体，2 态市场，月度 DCA + drawdown release |
 | v1.1 | 2026-05-18 | 决策 #11 修订：`MinEvalBars` 改为按 `barIntervalMs` 动态计算（不再硬编码 43201）；染色体周期保持 bar 数单位但**仅在创建粒度下有效**，跨粒度 Promote 禁止 |
+| v1.2 | 2026-05-18 | 决策 #6 修订：`signal_weights` 取消 L2 归一，范围 `[-2,2]` 压到 `[-1,1]`；归一推迟到 sigmoid_v2，触发条件见 §4.3.x |
 
 任何**结构性**变更（染色体维度数、Segments 划分、RuntimeState schema、`barIntervalMs` 不再注入策略构造）都视为 v1 → v2 升级，需要：
 
