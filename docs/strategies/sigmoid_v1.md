@@ -257,6 +257,12 @@ drawdown = (peak - NAV_t) / peak
 - 7 天冷却期防止连续释放导致 DeadBTC 被快速掏空（同样 duration，不是 bar 数）
 - `peak` 在 `RuntimeState` 内增量维护（不每次重扫历史）
 
+**滑窗未满期的行为**（决策 #8 副作用）：Step() 第一次运行后 30 天内，滑窗里的 NAV 都从初始 0 起涨，`peak` 几乎等于 `NAV_t`，`drawdown ≈ 0`——这期间释放规则**等效失效**。这是有意为之：
+
+- 在 6m 评估窗口里，前 30 天 / 180 天 = 17% 期无效，可接受
+- 在 2y / 5y / 10y 窗口里几乎可忽略
+- 缩短滑窗能减少这段无效期但会让 drawdown 噪音放大；延长会让 6m 窗口里释放规则形同虚设
+
 ### 5.2 释放数量
 
 ```
@@ -512,7 +518,7 @@ func (s *Sigmoid) MinEvalBars() int {
 | 5 | 死线兜底注入比例 | 0.5 × `macro_inject_usd` | 真实数据回测后调 |
 | 6 | `signal_weights` 归一与范围 | **不归一**，范围 `[-1, 1]` | v2 升级时引入 L2 归一（见 §4.3.x / §13） |
 | 7 | EMA/MAV 周期范围 | ema [5,100]/[50,300]，mav [5,50]/[30,250] | sweep 后定；上界改动需同步 §8.2 `maxChromosomePeriod` |
-| 8 | NAV peak 滑窗 | 30×1440（30 天） | 与释放冷却期协同调 |
+| 8 | NAV peak 滑窗 | 30 天（duration） | 与 monthly DCA 节奏对齐；缩到 14 天加噪、扩到 90 天在 6m 窗口失效；与 #9 冷却期保持 4:1 比例 |
 | 9 | 释放冷却期 | 7 天 | 跑通后看是否过紧 |
 | 10 | 释放数量约束 | DeadBTC×0.10 且 FloatBTC×0.20 | sweep 后定 |
 | 11 | `MinEvalBars` 公式 | `max(30天/interval, 500) + 1` | 公式锁定；只在 NAV 滑窗时长或染色体周期上界变更时改 |
@@ -542,6 +548,7 @@ func (s *Sigmoid) MinEvalBars() int {
 | v1.1 | 2026-05-18 | 决策 #11 修订：`MinEvalBars` 改为按 `barIntervalMs` 动态计算（不再硬编码 43201）；染色体周期保持 bar 数单位但**仅在创建粒度下有效**，跨粒度 Promote 禁止 |
 | v1.2 | 2026-05-18 | 决策 #6 修订：`signal_weights` 取消 L2 归一，范围 `[-2,2]` 压到 `[-1,1]`；归一推迟到 sigmoid_v2，触发条件见 §4.3.x |
 | v1.3 | 2026-05-18 | 决策 #7 修订：EMA/MAV 周期范围收紧——ema_short `[5,200]`→`[5,100]`，ema_long `[50,500]`→`[50,300]`，mav_short `[5,100]`→`[5,50]`，mav_long `[50,500]`→`[30,250]`；§8.2 `maxChromosomePeriod` 500→300，4h/1d bar 上 MinEvalBars 从 501→301 |
+| v1.4 | 2026-05-18 | 决策 #8 确认（值不变，30 天保留）；§5.1 补充"滑窗未满期等效失效"副作用说明；§11 冻结条件细化为"与 DCA 节奏对齐 + 4:1 比例约束" |
 
 任何**结构性**变更（染色体维度数、Segments 划分、RuntimeState schema、`barIntervalMs` 不再注入策略构造）都视为 v1 → v2 升级，需要：
 
