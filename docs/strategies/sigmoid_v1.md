@@ -122,10 +122,10 @@ OrderIntent{
 | 2 | `a3` | float | [-1, 1] | 0.2 | 波动率比率（中心化）权重 |
 | 3 | `beta` | float | [0.5, 5] | 2.0 | Sigmoid 激进系数 β |
 | 4 | `gamma` | float | [0, 3] | 0.5 | 仓位均值回归系数 γ |
-| 5 | `ema_short_period` | int* | [5, 200] | 20 | 短期 EMA 周期 |
-| 6 | `ema_long_period` | int* | [50, 500] | 100 | 长期 EMA 周期 |
-| 7 | `mav_short_period` | int* | [5, 100] | 10 | 短期 MAV 窗口 |
-| 8 | `mav_long_period` | int* | [50, 500] | 60 | 长期 MAV 窗口 |
+| 5 | `ema_short_period` | int* | [5, 100] | 20 | 短期 EMA 周期 |
+| 6 | `ema_long_period` | int* | [50, 300] | 100 | 长期 EMA 周期 |
+| 7 | `mav_short_period` | int* | [5, 50] | 10 | 短期 MAV 窗口 |
+| 8 | `mav_long_period` | int* | [30, 250] | 60 | 长期 MAV 窗口 |
 | 9 | `quiet_threshold` | float | [0.3, 1.2] | 0.7 | 安静态判定阈值 |
 | 10 | `micro_reserve_pct` | float | [0.05, 0.5] | 0.25 | 微观保留 USDT 比例 |
 | 11 | `macro_inject_usd` | float | [10, 1000] | 100 | 月度 DCA 注入金额 |
@@ -424,7 +424,7 @@ func New(barIntervalMs int64) *Sigmoid {
 func (s *Sigmoid) MinEvalBars() int {
     const navPeakDurationMs = int64(30) * 24 * 60 * 60 * 1000  // §5.1 滑窗时长
     navPeakBars := int(navPeakDurationMs / s.barIntervalMs)
-    const maxChromosomePeriod = 500  // ema_long_period / mav_long_period 上界
+    const maxChromosomePeriod = 300  // ema_long_period 上界（§4.1）
     if navPeakBars > maxChromosomePeriod {
         return navPeakBars + 1
     }
@@ -436,11 +436,11 @@ func (s *Sigmoid) MinEvalBars() int {
 
 | 粒度 | navPeakBars | maxChromosomePeriod | MinEvalBars |
 |---|---:|---:|---:|
-| 1m  | 43,200 | 500 | **43,201** |
-| 5m  |  8,640 | 500 |  **8,641** |
-| 1h  |    720 | 500 |    **721** |
-| 4h  |    180 | 500 |    **501**（被染色体周期主导） |
-| 1d  |     30 | 500 |    **501** |
+| 1m  | 43,200 | 300 | **43,201** |
+| 5m  |  8,640 | 300 |  **8,641** |
+| 1h  |    720 | 300 |    **721** |
+| 4h  |    180 | 300 |    **301**（被染色体周期主导） |
+| 1d  |     30 | 300 |    **301** |
 
 ### 8.3 NAV peak 滑窗 bar 数同样动态
 
@@ -448,7 +448,7 @@ func (s *Sigmoid) MinEvalBars() int {
 
 ### 8.4 染色体周期保持以 bar 数为单位（v1 设计选择）
 
-`ema_long_period ∈ [50, 500]` 等基因维度的语义**就是 bar 数**，不做 duration 抽象。原因：
+`ema_long_period ∈ [50, 300]` 等基因维度的语义**就是 bar 数**，不做 duration 抽象。原因：
 
 - 跨粒度的 EMA 含义本来就不同（1m × 200 bar = 3.3 小时；1h × 200 bar = 200 小时），同一个染色体在不同粒度下是不同策略
 - v1 不试图做"粒度可移植染色体"——交由 GA 在每个粒度上分别搜索
@@ -511,7 +511,7 @@ func (s *Sigmoid) MinEvalBars() int {
 | 4 | 死线兜底窗口 | 60 天 | 真实数据回测后调 |
 | 5 | 死线兜底注入比例 | 0.5 × `macro_inject_usd` | 真实数据回测后调 |
 | 6 | `signal_weights` 归一与范围 | **不归一**，范围 `[-1, 1]` | v2 升级时引入 L2 归一（见 §4.3.x / §13） |
-| 7 | EMA 周期范围 | [5,200] / [50,500] | sweep 后定 |
+| 7 | EMA/MAV 周期范围 | ema [5,100]/[50,300]，mav [5,50]/[30,250] | sweep 后定；上界改动需同步 §8.2 `maxChromosomePeriod` |
 | 8 | NAV peak 滑窗 | 30×1440（30 天） | 与释放冷却期协同调 |
 | 9 | 释放冷却期 | 7 天 | 跑通后看是否过紧 |
 | 10 | 释放数量约束 | DeadBTC×0.10 且 FloatBTC×0.20 | sweep 后定 |
@@ -541,6 +541,7 @@ func (s *Sigmoid) MinEvalBars() int {
 | v1 | 2026-05-18 | 初版草案，13 维染色体，2 态市场，月度 DCA + drawdown release |
 | v1.1 | 2026-05-18 | 决策 #11 修订：`MinEvalBars` 改为按 `barIntervalMs` 动态计算（不再硬编码 43201）；染色体周期保持 bar 数单位但**仅在创建粒度下有效**，跨粒度 Promote 禁止 |
 | v1.2 | 2026-05-18 | 决策 #6 修订：`signal_weights` 取消 L2 归一，范围 `[-2,2]` 压到 `[-1,1]`；归一推迟到 sigmoid_v2，触发条件见 §4.3.x |
+| v1.3 | 2026-05-18 | 决策 #7 修订：EMA/MAV 周期范围收紧——ema_short `[5,200]`→`[5,100]`，ema_long `[50,500]`→`[50,300]`，mav_short `[5,100]`→`[5,50]`，mav_long `[50,500]`→`[30,250]`；§8.2 `maxChromosomePeriod` 500→300，4h/1d bar 上 MinEvalBars 从 501→301 |
 
 任何**结构性**变更（染色体维度数、Segments 划分、RuntimeState schema、`barIntervalMs` 不再注入策略构造）都视为 v1 → v2 升级，需要：
 
