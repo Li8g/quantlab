@@ -67,6 +67,31 @@ func MAVAbsChange(series []float64) float64 {
 	return KahanSum(abs) / float64(n-1)
 }
 
+// MAVAbsChangeWindow returns the mean absolute close-to-close change over
+// the last `window` bars of series. It looks at the trailing `window`
+// differences |series[i] - series[i-1]|, i.e. it consumes window+1 prices.
+//
+// Returns 0 when window <= 0, when window+1 > len(series), or when there
+// are fewer than 2 prices available. Callers are expected to have enough
+// warmup (MinEvalBars) that the degenerate cases are unreachable during
+// normal evaluation; the lenient zero-return keeps unit tests cheap to
+// write without hand-rolling guard paths.
+func MAVAbsChangeWindow(series []float64, window int) float64 {
+	n := len(series)
+	if window <= 0 || n < 2 {
+		return 0
+	}
+	if window+1 > n {
+		return 0
+	}
+	start := n - window - 1
+	abs := make([]float64, window)
+	for i := 0; i < window; i++ {
+		abs[i] = math.Abs(series[start+i+1] - series[start+i])
+	}
+	return KahanSum(abs) / float64(window)
+}
+
 // ClipFloat64 clamps x to [lo, hi]. Panics if lo > hi (programming error).
 func ClipFloat64(x, lo, hi float64) float64 {
 	if lo > hi {

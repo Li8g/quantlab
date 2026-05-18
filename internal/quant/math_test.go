@@ -87,6 +87,42 @@ func TestMAVAbsChange_ShortInput(t *testing.T) {
 	}
 }
 
+// ----- MAVAbsChangeWindow -----
+
+func TestMAVAbsChangeWindow_Basic(t *testing.T) {
+	// series 1,2,1,4,0 — diffs |1|,|1|,|3|,|4|
+	// window=4 -> mean of all 4 diffs = 2.25
+	if got := MAVAbsChangeWindow([]float64{1, 2, 1, 4, 0}, 4); !approx(got, 2.25, eps) {
+		t.Errorf("window=4 got %v, want 2.25", got)
+	}
+	// window=2 -> trailing two diffs |3|,|4| -> 3.5
+	if got := MAVAbsChangeWindow([]float64{1, 2, 1, 4, 0}, 2); !approx(got, 3.5, eps) {
+		t.Errorf("window=2 got %v, want 3.5", got)
+	}
+}
+
+func TestMAVAbsChangeWindow_TooShort(t *testing.T) {
+	// window+1 > n -> 0
+	if got := MAVAbsChangeWindow([]float64{1, 2, 3}, 5); got != 0 {
+		t.Errorf("len=3 window=5 got %v, want 0", got)
+	}
+	// n < 2 -> 0
+	if got := MAVAbsChangeWindow([]float64{42}, 1); got != 0 {
+		t.Errorf("len=1 got %v, want 0", got)
+	}
+	// window<=0 -> 0
+	if got := MAVAbsChangeWindow([]float64{1, 2, 3}, 0); got != 0 {
+		t.Errorf("window=0 got %v, want 0", got)
+	}
+}
+
+func TestMAVAbsChangeWindow_ConstantSeries(t *testing.T) {
+	// All diffs zero -> mean zero.
+	if got := MAVAbsChangeWindow([]float64{7, 7, 7, 7, 7}, 4); got != 0 {
+		t.Errorf("constant series got %v, want 0", got)
+	}
+}
+
 // ----- ClipFloat64 -----
 
 func TestClipFloat64(t *testing.T) {
