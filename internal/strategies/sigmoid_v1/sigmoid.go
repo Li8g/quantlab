@@ -26,7 +26,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -42,10 +41,10 @@ import (
 // spec mandates a new strategy ID on structural changes).
 const StrategyID = "sigmoid_v1"
 
-// errPhase4Pending is the placeholder returned by the verbs that land in
-// later Phase 4 milestones. Loud, greppable, and deliberately not a
-// constant string so callers cannot silently silence it.
-var errPhase4Pending = errors.New("sigmoid_v1: verb not implemented yet (phase 4b/4c/4d pending)")
+// Phase 4d closed out the last of the EvolvableStrategy stubs; nothing
+// in this package now returns "verb not implemented yet" anymore. The
+// errPhase4Pending sentinel that lived here through 4a–4c has been
+// retired alongside its last caller.
 
 // Sigmoid is the strategy instance. It owns one read-only knob:
 // barIntervalMs — the wall-clock interval one bar represents, in
@@ -243,14 +242,26 @@ func (s *Sigmoid) Fingerprint(g domain.Gene) string {
 	return fmt.Sprintf("%016x", h.Sum64())
 }
 
-// ===== Phase 4d verbs — stubbed until the Adapter milestone lands =====
+// ===== Phase 4d cascade verb =====
 
-// Evaluate is the cascade-across-windows orchestrator. Real
-// implementation needs Adapter.Evaluate (Phase 4d) to run per-window
-// backtests — the cascade just sequences calls + applies short-circuit
-// logic. Until 4d lands, return errPhase4Pending.
-func (s *Sigmoid) Evaluate(_ context.Context, _ domain.Gene, _ *domain.EvaluablePlan) (*resultpkg.RawEvaluateResult, error) {
-	return nil, errPhase4Pending
+// Evaluate is the engine-facing entry point. It mirrors toy.go's
+// pattern of a thin wrapper around the adapter — NewAdapter + Reset
+// + Evaluate — so callers that don't want to manage Adapter
+// lifetimes (one-shot scoring, integration tests) can drive a single
+// gene through the four-window cascade with one call.
+//
+// Production worker pools that batch many genes through one adapter
+// should call NewAdapter / Reset / Evaluate directly to amortise the
+// adapter allocation.
+func (s *Sigmoid) Evaluate(_ context.Context, gene domain.Gene, plan *domain.EvaluablePlan) (*resultpkg.RawEvaluateResult, error) {
+	a, err := s.NewAdapter(plan)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.Reset(plan); err != nil {
+		return nil, err
+	}
+	return a.Evaluate(gene)
 }
 
 // ===== Phase 4c encoding verbs =====
@@ -352,22 +363,94 @@ func (s *Sigmoid) NewAdapter(plan *domain.EvaluablePlan) (strategy.Adapter, erro
 	return &sigmoidAdapter{strat: s, plan: plan}, nil
 }
 
-// sigmoidAdapter is the Phase 4a stub. The real Reset / Evaluate land in
-// Phase 4d when the asset-accounting simulator + Step() integration are
-// in place. We return errPhase4Pending from Evaluate rather than panicking
-// because the engine's worker pool surfaces returned errors cleanly.
+// sigmoidAdapter is the per-worker evaluation handle. It holds a
+// pointer to the parent Sigmoid (read-only) and a plan that the
+// engine refreshes via Reset before every Evaluate. v1 keeps no
+// gene-derived caches between Evaluate calls — evaluateWindow starts
+// with a cold-start Portfolio + empty RuntimeState — so Reset only
+// has to swap the plan pointer. Adding caches later requires
+// expanding Reset to clear them per the §5.6 isolation contract.
 type sigmoidAdapter struct {
 	strat *Sigmoid
 	plan  *domain.EvaluablePlan
 }
 
+// Reset honours the §5.6 contract by re-pointing the adapter at the
+// latest plan and clearing any gene-derived state. v1 has none to
+// clear; the call is effectively `a.plan = plan`.
 func (a *sigmoidAdapter) Reset(plan *domain.EvaluablePlan) error {
 	a.plan = plan
 	return nil
 }
 
-func (a *sigmoidAdapter) Evaluate(_ domain.Gene) (*resultpkg.RawEvaluateResult, error) {
-	return nil, errPhase4Pending
+// Evaluate runs the four-window cascade in the canonical
+// 6m→2y→5y→10y order, regardless of the order plan.Windows happens
+// to be in. Each iteration:
+//
+//   - find the matching plan.Windows entry by name (skip if absent);
+//   - if a prior window already Fataled, append a cascade-skip
+//     CrucibleResult with the appropriate SkippedBy enum;
+//   - otherwise invoke evaluateWindow and stamp the result;
+//   - if the result is Fatal, set the cascade marker for subsequent
+//     windows.
+//
+// Returns *RawEvaluateResult. ScoreTotal is engine-only — see the
+// strategy.evolvable.go package-doc rationale.
+func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResult, error) {
+	if a.plan == nil {
+		return nil, fmt.Errorf("sigmoid_v1: Adapter.Evaluate called before Reset (no plan)")
+	}
+	byName := make(map[resultpkg.WindowName]domain.CrucibleWindow, len(a.plan.Windows))
+	for _, w := range a.plan.Windows {
+		byName[w.Name] = w
+	}
+
+	results := make([]resultpkg.CrucibleResult, 0, 4)
+	var totalBars int
+	var cascadeFrom resultpkg.SkippedBy // "" until a Fatal triggers cascade
+
+	for _, name := range resultpkg.AllWindowsInEvalOrder() {
+		w, ok := byName[name]
+		if !ok {
+			continue
+		}
+		if cascadeFrom != "" {
+			skip := cascadeFrom
+			results = append(results, resultpkg.CrucibleResult{
+				Window:    name,
+				Score:     resultpkg.SliceScore{Fatal: false, Value: nil},
+				SkippedBy: &skip,
+			})
+			continue
+		}
+		res, err := evaluateWindow(a.strat, gene, w, a.plan.Friction)
+		if err != nil {
+			return nil, fmt.Errorf("sigmoid_v1: window %q: %w", name, err)
+		}
+		results = append(results, res)
+		totalBars += res.BarsEvaluated
+		if res.Score.Fatal {
+			switch name {
+			case resultpkg.Window6M:
+				cascadeFrom = resultpkg.SkippedByCascadeFrom6M
+			case resultpkg.Window2Y:
+				cascadeFrom = resultpkg.SkippedByCascadeFrom2Y
+			case resultpkg.Window5Y:
+				cascadeFrom = resultpkg.SkippedByCascadeFrom5Y
+				// A 10y Fatal has nothing to cascade into; leave
+				// cascadeFrom empty.
+			}
+		}
+	}
+
+	return &resultpkg.RawEvaluateResult{
+		Windows: results,
+		FrictionActual: resultpkg.FrictionActual{
+			TakerFeeBPS: a.plan.Friction.TakerFeeBPS,
+			SlippageBPS: a.plan.Friction.SlippageBPS,
+		},
+		BarsEvaluated: totalBars,
+	}, nil
 }
 
 func (a *sigmoidAdapter) Close() error { return nil }
