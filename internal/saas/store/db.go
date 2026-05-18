@@ -54,13 +54,20 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 
 	// 7-day chunk on open_time (milliseconds). if_not_exists makes the call
 	// idempotent across restarts.
-	const chunk7Days = int64(7) * 24 * 60 * 60 * 1000
-	if err := db.WithContext(ctx).Exec(
+	//
+	// chunk_time_interval is interpolated directly (not parameterized): the
+	// value is a compile-time constant with no injection risk, and
+	// create_hypertable is polymorphic — a bound `?` placeholder arrives as
+	// PG type `unknown` and trips
+	// `ERROR: could not determine polymorphic type` (SQLSTATE 42804).
+	const chunk7DaysMs = int64(7) * 24 * 60 * 60 * 1000
+	hyperSQL := fmt.Sprintf(
 		`SELECT create_hypertable('klines', 'open_time',
 			if_not_exists => TRUE,
-			chunk_time_interval => ?)`,
-		chunk7Days,
-	).Error; err != nil {
+			chunk_time_interval => %d::bigint)`,
+		chunk7DaysMs,
+	)
+	if err := db.WithContext(ctx).Exec(hyperSQL).Error; err != nil {
 		return nil, fmt.Errorf("store.NewDB: create_hypertable: %w", err)
 	}
 

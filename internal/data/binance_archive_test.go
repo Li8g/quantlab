@@ -163,6 +163,28 @@ func TestParseKlineCSV_HappyPath(t *testing.T) {
 	}
 }
 
+func TestParseKlineCSV_NormalizesMicrosecondTimestamps(t *testing.T) {
+	// Observed in 2025-01 BTCUSDT archives: OpenTime/CloseTime in μs.
+	// Parser must normalize to ms so downstream code (DB, crucible) sees
+	// a single unit.
+	csvContent := `1735689600000000,93576.0,93610.93,93537.5,93610.93,8.21827,1735689659999999,768978.75,2631,3.95,369757.32,0
+`
+	rows, err := ParseKlineCSV(buildKlineZip(t, "x.csv", csvContent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows", len(rows))
+	}
+	r := rows[0]
+	if r.OpenTime != 1735689600000 { // ms for 2025-01-01T00:00:00Z
+		t.Errorf("OpenTime not normalized: got %d", r.OpenTime)
+	}
+	if r.CloseTime != 1735689659999 {
+		t.Errorf("CloseTime not normalized: got %d", r.CloseTime)
+	}
+}
+
 func TestParseKlineCSV_ToleratesExtraColumns(t *testing.T) {
 	// Imagine Binance adds a 13th column in the future — must not break.
 	csvContent := `1736294400000,100000.0,100100.0,99900.0,100050.0,5.123,1736294459999,512345.6,42,3.0,300000.0,0,extra_field

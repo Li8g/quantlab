@@ -269,5 +269,17 @@ func parseKlineRow(rec []string) (KlineRow, error) {
 	if err = parseField("taker_buy_quote", rec[10], &r.TakerBuyQuote); err != nil {
 		return r, err
 	}
+
+	// Binance switched some monthly archives (observed in 2025-01 BTCUSDT
+	// onwards) to microsecond OpenTime/CloseTime, while the REST API still
+	// returns milliseconds. The rest of QuantLab (DB schema, EvaluablePlan,
+	// crucible) is ms-only, so normalise here. Threshold 1e14 sits in the
+	// ~1000× gap between any plausible ms (Binance era ≤ ~1.7e13) and any
+	// plausible μs (Binance era ≥ ~1.5e15); good through year 2286.
+	const microThresholdMs = int64(1e14)
+	if r.OpenTime > microThresholdMs {
+		r.OpenTime /= 1000
+		r.CloseTime /= 1000
+	}
 	return r, nil
 }
