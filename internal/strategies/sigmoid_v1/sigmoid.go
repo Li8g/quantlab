@@ -25,6 +25,7 @@ package sigmoid_v1
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -242,30 +243,109 @@ func (s *Sigmoid) Fingerprint(g domain.Gene) string {
 	return fmt.Sprintf("%016x", h.Sum64())
 }
 
-// ===== Phase 4b/4c/4d verbs — stubbed until those milestones land =====
+// ===== Phase 4d verbs — stubbed until the Adapter milestone lands =====
 
+// Evaluate is the cascade-across-windows orchestrator. Real
+// implementation needs Adapter.Evaluate (Phase 4d) to run per-window
+// backtests — the cascade just sequences calls + applies short-circuit
+// logic. Until 4d lands, return errPhase4Pending.
 func (s *Sigmoid) Evaluate(_ context.Context, _ domain.Gene, _ *domain.EvaluablePlan) (*resultpkg.RawEvaluateResult, error) {
 	return nil, errPhase4Pending
 }
 
+// ===== Phase 4c encoding verbs =====
+
+// ReviewBacktest is a prototype no-op per phase plan §5A and §10 of
+// the sigmoid_v1 spec. Returning (nil, nil) matches the toy strategy
+// convention; the engine treats both forms identically and stores no
+// ReviewSummary on the result package.
+//
+// A real implementation would replay the full history under the
+// elected gene and emit alpha breakdown / DSR / stress diagnostics.
+// That's Audit-phase work, deferred per the upstream `[INVENTED v1]`
+// note on EvolvableStrategy.ReviewBacktest.
 func (s *Sigmoid) ReviewBacktest(_ context.Context, _ domain.Gene, _ *domain.EvaluablePlan) (*resultpkg.ReviewSummary, error) {
-	return nil, errPhase4Pending
+	return nil, nil
 }
 
+// EncodeResult stitches the engine-supplied layers into the five-layer
+// ChallengerResultPackage. The strategy owns:
+//
+//   - Encoding `gene` into core.ChampionGene. Sigmoid uses the same
+//     scheme as toy.go (JSON-marshalled []float64) per the prototype
+//     contract that Encoding must equal resultpkg.GeneEncodingJSON.
+//   - Stamping core.StrategyID.
+//   - Initialising promote.DecisionStatus = DecisionStatusPending so
+//     the human Promote workflow has the right starting state.
+//
+// Everything else is taken verbatim from the engine inputs:
+// SpawnPoint, ReproducibilityMetadata, GAConfig, and the three
+// already-assembled layers (eval / verif / diag). Schema /
+// fitness / fingerprint version mirror ReproducibilityMetadata so
+// resultpkg validate.go's cross-field equality checks pass.
+//
+// nil eval / verif / diag pointers are treated as "this layer is
+// empty" rather than as errors — the engine may legitimately call
+// EncodeResult before all layers are populated (e.g. when a Fatal
+// short-circuits before verification runs).
 func (s *Sigmoid) EncodeResult(
-	_ domain.Gene,
-	_ resultpkg.SpawnPointPayload,
-	_ resultpkg.ReproducibilityMetadata,
-	_ resultpkg.GAConfigSnapshot,
-	_ *resultpkg.EvaluationLayer,
-	_ *resultpkg.VerificationLayer,
-	_ *resultpkg.DiagnosticsLayer,
+	gene domain.Gene,
+	spawn resultpkg.SpawnPointPayload,
+	repro resultpkg.ReproducibilityMetadata,
+	gaConfig resultpkg.GAConfigSnapshot,
+	eval *resultpkg.EvaluationLayer,
+	verif *resultpkg.VerificationLayer,
+	diag *resultpkg.DiagnosticsLayer,
 ) (resultpkg.ChallengerResultPackage, error) {
-	return resultpkg.ChallengerResultPackage{}, errPhase4Pending
+	payload, err := json.Marshal(gene)
+	if err != nil {
+		return resultpkg.ChallengerResultPackage{}, fmt.Errorf("sigmoid_v1: encode gene: %w", err)
+	}
+	pkg := resultpkg.ChallengerResultPackage{
+		Core: resultpkg.ResultCore{
+			StrategyID: s.StrategyID(),
+			ChampionGene: resultpkg.ChampionGenePayload{
+				Encoding: resultpkg.GeneEncodingJSON,
+				Payload:  payload,
+			},
+			SpawnPoint:              spawn,
+			ReproducibilityMetadata: repro,
+			GAConfig:                gaConfig,
+			SchemaVersion:           repro.SchemaVersion,
+			FitnessVersion:          repro.FitnessVersion,
+			FingerprintVersion:      repro.FingerprintVersion,
+		},
+		Promote: resultpkg.PromoteLayer{DecisionStatus: resultpkg.DecisionStatusPending},
+	}
+	if eval != nil {
+		pkg.Evaluation = *eval
+	}
+	if verif != nil {
+		pkg.Verification = *verif
+	}
+	if diag != nil {
+		pkg.Diagnostics = *diag
+	}
+	return pkg, nil
 }
 
-func (s *Sigmoid) DecodeElite(_ resultpkg.ChampionGenePayload) (domain.Gene, error) {
-	return nil, errPhase4Pending
+// DecodeElite reverses EncodeResult's gene serialization. The strategy
+// rejects encodings it does not understand (only JSON is legal in v1
+// per spec §13) and re-runs Validate on the decoded gene so that a
+// corrupted result package can't slip a stale or out-of-range Gene
+// back into a future evaluation.
+func (s *Sigmoid) DecodeElite(blob resultpkg.ChampionGenePayload) (domain.Gene, error) {
+	if blob.Encoding != resultpkg.GeneEncodingJSON {
+		return nil, fmt.Errorf("sigmoid_v1: unsupported gene encoding %q", blob.Encoding)
+	}
+	var g domain.Gene
+	if err := json.Unmarshal(blob.Payload, &g); err != nil {
+		return nil, fmt.Errorf("sigmoid_v1: decode gene: %w", err)
+	}
+	if err := s.Validate(g); err != nil {
+		return nil, fmt.Errorf("sigmoid_v1: validate decoded gene: %w", err)
+	}
+	return g, nil
 }
 
 func (s *Sigmoid) NewAdapter(plan *domain.EvaluablePlan) (strategy.Adapter, error) {
