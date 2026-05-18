@@ -234,8 +234,8 @@ drawdown = (peak - NAV_t) / peak
 
 当 `drawdown > release_drawdown_threshold` **且**距上次 Release ≥ 7 天时，触发释放。
 
-- 滑动窗口 N = 30 × 1440 = 43200（30 天 1m bar，`[INVENTED v1]`，待校准）
-- 7 天冷却期防止连续释放导致 DeadBTC 被快速掏空
+- 滑动窗口 30 天（**duration**，非 bar 数）；对应的 bar 数 `N = 30天 / barIntervalMs`，由 §8.2 公式动态算
+- 7 天冷却期防止连续释放导致 DeadBTC 被快速掏空（同样 duration，不是 bar 数）
 - `peak` 在 `RuntimeState` 内增量维护（不每次重扫历史）
 
 ### 5.2 释放数量
@@ -281,7 +281,7 @@ type RuntimeState struct {
 }
 ```
 
-- 滑窗滚动维护，bar 数固定 30×1440；超出窗口的旧值被剪掉
+- 滑窗滚动维护，bar 数 = `30天 / barIntervalMs`（§8.3，不再硬编码）；超出窗口的旧值被剪掉
 - `SchemaVersion` 用于未来字段演进；Step() 启动时如发现 schema 不匹配，应能优雅降级（v1 阶段：直接重置为空 state，记日志）
 
 ### 6.1 Adapter.Reset 行为
@@ -375,19 +375,67 @@ func Step(input StrategyInput) StrategyOutput {
 
 ---
 
-## 8. MinEvalBars
+## 8. MinEvalBars 与数据粒度
 
+策略涉及三类时间相关量，**只有第二类与 bar 粒度耦合**——策略层的处理必须区分清楚：
+
+| 类 | 形式 | 粒度依赖 |
+|---|---|---|
+| A. 真"时间"量 | NowMs / LastMacroBuyMs / 死线 60 天 / 冷却 7 天，**全部用毫秒比较** | 粒度无关 ✓ |
+| B. "Bar 计数"量 | MinEvalBars 返回值、NAV peak 滑窗的 bar 数 | **由 `barIntervalMs` 动态算** |
+| C. 染色体周期 | `ema_long_period`、`mav_long_period` 等（基因里的"bar 数") | **粒度绑定**（见 §13 铁律） |
+
+### 8.1 策略构造接受 `barIntervalMs`
+
+```go
+type Sigmoid struct {
+    barIntervalMs int64   // 60_000 (1m) / 3_600_000 (1h) / 86_400_000 (1d) …
+}
+
+func New(barIntervalMs int64) *Sigmoid {
+    return &Sigmoid{barIntervalMs: barIntervalMs}
+}
 ```
-MinEvalBars = max(
-    ema_long_period,
-    mav_long_period,
-    NAV peak 滑窗 = 30 × 1440
-) + 1
+
+`barIntervalMs` 由调用方（task 创建路径或 cmd 层）从 `EvolutionTask` 的 `interval` 字段解码后注入。
+
+### 8.2 `MinEvalBars` 动态计算
+
+```go
+func (s *Sigmoid) MinEvalBars() int {
+    const navPeakDurationMs = int64(30) * 24 * 60 * 60 * 1000  // §5.1 滑窗时长
+    navPeakBars := int(navPeakDurationMs / s.barIntervalMs)
+    const maxChromosomePeriod = 500  // ema_long_period / mav_long_period 上界
+    if navPeakBars > maxChromosomePeriod {
+        return navPeakBars + 1
+    }
+    return maxChromosomePeriod + 1
+}
 ```
 
-实施时取上界硬编码 `MinEvalBars = 30 * 1440 + 1 = 43201`，避免 Gene 解码后才知道周期参数导致 Adapter.Reset 时机错乱。
+代入各粒度：
 
-> **[INVENTED v1]** 43201 是按"1m bar、30 天滑窗"算的。如果窗口构造器要喂日线，这个数就完全不对。Phase 4d 写 Adapter 时必须 sanity-check 时间粒度。
+| 粒度 | navPeakBars | maxChromosomePeriod | MinEvalBars |
+|---|---:|---:|---:|
+| 1m  | 43,200 | 500 | **43,201** |
+| 5m  |  8,640 | 500 |  **8,641** |
+| 1h  |    720 | 500 |    **721** |
+| 4h  |    180 | 500 |    **501**（被染色体周期主导） |
+| 1d  |     30 | 500 |    **501** |
+
+### 8.3 NAV peak 滑窗 bar 数同样动态
+
+§6 `RuntimeState.NAVPeakWindow*` 切片的长度上限 = `int(navPeakDurationMs / s.barIntervalMs)`，**不是固定 43200**。每次 `Step()` 时滚动滑窗。
+
+### 8.4 染色体周期保持以 bar 数为单位（v1 设计选择）
+
+`ema_long_period ∈ [50, 500]` 等基因维度的语义**就是 bar 数**，不做 duration 抽象。原因：
+
+- 跨粒度的 EMA 含义本来就不同（1m × 200 bar = 3.3 小时；1h × 200 bar = 200 小时），同一个染色体在不同粒度下是不同策略
+- v1 不试图做"粒度可移植染色体"——交由 GA 在每个粒度上分别搜索
+- v2+ 如要可移植，把这些字段改成 duration（毫秒）+ Step() 内除 interval 转 bar 数
+
+**铁律（§13）**：sigmoid_v1 的 Champion Gene 仅在其创建时的数据粒度下有效，不得跨粒度 Promote。Promote 校验里必须比对 `EvolutionTask.interval == Champion.spawn_interval`。
 
 ---
 
@@ -448,7 +496,7 @@ MinEvalBars = max(
 | 8 | NAV peak 滑窗 | 30×1440（30 天） | 与释放冷却期协同调 |
 | 9 | 释放冷却期 | 7 天 | 跑通后看是否过紧 |
 | 10 | 释放数量约束 | DeadBTC×0.10 且 FloatBTC×0.20 | sweep 后定 |
-| 11 | `MinEvalBars` | 43201 | 接入日线/小时线时必须重新计算 |
+| 11 | `MinEvalBars` 公式 | `max(30天/interval, 500) + 1` | 公式锁定；只在 NAV 滑窗时长或染色体周期上界变更时改 |
 | 12 | 染色体维度数 | 13 | 跑通后看 GA 在 13 维上能否稳定收敛；过多/过少都要调 |
 | 13 | RuntimeState schema | v1 | 字段任何增删都要 bump schema_version |
 
@@ -472,8 +520,9 @@ MinEvalBars = max(
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1 | 2026-05-18 | 初版草案，13 维染色体，2 态市场，月度 DCA + drawdown release |
+| v1.1 | 2026-05-18 | 决策 #11 修订：`MinEvalBars` 改为按 `barIntervalMs` 动态计算（不再硬编码 43201）；染色体周期保持 bar 数单位但**仅在创建粒度下有效**，跨粒度 Promote 禁止 |
 
-任何**结构性**变更（染色体维度数、Segments 划分、RuntimeState schema）都视为 v1 → v2 升级，需要：
+任何**结构性**变更（染色体维度数、Segments 划分、RuntimeState schema、`barIntervalMs` 不再注入策略构造）都视为 v1 → v2 升级，需要：
 
 1. 新建 `sigmoid_v2.md` 文档
 2. 新建 `internal/strategies/sigmoid_v2/` 目录
