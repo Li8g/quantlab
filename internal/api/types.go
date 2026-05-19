@@ -21,6 +21,7 @@ import (
 type CreateEvolutionTaskRequest struct {
 	StrategyID           string              `json:"strategy_id"`
 	Pair                 string              `json:"pair"`
+	Interval             string              `json:"interval"`
 	PopSize              int                 `json:"pop_size"`
 	MaxGenerations       int                 `json:"max_generations"`
 	EliteRatio           float64             `json:"elite_ratio"`

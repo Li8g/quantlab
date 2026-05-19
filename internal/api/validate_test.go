@@ -14,6 +14,7 @@ func TestCreateEvolutionTaskRequest_Validate(t *testing.T) {
 	good := CreateEvolutionTaskRequest{
 		StrategyID:     "demo",
 		Pair:           "BTCUSDT",
+		Interval:       "1h",
 		PopSize:        200,
 		MaxGenerations: 30,
 		EliteRatio:     0.05,
@@ -32,6 +33,8 @@ func TestCreateEvolutionTaskRequest_Validate(t *testing.T) {
 	}{
 		{"missing strategy_id", func(r *CreateEvolutionTaskRequest) { r.StrategyID = "" }},
 		{"missing pair", func(r *CreateEvolutionTaskRequest) { r.Pair = "" }},
+		{"missing interval", func(r *CreateEvolutionTaskRequest) { r.Interval = "" }},
+		{"bogus interval", func(r *CreateEvolutionTaskRequest) { r.Interval = "30s" }},
 		{"pop_size zero", func(r *CreateEvolutionTaskRequest) { r.PopSize = 0 }},
 		{"max_generations zero", func(r *CreateEvolutionTaskRequest) { r.MaxGenerations = 0 }},
 		{"elite_ratio neg", func(r *CreateEvolutionTaskRequest) { r.EliteRatio = -0.1 }},
@@ -68,6 +71,7 @@ func TestCreateEvolutionTaskRequest_ManualSpawnPointOK(t *testing.T) {
 	r := CreateEvolutionTaskRequest{
 		StrategyID:     "demo",
 		Pair:           "BTCUSDT",
+		Interval:       "1h",
 		PopSize:        100,
 		MaxGenerations: 10,
 		EliteRatio:     0.05,

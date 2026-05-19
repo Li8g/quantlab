@@ -6,6 +6,15 @@ import (
 	"quantlab/internal/resultpkg"
 )
 
+// allowedIntervals is the prototype-phase whitelist for K-line bar
+// intervals. Strategies bound to one interval (see sigmoid_v1.New) must
+// receive a value from this set; the SaaS Epoch service rejects others.
+var allowedIntervals = map[string]bool{
+	"1m": true, "5m": true, "15m": true,
+	"1h": true, "4h": true,
+	"1d": true,
+}
+
 // Validate checks the field-level invariants documented on
 // CreateEvolutionTaskRequest. Cross-field checks live here too
 // (e.g. SpawnMode=manual ⇒ SpawnPoint != nil).
@@ -18,6 +27,12 @@ func (r *CreateEvolutionTaskRequest) Validate() error {
 	}
 	if r.Pair == "" {
 		return errors.New("pair is required")
+	}
+	if r.Interval == "" {
+		return errors.New("interval is required")
+	}
+	if !allowedIntervals[r.Interval] {
+		return errors.New("interval must be one of 1m,5m,15m,1h,4h,1d")
 	}
 	if r.PopSize < 1 {
 		return errors.New("pop_size must be >= 1")

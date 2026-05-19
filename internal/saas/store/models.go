@@ -37,6 +37,7 @@ type EvolutionTask struct {
 	TaskID            string               `gorm:"type:varchar(64);uniqueIndex" json:"task_id"`
 	StrategyID        string               `gorm:"type:varchar(64);index"       json:"strategy_id"`
 	Pair              string               `gorm:"type:varchar(32);index"       json:"pair"`
+	Interval          string               `gorm:"type:varchar(8);index"        json:"interval"`
 	Status            resultpkg.TaskStatus `gorm:"type:varchar(16);index"       json:"status"`
 	CurrentGeneration int                  `json:"current_generation"`
 
@@ -57,6 +58,12 @@ type EvolutionTask struct {
 	StartedAt     *time.Time `json:"started_at,omitempty"`
 	FinishedAt    *time.Time `json:"finished_at,omitempty"`
 	FailureReason *string    `gorm:"type:text" json:"failure_reason,omitempty"`
+
+	// ChallengerID + BestScore are populated by MarkSucceeded so the
+	// HTTP status response can answer "what did this task produce?"
+	// without a secondary join into gene_records. nil while running.
+	ChallengerID *string  `gorm:"type:varchar(64);index" json:"challenger_id,omitempty"`
+	BestScore    *float64 `json:"best_score,omitempty"`
 }
 
 // GeneRecord is the relational mirror of a ChallengerResultPackage,
