@@ -54,6 +54,13 @@ func BuildEvaluablePlan(bars []domain.Bar, opts PlanOptions) (*domain.EvaluableP
 	if err != nil {
 		return nil, "", "", fmt.Errorf("data.BuildEvaluablePlan: %w", err)
 	}
+	if len(is) == 0 {
+		spanDays := float64(bars[len(bars)-1].OpenTime-bars[0].OpenTime) / float64(DayMs)
+		return nil, "", "", fmt.Errorf(
+			"data.BuildEvaluablePlan: no crucible window fits (bar span %.1fd < warmup %dd + smallest eval 183d/6m); load more bars or lower warmup_days",
+			spanDays, opts.WarmupDays,
+		)
+	}
 
 	// DCA baselines run on the IS bars only. OOS is for post-GA
 	// fairness verification — it must not influence in-generation

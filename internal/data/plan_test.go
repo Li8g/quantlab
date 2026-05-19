@@ -1,6 +1,7 @@
 package data
 
 import (
+	"strings"
 	"testing"
 
 	"quantlab/internal/domain"
@@ -188,5 +189,24 @@ func TestBuildEvaluablePlan_BadInputPropagatesError(t *testing.T) {
 	_, _, _, err := BuildEvaluablePlan(nil, defaultPlanOpts())
 	if err == nil {
 		t.Error("nil bars: want error, got nil")
+	}
+}
+
+// Bar span shorter than (warmup + smallest 6m=183d eval) leaves all
+// four crucible windows skipped. AggregateScoreTotal would otherwise
+// silently produce ScoreTotal{Fatal:false, Value:0} and the task would
+// be marked succeeded — a real regression we hit during local smoke.
+func TestBuildEvaluablePlan_InsufficientBarsReturnsError(t *testing.T) {
+	// 7 days of bars, warmup 365d → not even the 6m window fits.
+	bars := planBars(7, 1_700_000_000_000)
+	opts := defaultPlanOpts()
+	opts.WarmupDays = 365
+
+	_, _, _, err := BuildEvaluablePlan(bars, opts)
+	if err == nil {
+		t.Fatal("insufficient bars: want error, got nil")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "no crucible window fits") {
+		t.Errorf("error message should explain insufficient span, got: %v", err)
 	}
 }
