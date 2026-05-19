@@ -105,13 +105,24 @@ func WindowWeights() map[resultpkg.WindowName]float64 {
 	}
 }
 
-// EpochResult is what RunEpoch returns. Phase 5D will wrap this into a
-// full ChallengerResultPackage; for now it is the minimum the engine
-// needs to expose to validate end-to-end GA behaviour.
+// EpochResult is what RunEpoch returns. Phase 5D wraps this into a
+// full ChallengerResultPackage via engine.BuildChallengerPackage; the
+// SaaS Epoch service supplies the BuildContext + persists via
+// internal/repository.ChallengerRepo.
+//
+// BestRawEvaluate is the per-window raw evaluation of BestGene,
+// re-computed on the worker pool's first adapter at the end of
+// RunEpoch. The recompute step is required because evaluatePopulation
+// discards each gene's *RawEvaluateResult immediately after
+// fitness.AggregateScoreTotal — we'd have to keep PopSize × MaxGen
+// raws around otherwise. Re-evaluating one gene at the end is
+// strictly cheaper, and Adapter.Evaluate is contractually pure of
+// (gene, plan) (§5.5) so the result matches what produced BestScore.
 type EpochResult struct {
 	BestGene        domain.Gene
 	BestScore       resultpkg.ScoreTotal
 	BestFingerprint string
+	BestRawEvaluate *resultpkg.RawEvaluateResult
 	Generations     int
 }
 
@@ -218,10 +229,26 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		}
 	}
 
+	// Recover the best gene's *RawEvaluateResult so the SaaS Epoch
+	// service (Phase 5D) can build a ChallengerResultPackage without
+	// the engine having to retain PopSize × MaxGen raws in memory.
+	// Adapter.Evaluate is pure of (gene, plan) per §5.5, so the
+	// re-evaluation produces the same Windows that produced
+	// scores[bestIdx]. We reuse the first worker's adapter (Reset
+	// first to honour the §5.6 isolation contract).
+	if err := adapters[0].Reset(plan); err != nil {
+		return nil, fmt.Errorf("engine: re-evaluate best: reset: %w", err)
+	}
+	bestRaw, err := adapters[0].Evaluate(pop[bestIdx])
+	if err != nil {
+		return nil, fmt.Errorf("engine: re-evaluate best: evaluate: %w", err)
+	}
+
 	return &EpochResult{
 		BestGene:        append(domain.Gene(nil), pop[bestIdx]...),
 		BestScore:       scores[bestIdx],
 		BestFingerprint: bestFp,
+		BestRawEvaluate: bestRaw,
 		Generations:     actualGens,
 	}, nil
 }

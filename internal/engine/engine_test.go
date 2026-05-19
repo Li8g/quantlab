@@ -7,6 +7,7 @@ import (
 
 	"quantlab/internal/domain"
 	"quantlab/internal/engine"
+	"quantlab/internal/fitness"
 	"quantlab/internal/resultpkg"
 	"quantlab/internal/strategies/toy"
 )
@@ -163,6 +164,118 @@ func TestMutationRampPreservesDeterminism(t *testing.T) {
 	}
 	if r1.Generations != r2.Generations {
 		t.Errorf("early-stop nondeterministic: %d vs %d", r1.Generations, r2.Generations)
+	}
+}
+
+// TestRunEpoch_PopulatesBestRawEvaluate asserts the new field is
+// non-nil with a CrucibleResult per plan window. The SaaS Epoch
+// service (Phase 5D) needs this raw to build EvaluationLayer
+// without keeping every gene's raw in memory through the GA loop.
+func TestRunEpoch_PopulatesBestRawEvaluate(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 10
+	cfg.MaxGenerations = 3
+	cfg.EpochSeed = 13
+
+	eng := engine.New(toy.New(), cfg)
+	result, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatalf("RunEpoch: %v", err)
+	}
+	if result.BestRawEvaluate == nil {
+		t.Fatal("BestRawEvaluate is nil")
+	}
+	if got, want := len(result.BestRawEvaluate.Windows), 4; got != want {
+		t.Errorf("BestRawEvaluate.Windows len = %d, want %d (four crucible windows)", got, want)
+	}
+	// FrictionActual carried verbatim from plan.Friction.
+	if result.BestRawEvaluate.FrictionActual.TakerFeeBPS != 10 {
+		t.Errorf("FrictionActual.TakerFeeBPS = %v, want 10",
+			result.BestRawEvaluate.FrictionActual.TakerFeeBPS)
+	}
+}
+
+// TestRunEpoch_BestRawEvaluateMatchesBestScore is the determinism
+// proof: re-evaluating the winning gene and re-aggregating must
+// reproduce the BestScore that the worker pool computed during the
+// generation loop. If this ever fails, either Adapter.Evaluate is no
+// longer pure of (gene, plan) or fitness.AggregateScoreTotal is no
+// longer deterministic under the same windows.
+func TestRunEpoch_BestRawEvaluateMatchesBestScore(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 12
+	cfg.MaxGenerations = 4
+	cfg.EpochSeed = 5
+
+	eng := engine.New(toy.New(), cfg)
+	result, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatalf("RunEpoch: %v", err)
+	}
+
+	reaggregated := fitness.AggregateScoreTotal(
+		result.BestRawEvaluate.Windows,
+		engine.WindowWeights(),
+		cfg.LambdaCons,
+		resultpkg.FitnessVersionV1RawStd,
+	)
+	if reaggregated.Fatal != result.BestScore.Fatal {
+		t.Errorf("Fatal mismatch: re-agg=%v vs best=%v", reaggregated.Fatal, result.BestScore.Fatal)
+	}
+	if !result.BestScore.Fatal {
+		if reaggregated.Value == nil || result.BestScore.Value == nil {
+			t.Fatalf("non-Fatal with nil Value: re-agg=%v best=%v", reaggregated.Value, result.BestScore.Value)
+		}
+		if math.Abs(*reaggregated.Value-*result.BestScore.Value) > 1e-12 {
+			t.Errorf("re-aggregated Value drift: %v vs %v",
+				*reaggregated.Value, *result.BestScore.Value)
+		}
+	}
+}
+
+// TestRunEpoch_BuildChallengerPackageFromResult chains EpochResult
+// into engine.BuildChallengerPackage and asserts the produced package
+// satisfies resultpkg.Validate's cross-field equality contract. This
+// is the closest assertion to "Phase 5D could pick this up and
+// persist it" without an actual DB call.
+func TestRunEpoch_BuildChallengerPackageFromResult(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 8
+	cfg.MaxGenerations = 3
+	cfg.EpochSeed = 17
+
+	eng := engine.New(toy.New(), cfg)
+	result, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatalf("RunEpoch: %v", err)
+	}
+
+	bc := engine.BuildContext{
+		ChallengerID:      "ch-engine-test",
+		Pair:              "BTCUSDT",
+		DataVersion:       "binance/v1",
+		EngineVersion:     "engine-test",
+		StrategyVersion:   "toy/v1",
+		HardwareSignature: "linux/amd64/test",
+		GoVersion:         "go1.23",
+		BuildID:           "test-build",
+		PlanHash:          "deadbeef",
+		BarsHash:          "cafef00d",
+	}
+	pkg, err := engine.BuildChallengerPackage(
+		toy.New(),
+		miniPlan(),
+		result.BestGene,
+		result.BestRawEvaluate,
+		result.BestScore,
+		cfg,
+		bc,
+	)
+	if err != nil {
+		t.Fatalf("BuildChallengerPackage: %v", err)
+	}
+	if err := pkg.Validate(); err != nil {
+		t.Errorf("package Validate: %v", err)
 	}
 }
 
