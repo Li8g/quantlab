@@ -50,6 +50,35 @@ type EvolutionTaskStatusResponse struct {
 	FailureReason     *string              `json:"failure_reason,omitempty"`
 }
 
+// CreateEvolutionTaskResponse is the body of the 202 Accepted that
+// POST /api/v1/evolution/tasks returns. Clients poll
+// GET /api/v1/evolution/tasks/:task_id for progress.
+type CreateEvolutionTaskResponse struct {
+	TaskID string `json:"task_id"`
+}
+
+// ChallengerSummaryResponse is the body of
+// GET /api/v1/challengers/:challenger_id. Fields are lifted from
+// GeneRecord top-level columns — for the full ChallengerResultPackage
+// (the verbatim JSON blob), callers fetch
+// GET /api/v1/challengers/:challenger_id/package.
+//
+// score_total / score_raw / consistency_penalty / max_drawdown are nil
+// for Fatal aggregate results (SliceScore three-state semantics).
+type ChallengerSummaryResponse struct {
+	ChallengerID       string                   `json:"challenger_id"`
+	StrategyID         string                   `json:"strategy_id"`
+	Pair               string                   `json:"pair"`
+	ScoreTotal         *float64                 `json:"score_total,omitempty"`
+	ScoreRaw           *float64                 `json:"score_raw,omitempty"`
+	ConsistencyPenalty *float64                 `json:"consistency_penalty,omitempty"`
+	DecisionStatus     resultpkg.DecisionStatus `json:"decision_status"`
+	PlanHash           string                   `json:"plan_hash"`
+	BarsHash           string                   `json:"bars_hash"`
+	TestMode           bool                     `json:"test_mode"`
+	DSR                *float64                 `json:"dsr,omitempty"`
+}
+
 // PromoteChallengerRequest is the body of
 // POST /api/v1/challengers/:challenger_id/promote.
 type PromoteChallengerRequest struct {

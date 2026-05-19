@@ -52,6 +52,37 @@ func (r *ChallengerRepo) Save(ctx context.Context, challengerID string, pkg resu
 	return r.db.WithContext(ctx).Create(&record).Error
 }
 
+// Get fetches the gene_records row by challenger_id. Returns
+// gorm.ErrRecordNotFound when no matching row exists.
+func (r *ChallengerRepo) Get(ctx context.Context, challengerID string) (*store.GeneRecord, error) {
+	if challengerID == "" {
+		return nil, fmt.Errorf("repository.ChallengerRepo.Get: empty challengerID")
+	}
+	var rec store.GeneRecord
+	if err := r.db.WithContext(ctx).Where("challenger_id = ?", challengerID).First(&rec).Error; err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// GetPackageBlob returns just the FullPackageJSON column for the given
+// challenger_id. Cheaper than Get when the caller only wants to stream
+// the raw blob back to the HTTP client (the package endpoint). Returns
+// gorm.ErrRecordNotFound when the row is absent.
+func (r *ChallengerRepo) GetPackageBlob(ctx context.Context, challengerID string) ([]byte, error) {
+	if challengerID == "" {
+		return nil, fmt.Errorf("repository.ChallengerRepo.GetPackageBlob: empty challengerID")
+	}
+	var rec store.GeneRecord
+	if err := r.db.WithContext(ctx).
+		Select("full_package_json").
+		Where("challenger_id = ?", challengerID).
+		First(&rec).Error; err != nil {
+		return nil, err
+	}
+	return rec.FullPackageJSON, nil
+}
+
 // buildGeneRecord is the pure-function decomposition of a
 // ChallengerResultPackage into a GeneRecord ready for INSERT. Returns
 // an error if the package fails JSON encoding (only possible on

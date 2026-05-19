@@ -32,7 +32,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -51,9 +50,11 @@ import (
 	"quantlab/internal/verification"
 )
 
-// ErrTaskInProgress is returned by CreateAndRunTask when another task
-// already holds the (strategy, pair) lock. HTTP layer maps to 409.
-var ErrTaskInProgress = errors.New("epoch: a task is already running for this (strategy, pair)")
+// ErrTaskInProgress mirrors api.ErrTaskInProgress for callers that
+// import only this package. The sentinel itself is defined in api so
+// the HTTP handler can perform errors.Is without re-importing epoch
+// (which would form a cycle).
+var ErrTaskInProgress = api.ErrTaskInProgress
 
 // BuildMeta is the cmd-startup constants stamped onto
 // ReproducibilityMetadata. cmd/saas fills it from build flags +
