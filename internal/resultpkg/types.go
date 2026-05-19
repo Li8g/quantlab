@@ -144,16 +144,45 @@ type GapStats struct {
 	GapCount          *int     `json:"gap_count,omitempty"`
 }
 
+// SharpeStats bundles the four DSR inputs derived from one
+// challenger's return series. HorizonT mirrors len(returns) for
+// audit symmetry — callers should never pass returns with stale
+// lengths.
+//
+// Lives in resultpkg (not verification) because resultpkg is the
+// wire-types floor: quant/domain/strategy all depend on it, and
+// verification depends on quant. Putting SharpeStats here keeps
+// the type accessible to RawEvaluateResult without cycling
+// resultpkg → verification → quant → resultpkg.
+//
+// Sharpe is per-bar (not annualised); annualisation is a display
+// concern. The SharpeBank table records the raw per-bar number so
+// cross-bar-interval comparisons stay honest.
+type SharpeStats struct {
+	ObservedSharpe float64
+	Skew           float64
+	ExcessKurt     float64
+	HorizonT       int
+}
+
 // RawEvaluateResult is the strategy/Adapter evaluation output (v3 P01).
 //
 // ⚠️ DELIBERATELY omits ScoreTotal. The type system enforces that the
 // strategy layer cannot write aggregate scores. fitness.AggregateScoreTotal
 // (engine-only) takes a *RawEvaluateResult and emits a ScoreTotal, which
 // the engine then composes into EvaluationLayer.
+//
+// LongestWindowStats is populated by the strategy when at least one
+// non-Fatal window completed. The pointer carries the SharpeStats of
+// the longest non-Fatal window in the cascade (typically 10y, but
+// 5y/2y/6m if longer windows were skipped). nil ⇒ no usable stats
+// (all windows Fatal, or strategy doesn't emit returns). The SaaS
+// Epoch service feeds this into SharpeBank.Add and ComputeDSR.
 type RawEvaluateResult struct {
-	Windows        []CrucibleResult `json:"windows"`
-	FrictionActual FrictionActual   `json:"friction_actual"`
-	BarsEvaluated  int              `json:"bars_evaluated"`
+	Windows            []CrucibleResult `json:"windows"`
+	FrictionActual     FrictionActual   `json:"friction_actual"`
+	BarsEvaluated      int              `json:"bars_evaluated"`
+	LongestWindowStats *SharpeStats     `json:"longest_window_stats,omitempty"`
 }
 
 // EvaluationLayer is the engine-assembled evaluation layer of the result

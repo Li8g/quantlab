@@ -21,6 +21,7 @@ import (
 	"quantlab/internal/domain"
 	"quantlab/internal/resultpkg"
 	"quantlab/internal/strategy"
+	"quantlab/internal/verification"
 )
 
 // ===== [INVENTED v1] window-loop constants =====
@@ -73,12 +74,12 @@ const fatalMDDThreshold = 0.5
 // discarded before applyStrategyOutput — the test §10
 // TestGapHandlingNoFakeTrades invariant ("never trade on a
 // synthesised bar").
-func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams) (resultpkg.CrucibleResult, error) {
+func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams) (resultpkg.CrucibleResult, *resultpkg.SharpeStats, error) {
 	if len(window.Bars) == 0 {
-		return resultpkg.CrucibleResult{}, fmt.Errorf("evaluateWindow: window %q has no bars", window.Name)
+		return resultpkg.CrucibleResult{}, nil, fmt.Errorf("evaluateWindow: window %q has no bars", window.Name)
 	}
 	if window.WarmupLen >= len(window.Bars) {
-		return resultpkg.CrucibleResult{}, fmt.Errorf(
+		return resultpkg.CrucibleResult{}, nil, fmt.Errorf(
 			"evaluateWindow: window %q WarmupLen=%d >= len(Bars)=%d",
 			window.Name, window.WarmupLen, len(window.Bars),
 		)
@@ -102,7 +103,15 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 		fatalBarTS       int64
 		fatalMDD         float64
 		barsScored       int
+		prevPreNav       float64
 	)
+
+	// Log-return series for SharpeStats (§I-4.2). Capacity bounded by
+	// the post-warmup bar count; sized once to avoid append growth.
+	// One entry per scored bar (preNav transitions for bars > WarmupLen
+	// plus a final entry covering navFinal vs the last preNav).
+	scoredCap := len(window.Bars) - window.WarmupLen
+	logReturns := make([]float64, 0, scoredCap)
 
 	for i, bar := range window.Bars {
 		// Append to trailing history, shifting in-place when full.
@@ -127,9 +136,14 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 		if i == window.WarmupLen {
 			navAtWarmupStart = preNav
 			peak = preNav
+			prevPreNav = preNav
 		}
 		if i >= window.WarmupLen {
 			barsScored++
+			if i > window.WarmupLen && prevPreNav > 0 && preNav > 0 {
+				logReturns = append(logReturns, math.Log(preNav/prevPreNav))
+			}
+			prevPreNav = preNav
 			if preNav > peak {
 				peak = preNav
 			}
@@ -160,7 +174,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 		}
 		out, err := strat.Step(input)
 		if err != nil {
-			return resultpkg.CrucibleResult{}, fmt.Errorf(
+			return resultpkg.CrucibleResult{}, nil, fmt.Errorf(
 				"evaluateWindow: window %q bar %d (ts=%d): %w",
 				window.Name, i, bar.OpenTime, err,
 			)
@@ -189,7 +203,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 			FatalAtBarTS:  &fatalBarTS,
 			FatalMDDValue: &fatalMDD,
 			BarsEvaluated: barsScored,
-		}, nil
+		}, nil, nil
 	}
 
 	// Normal exit: compute log-return on the scored path. Final NAV
@@ -214,13 +228,22 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 			FatalAtBarTS:  &ts,
 			FatalMDDValue: &one,
 			BarsEvaluated: barsScored,
-		}, nil
+		}, nil, nil
 	}
+
+	// Final return spans the last scored bar's orders being settled
+	// against navFinal (which captures post-last-order inventory at
+	// the last close). Adds one entry to logReturns so the series
+	// covers `barsScored` periods total.
+	if prevPreNav > 0 {
+		logReturns = append(logReturns, math.Log(navFinal/prevPreNav))
+	}
+	stats := verification.ComputeSharpeStats(logReturns)
 
 	score := math.Log(navFinal / navAtWarmupStart)
 	return resultpkg.CrucibleResult{
 		Window:        window.Name,
 		Score:         resultpkg.SliceScore{Fatal: false, Value: &score},
 		BarsEvaluated: barsScored,
-	}, nil
+	}, &stats, nil
 }

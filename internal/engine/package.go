@@ -19,6 +19,8 @@
 package engine
 
 import (
+	"encoding/json"
+
 	"quantlab/internal/domain"
 	"quantlab/internal/resultpkg"
 	"quantlab/internal/strategy"
@@ -54,6 +56,13 @@ type BuildContext struct {
 	BuildID           string
 	PlanHash          string
 	BarsHash          string
+
+	// DSRSummary is the optional pre-marshalled JSON payload for
+	// VerificationLayer.DSRSummary. The SaaS Epoch service computes
+	// it via verification.ComputeDSR after SharpeBank.Stats reports
+	// N ≥ MinTrialsForDSR, then marshals verification.DSRSummary
+	// here. Empty ⇒ Verification.DSRSummary stays unset.
+	DSRSummary json.RawMessage
 }
 
 // BuildChallengerPackage assembles the five-layer package for one
@@ -89,6 +98,9 @@ func BuildChallengerPackage(
 		FrictionActual: bestRaw.FrictionActual,
 	}
 	verif := &resultpkg.VerificationLayer{}
+	if len(bc.DSRSummary) > 0 {
+		verif.DSRSummary = bc.DSRSummary
+	}
 	diag := &resultpkg.DiagnosticsLayer{}
 
 	repro := resultpkg.ReproducibilityMetadata{

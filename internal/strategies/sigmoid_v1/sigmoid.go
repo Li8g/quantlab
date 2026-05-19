@@ -408,6 +408,11 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 	results := make([]resultpkg.CrucibleResult, 0, 4)
 	var totalBars int
 	var cascadeFrom resultpkg.SkippedBy // "" until a Fatal triggers cascade
+	// AllWindowsInEvalOrder() yields 6m→2y→5y→10y. Stats are kept
+	// only from the last non-Fatal window in that order, which is by
+	// construction the longest non-Fatal window — §I-4.2 "T = 回测
+	// horizon" picks the longest available horizon.
+	var longestStats *resultpkg.SharpeStats
 
 	for _, name := range resultpkg.AllWindowsInEvalOrder() {
 		w, ok := byName[name]
@@ -423,12 +428,15 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 			})
 			continue
 		}
-		res, err := evaluateWindow(a.strat, gene, w, a.plan.Friction)
+		res, stats, err := evaluateWindow(a.strat, gene, w, a.plan.Friction)
 		if err != nil {
 			return nil, fmt.Errorf("sigmoid_v1: window %q: %w", name, err)
 		}
 		results = append(results, res)
 		totalBars += res.BarsEvaluated
+		if stats != nil {
+			longestStats = stats
+		}
 		if res.Score.Fatal {
 			switch name {
 			case resultpkg.Window6M:
@@ -449,7 +457,8 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 			TakerFeeBPS: a.plan.Friction.TakerFeeBPS,
 			SlippageBPS: a.plan.Friction.SlippageBPS,
 		},
-		BarsEvaluated: totalBars,
+		BarsEvaluated:      totalBars,
+		LongestWindowStats: longestStats,
 	}, nil
 }
 

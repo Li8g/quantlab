@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"math/rand"
 	"testing"
 
@@ -202,5 +204,48 @@ func TestBuildChallengerPackage_TestModeFlagsThroughGAConfig(t *testing.T) {
 	}
 	if !pkg.Core.GAConfig.TestMode {
 		t.Errorf("TestMode did not propagate to GAConfig: %+v", pkg.Core.GAConfig)
+	}
+}
+
+// TestBuildChallengerPackage_DSRSummaryPropagates pins the
+// BuildContext.DSRSummary → VerificationLayer.DSRSummary edge that
+// the SaaS Epoch service uses after SharpeBank crosses
+// MinTrialsForDSR. Empty BC.DSRSummary leaves verif.DSRSummary unset.
+func TestBuildChallengerPackage_DSRSummaryPropagates(t *testing.T) {
+	score := 1.0
+	raw := &resultpkg.RawEvaluateResult{
+		Windows:        []resultpkg.CrucibleResult{{Window: resultpkg.Window6M, Score: resultpkg.SliceScore{Value: &score}}},
+		FrictionActual: resultpkg.FrictionActual{},
+	}
+	st := resultpkg.ScoreTotal{Value: &score}
+	plan := &domain.EvaluablePlan{Friction: domain.FrictionParams{}}
+
+	payload := json.RawMessage(`{"dsr":0.73,"observed_sharpe":0.42}`)
+	bc := BuildContext{Pair: "BTCUSDT", DSRSummary: payload}
+
+	pkg, err := BuildChallengerPackage(
+		&fakeEncodeStrategy{id: "fake"},
+		plan, domain.Gene{0.1}, raw, st, DefaultConfig(), bc,
+	)
+	if err != nil {
+		t.Fatalf("BuildChallengerPackage: %v", err)
+	}
+	if !bytes.Equal(pkg.Verification.DSRSummary, payload) {
+		t.Errorf("Verification.DSRSummary = %s, want %s",
+			pkg.Verification.DSRSummary, payload)
+	}
+
+	// Empty input ⇒ field stays unset.
+	bc.DSRSummary = nil
+	pkg2, err := BuildChallengerPackage(
+		&fakeEncodeStrategy{id: "fake"},
+		plan, domain.Gene{0.1}, raw, st, DefaultConfig(), bc,
+	)
+	if err != nil {
+		t.Fatalf("BuildChallengerPackage (empty DSR): %v", err)
+	}
+	if len(pkg2.Verification.DSRSummary) != 0 {
+		t.Errorf("empty BC.DSRSummary should leave field unset, got %s",
+			pkg2.Verification.DSRSummary)
 	}
 }

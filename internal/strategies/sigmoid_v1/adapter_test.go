@@ -281,3 +281,51 @@ func TestEvaluate_BarsEvaluatedAccumulates(t *testing.T) {
 		t.Errorf("BarsEvaluated = %d, want %d", res.BarsEvaluated, 4*(80-5))
 	}
 }
+
+// TestEvaluate_LongestWindowStatsFromLastNonFatal pins the §I-4.2
+// invariant that LongestWindowStats reflects the longest non-Fatal
+// window's return series. With four equal-length windows evaluated
+// in 6m→2y→5y→10y order, the 10y window (last in canonical order)
+// is the producer.
+func TestEvaluate_LongestWindowStatsFromLastNonFatal(t *testing.T) {
+	s := windowTestSigmoid()
+	bars := flatBars(80, 100, windowTestRefMs)
+	plan := fourWindowPlan(bars, 5, domain.FrictionParams{})
+
+	res, err := s.Evaluate(context.Background(), stepTestGene(), plan)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if res.LongestWindowStats == nil {
+		t.Fatal("LongestWindowStats=nil, want populated (all 4 windows non-Fatal)")
+	}
+	// HorizonT equals scored bars of the longest non-Fatal window
+	// (the 10y window in canonical order). Same bars in every window
+	// here, so it's bars-warmup.
+	wantHorizonT := len(bars) - 5
+	if res.LongestWindowStats.HorizonT != wantHorizonT {
+		t.Errorf("LongestWindowStats.HorizonT=%d, want %d",
+			res.LongestWindowStats.HorizonT, wantHorizonT)
+	}
+}
+
+// TestEvaluate_LongestWindowStatsNilOnFirstWindowFatal pins the
+// degenerate case: 6m goes Fatal so no window completes. Stats
+// stays nil — the SaaS layer skips SharpeBank for this challenger.
+func TestEvaluate_LongestWindowStatsNilOnFirstWindowFatal(t *testing.T) {
+	s := windowTestSigmoid()
+	plan := fatalPlan()
+	gene := fatalGene()
+
+	res, err := s.Evaluate(context.Background(), gene, plan)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if !res.Windows[0].Score.Fatal {
+		t.Fatalf("precondition: 6m must be Fatal, got %+v", res.Windows[0])
+	}
+	if res.LongestWindowStats != nil {
+		t.Errorf("LongestWindowStats=%+v, want nil (all windows Fatal-or-skipped)",
+			*res.LongestWindowStats)
+	}
+}

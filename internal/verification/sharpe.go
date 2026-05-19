@@ -15,18 +15,13 @@ package verification
 
 import (
 	"quantlab/internal/quant"
+	"quantlab/internal/resultpkg"
 )
 
-// SharpeStats bundles the four DSR inputs derived from one
-// challenger's return series. HorizonT mirrors len(returns) for
-// audit symmetry — callers should never pass returns with stale
-// lengths.
-type SharpeStats struct {
-	ObservedSharpe float64
-	Skew           float64
-	ExcessKurt     float64
-	HorizonT       int
-}
+// SharpeStats is an alias kept for source compatibility. The canonical
+// type lives in resultpkg so RawEvaluateResult can carry it without
+// crossing the verification→quant→resultpkg cycle boundary.
+type SharpeStats = resultpkg.SharpeStats
 
 // ComputeSharpeStats returns the four DSR inputs from a per-bar
 // log-return series. The series is expected to span the longest
@@ -45,10 +40,10 @@ type SharpeStats struct {
 // are biased moment estimators (g1 / g2 in standard notation).
 // Bailey & Prado's DSR derivation assumes biased estimators per
 // the 2014 paper's Eq. 12.
-func ComputeSharpeStats(returns []float64) SharpeStats {
+func ComputeSharpeStats(returns []float64) resultpkg.SharpeStats {
 	n := len(returns)
 	if n < 2 {
-		return SharpeStats{HorizonT: n}
+		return resultpkg.SharpeStats{HorizonT: n}
 	}
 	std := quant.StdDev(returns)
 	mean := meanOf(returns)
@@ -56,7 +51,7 @@ func ComputeSharpeStats(returns []float64) SharpeStats {
 	if std > 0 {
 		sharpe = mean / std
 	}
-	return SharpeStats{
+	return resultpkg.SharpeStats{
 		ObservedSharpe: sharpe,
 		Skew:           quant.Skewness(returns),
 		ExcessKurt:     quant.ExcessKurtosis(returns),
