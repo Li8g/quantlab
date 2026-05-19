@@ -1,0 +1,119 @@
+// cmd/saas is the SaaS process entrypoint. It loads config.yaml, opens
+// the Postgres connection (store.NewDB also enables TimescaleDB +
+// AutoMigrates all models + creates the klines hypertable), constructs
+// the four repositories + epoch.Service + api.Handlers, and runs Gin
+// on cfg.Server.HTTPListen with graceful shutdown.
+//
+// One process, one DB, in-process per-(strategy, pair) mutex. Scaling
+// to multi-instance is out of scope for the prototype (would need a
+// Redis or DB-row advisory lock — see project notes).
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os/signal"
+	"runtime"
+	"syscall"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"quantlab/internal/api"
+	"quantlab/internal/repository"
+	"quantlab/internal/saas/config"
+	"quantlab/internal/saas/epoch"
+	"quantlab/internal/saas/store"
+)
+
+// Build-time identifiers stamped onto every ChallengerResultPackage's
+// ReproducibilityMetadata. Override at link time with -ldflags
+// "-X main.buildID=<sha> -X main.engineVersion=<v>".
+var (
+	buildID         = "dev"
+	dataVersion     = "v5.3.3"
+	engineVersion   = "v0.1.0-proto"
+	strategyVersion = "v0.1.0-proto"
+)
+
+func main() {
+	configPath := flag.String("config", "", "path to config.yaml (default: $CONFIG_PATH or ./config.yaml)")
+	flag.Parse()
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("saas: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	db, err := store.NewDB(ctx, cfg)
+	if err != nil {
+		log.Fatalf("saas: open db: %v", err)
+	}
+
+	taskRepo := repository.NewEvolutionTaskRepo(db)
+	challengerRepo := repository.NewChallengerRepo(db)
+	championRepo := repository.NewChampionRepo(db)
+	sharpeRepo := repository.NewSharpeBankRepo(db)
+
+	registry := epoch.DefaultRegistry()
+	svc := epoch.New(
+		db,
+		taskRepo,
+		challengerRepo,
+		sharpeRepo,
+		registry,
+		epoch.BuildMeta{
+			DataVersion:       dataVersion,
+			EngineVersion:     engineVersion,
+			StrategyVersion:   strategyVersion,
+			HardwareSignature: fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
+			GoVersion:         runtime.Version(),
+			BuildID:           buildID,
+		},
+		epoch.DefaultDefaults(),
+	)
+
+	h := &api.Handlers{
+		Epoch:       svc,
+		Tasks:       taskRepo,
+		Challengers: challengerRepo,
+		Champions:   championRepo,
+	}
+
+	if cfg.AppRole != config.AppRoleDev {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	r := gin.New()
+	r.Use(gin.Recovery())
+	h.Register(r)
+
+	srv := &http.Server{
+		Addr:              cfg.Server.HTTPListen,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("saas: listening on %s (app_role=%s, strategies=%v)",
+			cfg.Server.HTTPListen, cfg.AppRole, registry.IDs())
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("saas: http server: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("saas: shutdown signal received, draining within %s", cfg.Server.ShutdownTimeout)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("saas: shutdown: %v", err)
+	}
+}
