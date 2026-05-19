@@ -26,6 +26,7 @@ import (
 	"math/rand"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 
 	"quantlab/internal/domain"
@@ -70,6 +71,14 @@ type EngineConfig struct {
 	EarlyStopPatience      int
 	EarlyStopMinDelta      float64
 
+	// FatalAuditSampleRate gates §I-3.12 fatal-audit sampling. For
+	// every gene that aggregates to ScoreTotal.Fatal=true, a per-gene
+	// Bernoulli(rate) consumes one sampleRng tick to decide whether
+	// to capture an AuditSampleSummary into EpochResult.FatalAuditSamples.
+	// 0 disables sampling entirely; values >= 1 capture every Fatal
+	// gene. Default 0.05 matches the spec's "5% 抽样" wording.
+	FatalAuditSampleRate float64
+
 	// OnProgress is called after the per-generation sort with the
 	// best individual. Optional.
 	OnProgress func(gen int, bestFp string, best resultpkg.ScoreTotal)
@@ -91,6 +100,7 @@ func DefaultConfig() EngineConfig {
 		MutationRampFactor:     1.25,
 		EarlyStopPatience:      5,
 		EarlyStopMinDelta:      0.001,
+		FatalAuditSampleRate:   0.05,
 	}
 }
 
@@ -124,6 +134,15 @@ type EpochResult struct {
 	BestFingerprint string
 	BestRawEvaluate *resultpkg.RawEvaluateResult
 	Generations     int
+
+	// FatalAuditSamples accumulates the §I-3.12 fatal-audit pick across
+	// every evaluatePopulation call in this Epoch (initial + per-
+	// generation). Sampling is deterministic given EpochSeed +
+	// FatalAuditSampleRate: a dedicated sampleRng (seeded from masterRng
+	// once on the main goroutine) ticks once per Fatal candidate in
+	// index order. Empty when FatalAuditSampleRate == 0 or no Fatal
+	// genes appeared.
+	FatalAuditSamples []resultpkg.AuditSampleSummary
 }
 
 // Engine drives a single EvolvableStrategy through one or more Epochs.
@@ -151,6 +170,14 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 
 	masterRng := rand.New(rand.NewSource(e.cfg.EpochSeed))
 
+	// sampleRng is independent of the GA loop's masterRng — its only
+	// consumer is the fatal-audit sampler. Seeding from masterRng.Int63
+	// (one tick) keeps the sample selection deterministic per EpochSeed
+	// without ever returning to masterRng (so the GA dynamics stay
+	// unaffected even when sampling fires).
+	sampleRng := rand.New(rand.NewSource(masterRng.Int63()))
+	var auditSamples []resultpkg.AuditSampleSummary
+
 	pop := make([]domain.Gene, e.cfg.PopSize)
 	for i := range pop {
 		pop[i] = e.strat.Sample(masterRng)
@@ -177,15 +204,16 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		}
 	}()
 
-	scores, err := e.evaluatePopulation(ctx, plan, pop, adapters)
+	scores, raws, err := e.evaluatePopulation(ctx, plan, pop, adapters)
 	if err != nil {
 		return nil, err
 	}
+	auditSamples = e.collectFatalSamples(auditSamples, pop, scores, raws, sampleRng, 0)
 
 	var (
-		bestIdx int
-		bestFp  string
-		conv    = newConvergenceState(e.cfg)
+		bestIdx    int
+		bestFp     string
+		conv       = newConvergenceState(e.cfg)
 		actualGens int
 	)
 	for gen := 0; gen < e.cfg.MaxGenerations; gen++ {
@@ -223,10 +251,11 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 
 		next := e.produceNextGeneration(pop, scores, fingerprints, order, masterRng, conv.mutProb, conv.mutScale)
 		pop = next
-		scores, err = e.evaluatePopulation(ctx, plan, pop, adapters)
+		scores, raws, err = e.evaluatePopulation(ctx, plan, pop, adapters)
 		if err != nil {
 			return nil, err
 		}
+		auditSamples = e.collectFatalSamples(auditSamples, pop, scores, raws, sampleRng, gen+1)
 	}
 
 	// Recover the best gene's *RawEvaluateResult so the SaaS Epoch
@@ -245,29 +274,81 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 	}
 
 	return &EpochResult{
-		BestGene:        append(domain.Gene(nil), pop[bestIdx]...),
-		BestScore:       scores[bestIdx],
-		BestFingerprint: bestFp,
-		BestRawEvaluate: bestRaw,
-		Generations:     actualGens,
+		BestGene:          append(domain.Gene(nil), pop[bestIdx]...),
+		BestScore:         scores[bestIdx],
+		BestFingerprint:   bestFp,
+		BestRawEvaluate:   bestRaw,
+		Generations:       actualGens,
+		FatalAuditSamples: auditSamples,
 	}, nil
+}
+
+// collectFatalSamples is the §I-3.12 sampling kernel called after every
+// evaluatePopulation pass. It runs on the main goroutine in idx order
+// and consumes one sampleRng.Float64() per Fatal candidate, so the SET
+// of samples is fully deterministic given (EpochSeed, FatalAuditSampleRate)
+// — independent of worker scheduling.
+//
+// Rate ≤ 0 short-circuits to a zero-cost no-op (sampleRng untouched).
+// Rate ≥ 1 captures every Fatal candidate.
+//
+// SampleID format "g{evalCallNum}.{fingerprint}" disambiguates samples
+// across generations when the same fingerprint reappears (elite copy +
+// untouched-by-Mutate offspring is plausible). evalCallNum=0 is the
+// initial population's evaluation.
+func (e *Engine) collectFatalSamples(
+	dst []resultpkg.AuditSampleSummary,
+	pop []domain.Gene,
+	scores []resultpkg.ScoreTotal,
+	raws []*resultpkg.RawEvaluateResult,
+	rng *rand.Rand,
+	evalCallNum int,
+) []resultpkg.AuditSampleSummary {
+	if e.cfg.FatalAuditSampleRate <= 0 {
+		return dst
+	}
+	for idx := 0; idx < len(pop); idx++ {
+		if !scores[idx].Fatal {
+			continue
+		}
+		if rng.Float64() >= e.cfg.FatalAuditSampleRate {
+			continue
+		}
+		var windows []resultpkg.CrucibleResult
+		if raws[idx] != nil {
+			windows = raws[idx].Windows
+		}
+		dst = append(dst, resultpkg.AuditSampleSummary{
+			SampleID:     "g" + strconv.Itoa(evalCallNum) + "." + e.strat.Fingerprint(pop[idx]),
+			ScoreTotal:   scores[idx],
+			WindowScores: windows,
+		})
+	}
+	return dst
 }
 
 // evaluatePopulation spreads pop across len(adapters) workers. Each worker
 // owns one Adapter for the full pass; the engine calls Reset(plan) before
 // every Evaluate, satisfying the §5.6 isolation contract.
 //
-// Determinism: scores[i] is written only by the worker handling i; no
-// cross-index races. Worker-pickup order does not affect final scores
-// because Adapter.Evaluate is required to be a pure function of (gene,
-// plan) (§5.5).
+// Determinism: scores[i] / raws[i] are written only by the worker handling
+// i; no cross-index races. Worker-pickup order does not affect final
+// scores because Adapter.Evaluate is required to be a pure function of
+// (gene, plan) (§5.5).
+//
+// raws is returned alongside scores so the main goroutine can run the
+// §I-3.12 fatal-audit sampler in deterministic idx order. Each raws[i]
+// holds the per-gene cascade output (Windows + FrictionActual +
+// LongestWindowStats); the slice survives only until the next
+// evaluatePopulation call in RunEpoch.
 func (e *Engine) evaluatePopulation(
 	ctx context.Context,
 	plan *domain.EvaluablePlan,
 	pop []domain.Gene,
 	adapters []strategy.Adapter,
-) ([]resultpkg.ScoreTotal, error) {
+) ([]resultpkg.ScoreTotal, []*resultpkg.RawEvaluateResult, error) {
 	scores := make([]resultpkg.ScoreTotal, len(pop))
+	raws := make([]*resultpkg.RawEvaluateResult, len(pop))
 	weights := WindowWeights()
 
 	jobs := make(chan int, len(pop))
@@ -300,15 +381,16 @@ func (e *Engine) evaluatePopulation(
 					raw.Windows, weights, e.cfg.LambdaCons,
 					resultpkg.FitnessVersionV1RawStd,
 				)
+				raws[idx] = raw
 			}
 		}(adapter)
 	}
 	wg.Wait()
 	close(errCh)
 	if err := <-errCh; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return scores, nil
+	return scores, raws, nil
 }
 
 // produceNextGeneration builds the next population: deep-copied elites

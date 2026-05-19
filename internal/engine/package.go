@@ -63,6 +63,12 @@ type BuildContext struct {
 	// N ≥ MinTrialsForDSR, then marshals verification.DSRSummary
 	// here. Empty ⇒ Verification.DSRSummary stays unset.
 	DSRSummary json.RawMessage
+
+	// FatalAuditSamples is the §I-3.12 fatal-audit pick collected by
+	// RunEpoch. The caller plumbs EpochResult.FatalAuditSamples
+	// verbatim; BuildChallengerPackage writes it onto
+	// DiagnosticsLayer.FatalAuditSamples when non-empty.
+	FatalAuditSamples []resultpkg.AuditSampleSummary
 }
 
 // BuildChallengerPackage assembles the five-layer package for one
@@ -102,6 +108,9 @@ func BuildChallengerPackage(
 		verif.DSRSummary = bc.DSRSummary
 	}
 	diag := &resultpkg.DiagnosticsLayer{}
+	if len(bc.FatalAuditSamples) > 0 {
+		diag.FatalAuditSamples = bc.FatalAuditSamples
+	}
 
 	repro := resultpkg.ReproducibilityMetadata{
 		EpochSeed:          cfg.EpochSeed,
