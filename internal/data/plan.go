@@ -39,6 +39,7 @@ type PlanOptions struct {
 	Friction   domain.FrictionParams
 	LotStep    float64
 	LotMin     float64
+	FatalMDD   float64
 	DCA        fitness.GhostDCAConfig
 }
 
@@ -82,11 +83,12 @@ func BuildEvaluablePlan(bars []domain.Bar, opts PlanOptions) (*domain.EvaluableP
 	weekly := fitness.SimulateGhostDCAWeekly(opts.DCA, isBars, opts.Friction)
 
 	plan := &domain.EvaluablePlan{
-		Pair:    opts.Pair,
-		Spawn:   opts.Spawn,
-		LotStep: opts.LotStep,
-		LotMin:  opts.LotMin,
-		Windows: is,
+		Pair:     opts.Pair,
+		Spawn:    opts.Spawn,
+		LotStep:  opts.LotStep,
+		LotMin:   opts.LotMin,
+		FatalMDD: opts.FatalMDD,
+		Windows:  is,
 		DCABaselines: domain.DCABaselines{
 			Monthly: domain.DCABaseline{
 				FinalEquity:   monthly.FinalEquity,

@@ -127,21 +127,13 @@ func BuildChallengerPackage(
 		BarsHash:           bc.BarsHash,
 	}
 
-	// FatalMDD currently lives only on resultpkg.GAConfigSnapshot,
-	// not on EngineConfig — the engine hardcodes its own threshold
-	// in evaluate_window.go (sigmoid_v1's fatalMDDThreshold). Mirror
-	// that value here so the snapshot is consistent with what
-	// actually ran. [INVENTED v1] — the right fix is to add FatalMDD
-	// to EngineConfig and thread it through evaluate_window via plan.
-	const recordedFatalMDD = 0.5
-
 	ga := resultpkg.GAConfigSnapshot{
 		StrategyID:           strat.StrategyID(),
 		Pair:                 bc.Pair,
 		PopSize:              cfg.PopSize,
 		MaxGenerations:       cfg.MaxGenerations,
 		EliteRatio:           cfg.EliteRatio,
-		FatalMDD:             recordedFatalMDD,
+		FatalMDD:             plan.FatalMDD,
 		TakerFeeBPS:          plan.Friction.TakerFeeBPS,
 		SlippageBPS:          plan.Friction.SlippageBPS,
 		SpawnMode:            plan.Spawn.SpawnMode,

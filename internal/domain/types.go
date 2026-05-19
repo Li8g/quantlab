@@ -95,6 +95,7 @@ type EvaluablePlan struct {
 	Spawn          resultpkg.SpawnPointPayload `json:"spawn"`
 	LotStep        float64                     `json:"lot_step"`
 	LotMin         float64                     `json:"lot_min"`
+	FatalMDD       float64                     `json:"fatal_mdd"`
 	Windows        []CrucibleWindow            `json:"windows"`
 	DCABaselines   DCABaselines                `json:"dca_baselines"`
 	OosWindow      *CrucibleWindow             `json:"oos_window,omitempty"`

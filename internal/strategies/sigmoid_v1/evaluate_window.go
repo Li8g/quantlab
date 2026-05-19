@@ -44,21 +44,12 @@ const initialUSDT = 10_000.0
 // insufficient under sweep.
 const stepHistoryCap = MaxChromosomePeriod * 3
 
-// fatalMDDThreshold is the running drawdown that trips a window-
-// level Fatal. The spec-mandated threshold lives on
-// resultpkg.GAConfigSnapshot.FatalMDD (typical 0.5), but
-// domain.EvaluablePlan does not currently carry it down to Adapter.
-// Hardcode here as the prototype default; Phase 5+ engine refactor
-// should add FatalMDD to EvaluablePlan and remove this constant.
-// [INVENTED v1].
-const fatalMDDThreshold = 0.5
-
 // evaluateWindow runs strat.Step over every bar in window.Bars,
 // realises the emitted orders via applyStrategyOutput, and produces
 // a single CrucibleResult per the §5.1 SliceScore three-state
 // semantics:
 //
-//	Self-Fatal       — running drawdown ≥ fatalMDDThreshold
+//	Self-Fatal       — running drawdown ≥ fatalMDD (plan.FatalMDD)
 //	Normal           — final score = log(navFinal / navAtWarmupStart)
 //	(Cascade-skipped: not produced here; populated by the Adapter
 //	                  cascade in Phase 4d-adapter)
@@ -74,7 +65,7 @@ const fatalMDDThreshold = 0.5
 // discarded before applyStrategyOutput — the test §10
 // TestGapHandlingNoFakeTrades invariant ("never trade on a
 // synthesised bar").
-func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams) (resultpkg.CrucibleResult, *resultpkg.SharpeStats, error) {
+func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams, fatalMDD float64) (resultpkg.CrucibleResult, *resultpkg.SharpeStats, error) {
 	if len(window.Bars) == 0 {
 		return resultpkg.CrucibleResult{}, nil, fmt.Errorf("evaluateWindow: window %q has no bars", window.Name)
 	}
@@ -101,7 +92,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 		maxDD            float64
 		fatal            bool
 		fatalBarTS       int64
-		fatalMDD         float64
+		observedMDD      float64
 		barsScored       int
 		prevPreNav       float64
 	)
@@ -153,10 +144,10 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 				}
 				// First time we cross the Fatal line — record and break.
 				if !fatal {
-					if dd := (peak - preNav) / peak; dd >= fatalMDDThreshold {
+					if dd := (peak - preNav) / peak; dd >= fatalMDD {
 						fatal = true
 						fatalBarTS = bar.OpenTime
-						fatalMDD = dd
+						observedMDD = dd
 						break
 					}
 				}
@@ -195,13 +186,13 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	}
 
 	if fatal {
-		reason := fmt.Sprintf("drawdown_%.2f", fatalMDD)
+		reason := fmt.Sprintf("drawdown_%.2f", observedMDD)
 		return resultpkg.CrucibleResult{
 			Window:        window.Name,
 			Score:         resultpkg.SliceScore{Fatal: true, Value: nil},
 			FatalReason:   &reason,
 			FatalAtBarTS:  &fatalBarTS,
-			FatalMDDValue: &fatalMDD,
+			FatalMDDValue: &observedMDD,
 			BarsEvaluated: barsScored,
 		}, nil, nil
 	}

@@ -428,7 +428,7 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 			})
 			continue
 		}
-		res, stats, err := evaluateWindow(a.strat, gene, w, a.plan.Friction)
+		res, stats, err := evaluateWindow(a.strat, gene, w, a.plan.Friction, a.plan.FatalMDD)
 		if err != nil {
 			return nil, fmt.Errorf("sigmoid_v1: window %q: %w", name, err)
 		}

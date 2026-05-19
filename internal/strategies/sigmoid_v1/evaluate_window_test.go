@@ -15,6 +15,12 @@ import (
 // Chosen so monthly macro triggers fire on a manageable bar count.
 const barIntervalDays = int64(24) * 60 * 60 * 1000
 
+// testFatalMDD is the per-test FatalMDD threshold passed into
+// evaluateWindow. 0.5 matches the prototype default that previously
+// lived in evaluate_window.go before FatalMDD was promoted onto
+// EvaluablePlan.
+const testFatalMDD = 0.5
+
 // flatBars builds n consecutive 1d bars all at the same price,
 // starting at start. Each bar's OpenTime increments by 1 day.
 func flatBars(n int, price float64, start int64) []domain.Bar {
@@ -68,7 +74,7 @@ func TestEvaluateWindow_FlatPriceProducesNonFatalNearZeroScore(t *testing.T) {
 		WarmupLen: 20,
 		Bars:      bars,
 	}
-	res, stats, err := evaluateWindow(s, gene, w, domain.FrictionParams{})
+	res, stats, err := evaluateWindow(s, gene, w, domain.FrictionParams{}, testFatalMDD)
 	if err != nil {
 		t.Fatalf("evaluateWindow: %v", err)
 	}
@@ -123,7 +129,7 @@ func TestEvaluateWindow_FatalOnDeepDrawdown(t *testing.T) {
 		WarmupLen: 5,
 		Bars:      bars,
 	}
-	res, stats, err := evaluateWindow(s, gene, w, domain.FrictionParams{})
+	res, stats, err := evaluateWindow(s, gene, w, domain.FrictionParams{}, testFatalMDD)
 	if err != nil {
 		t.Fatalf("evaluateWindow: %v", err)
 	}
@@ -136,8 +142,8 @@ func TestEvaluateWindow_FatalOnDeepDrawdown(t *testing.T) {
 	if res.FatalReason == nil || res.FatalAtBarTS == nil || res.FatalMDDValue == nil {
 		t.Errorf("Fatal CrucibleResult missing diagnostics: %+v", res)
 	}
-	if res.FatalMDDValue != nil && *res.FatalMDDValue < fatalMDDThreshold {
-		t.Errorf("FatalMDDValue=%v, want >= %v", *res.FatalMDDValue, fatalMDDThreshold)
+	if res.FatalMDDValue != nil && *res.FatalMDDValue < testFatalMDD {
+		t.Errorf("FatalMDDValue=%v, want >= %v", *res.FatalMDDValue, testFatalMDD)
 	}
 	// Fatal short-circuits the loop, so BarsEvaluated < total scored.
 	if res.BarsEvaluated >= len(bars)-w.WarmupLen {
@@ -171,7 +177,7 @@ func TestEvaluateWindow_GapBarsProduceNoTrades(t *testing.T) {
 		WarmupLen: 5,
 		Bars:      bars,
 	}
-	res, _, err := evaluateWindow(s, stepTestGene(), w, domain.FrictionParams{})
+	res, _, err := evaluateWindow(s, stepTestGene(), w, domain.FrictionParams{}, testFatalMDD)
 	if err != nil {
 		t.Fatalf("evaluateWindow: %v", err)
 	}
@@ -198,11 +204,11 @@ func TestEvaluateWindow_Deterministic(t *testing.T) {
 	}
 	fp := domain.FrictionParams{TakerFeeBPS: 5, SlippageBPS: 2}
 
-	r1, s1, err := evaluateWindow(s, gene, w, fp)
+	r1, s1, err := evaluateWindow(s, gene, w, fp, testFatalMDD)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	r2, s2, err := evaluateWindow(s, gene, w, fp)
+	r2, s2, err := evaluateWindow(s, gene, w, fp, testFatalMDD)
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -228,7 +234,7 @@ func TestEvaluateWindow_LongSeriesRespectsHistoryCap(t *testing.T) {
 		Name: resultpkg.Window6M, WarmupLen: 100, Bars: bars,
 		StartTS: bars[0].OpenTime, EndTS: bars[len(bars)-1].OpenTime,
 	}
-	res, _, err := evaluateWindow(s, stepTestGene(), w, domain.FrictionParams{})
+	res, _, err := evaluateWindow(s, stepTestGene(), w, domain.FrictionParams{}, testFatalMDD)
 	if err != nil {
 		t.Fatalf("evaluateWindow on 2000-bar window: %v", err)
 	}
@@ -241,7 +247,7 @@ func TestEvaluateWindow_EmptyBarsErrors(t *testing.T) {
 	_, _, err := evaluateWindow(
 		windowTestSigmoid(), stepTestGene(),
 		domain.CrucibleWindow{Name: resultpkg.Window6M, Bars: nil},
-		domain.FrictionParams{},
+		domain.FrictionParams{}, testFatalMDD,
 	)
 	if err == nil {
 		t.Error("empty bars: want error, got nil")
@@ -255,7 +261,7 @@ func TestEvaluateWindow_WarmupGEQLenErrors(t *testing.T) {
 		domain.CrucibleWindow{
 			Name: resultpkg.Window6M, Bars: bars, WarmupLen: 10,
 		},
-		domain.FrictionParams{},
+		domain.FrictionParams{}, testFatalMDD,
 	)
 	if err == nil {
 		t.Error("WarmupLen >= len(Bars): want error, got nil")
@@ -273,7 +279,7 @@ func TestEvaluateWindow_PropagatesStepError(t *testing.T) {
 		Name: resultpkg.Window6M, WarmupLen: 5, Bars: bars,
 		StartTS: bars[0].OpenTime, EndTS: bars[len(bars)-1].OpenTime,
 	}
-	_, _, err := evaluateWindow(windowTestSigmoid(), short, w, domain.FrictionParams{})
+	_, _, err := evaluateWindow(windowTestSigmoid(), short, w, domain.FrictionParams{}, testFatalMDD)
 	if err == nil {
 		t.Error("wrong-dim chromosome: want propagated error, got nil")
 	}

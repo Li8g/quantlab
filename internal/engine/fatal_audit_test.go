@@ -210,7 +210,7 @@ func TestFatalAudit_BuildContextPropagatesToDiagnostics(t *testing.T) {
 		FrictionActual: resultpkg.FrictionActual{},
 	}
 	st := resultpkg.ScoreTotal{Value: &score}
-	plan := &domain.EvaluablePlan{Friction: domain.FrictionParams{}}
+	plan := &domain.EvaluablePlan{FatalMDD: 0.5, Friction: domain.FrictionParams{}}
 
 	samples := []resultpkg.AuditSampleSummary{{
 		SampleID:   "g0.test-fp",

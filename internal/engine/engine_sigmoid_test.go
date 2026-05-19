@@ -55,10 +55,11 @@ func sigmoidPlanBullish() *domain.EvaluablePlan {
 		}
 	}
 	return &domain.EvaluablePlan{
-		Pair:    "BTCUSDT",
-		Spawn:   resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
-		LotStep: 0.0001,
-		LotMin:  0.001,
+		Pair:     "BTCUSDT",
+		Spawn:    resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
+		LotStep:  0.0001,
+		LotMin:   0.001,
+		FatalMDD: 0.5,
 		Windows: []domain.CrucibleWindow{
 			mkWindow(resultpkg.Window6M),
 			mkWindow(resultpkg.Window2Y),

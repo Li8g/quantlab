@@ -251,6 +251,7 @@ func (s *Service) executeEpoch(
 		Friction:   effective,
 		LotStep:    s.defaults.LotStep,
 		LotMin:     s.defaults.LotMin,
+		FatalMDD:   req.FatalMDD,
 		DCA:        s.defaults.DCA,
 	}
 	plan, planHash, barsHash, err := data.BuildEvaluablePlan(bars, planOpts)

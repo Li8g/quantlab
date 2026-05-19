@@ -148,7 +148,10 @@ func cleanRows(t *testing.T, db *gorm.DB) {
 }
 
 // postTask issues a CreateEvolutionTask request and returns the task_id.
-func postTask(t *testing.T, server *httptest.Server, pair string) string {
+// fatalMDD is exposed so callers can assert the request value flows
+// all the way into GAConfigSnapshot.FatalMDD on the persisted package
+// (regression for the silently-discarded fatal_mdd bug).
+func postTask(t *testing.T, server *httptest.Server, pair string, fatalMDD float64) string {
 	t.Helper()
 	body := map[string]interface{}{
 		"strategy_id":     "sigmoid_v1",
@@ -157,7 +160,7 @@ func postTask(t *testing.T, server *httptest.Server, pair string) string {
 		"pop_size":        4,
 		"max_generations": 2,
 		"elite_ratio":     0.25,
-		"fatal_mdd":       0.5,
+		"fatal_mdd":       fatalMDD,
 		"taker_fee_bps":   5,
 		"slippage_bps":    2,
 		"spawn_mode":      string(resultpkg.SpawnModeRandomOnce),
@@ -218,7 +221,7 @@ func pollUntilTerminal(t *testing.T, server *httptest.Server, taskID string) api
 // "no crucible window fits" message verbatim so a user can act on it.
 func TestE2E_InsufficientBarsFailsFast(t *testing.T) {
 	server, _ := setupE2E(t)
-	taskID := postTask(t, server, testSymbolShort)
+	taskID := postTask(t, server, testSymbolShort, 0.5)
 	status := pollUntilTerminal(t, server, taskID)
 
 	if status.Status != resultpkg.TaskStatusFailed {
@@ -243,7 +246,12 @@ func TestE2E_InsufficientBarsFailsFast(t *testing.T) {
 // the CLAUDE.md key invariant "test_mode results cannot be Promoted."
 func TestE2E_SufficientBarsCompletesAndPromoteRejectsTestMode(t *testing.T) {
 	server, _ := setupE2E(t)
-	taskID := postTask(t, server, testSymbolOK)
+	// Use a non-default fatal_mdd so the test catches the silent-discard
+	// regression: the value must surface in core.ga_config.fatal_mdd
+	// after the round-trip through PlanOptions → plan.FatalMDD →
+	// GAConfigSnapshot.FatalMDD.
+	const requestedFatalMDD = 0.42
+	taskID := postTask(t, server, testSymbolOK, requestedFatalMDD)
 	status := pollUntilTerminal(t, server, taskID)
 
 	if status.Status != resultpkg.TaskStatusSucceeded {
@@ -279,6 +287,9 @@ func TestE2E_SufficientBarsCompletesAndPromoteRejectsTestMode(t *testing.T) {
 	pkgBlob := fetchRaw(t, server, "/api/v1/challengers/"+chID+"/package")
 	var pkg struct {
 		Core struct {
+			GAConfig struct {
+				FatalMDD float64 `json:"fatal_mdd"`
+			} `json:"ga_config"`
 			ReproducibilityMetadata struct {
 				BuildID   string `json:"build_id"`
 				PlanHash  string `json:"plan_hash"`
@@ -289,6 +300,10 @@ func TestE2E_SufficientBarsCompletesAndPromoteRejectsTestMode(t *testing.T) {
 	}
 	if err := json.Unmarshal(pkgBlob, &pkg); err != nil {
 		t.Fatalf("unmarshal package: %v", err)
+	}
+	if pkg.Core.GAConfig.FatalMDD != requestedFatalMDD {
+		t.Errorf("ga_config.fatal_mdd = %v, want %v — the request value must round-trip end-to-end",
+			pkg.Core.GAConfig.FatalMDD, requestedFatalMDD)
 	}
 	if pkg.Core.ReproducibilityMetadata.BuildID != "test" {
 		t.Errorf("BuildID stamp lost: got %q, want test",

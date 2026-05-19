@@ -120,6 +120,7 @@ func TestBuildChallengerPackage_PopulatesCore(t *testing.T) {
 	plan := &domain.EvaluablePlan{
 		Pair:     "BTCUSDT",
 		Spawn:    resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
+		FatalMDD: 0.5,
 		Friction: domain.FrictionParams{TakerFeeBPS: 5, SlippageBPS: 2},
 	}
 	bc := BuildContext{
@@ -190,7 +191,7 @@ func TestBuildChallengerPackage_TestModeFlagsThroughGAConfig(t *testing.T) {
 	}
 	st := resultpkg.ScoreTotal{Value: &score}
 
-	plan := &domain.EvaluablePlan{Friction: domain.FrictionParams{}}
+	plan := &domain.EvaluablePlan{FatalMDD: 0.5, Friction: domain.FrictionParams{}}
 	bc := BuildContext{TestMode: true, Pair: "BTCUSDT"}
 
 	pkg, err := BuildChallengerPackage(
@@ -218,7 +219,7 @@ func TestBuildChallengerPackage_DSRSummaryPropagates(t *testing.T) {
 		FrictionActual: resultpkg.FrictionActual{},
 	}
 	st := resultpkg.ScoreTotal{Value: &score}
-	plan := &domain.EvaluablePlan{Friction: domain.FrictionParams{}}
+	plan := &domain.EvaluablePlan{FatalMDD: 0.5, Friction: domain.FrictionParams{}}
 
 	payload := json.RawMessage(`{"dsr":0.73,"observed_sharpe":0.42}`)
 	bc := BuildContext{Pair: "BTCUSDT", DSRSummary: payload}
