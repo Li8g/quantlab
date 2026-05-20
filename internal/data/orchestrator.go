@@ -10,7 +10,7 @@
 //   - Bulk insert uses GORM CreateInBatches with ON CONFLICT DO NOTHING.
 //     Adequate for prototype-scale ranges (a few months at 1m); the full
 //     9-year backfill (~4.7M rows) would want pgx.CopyFrom for the 50-100×
-//     throughput gain phase plan §四 recommends. Marked [INVENTED v1].
+//     throughput gain phase plan §四 recommends.
 //   - Idempotent: re-running ImportSymbol on an already-covered range is a
 //     no-op for inserts (PK conflict → skip) and a refresh-in-place for
 //     gap rows (existing gap rows in range are deleted and rewritten).

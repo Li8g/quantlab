@@ -77,11 +77,13 @@ type FrictionParams struct {
 }
 
 // AggregateCache is a pure-memory in-process performance cache.
-// It is excluded from plan_hash via json:"-".
+// It is excluded from plan_hash via json:"-" (regression-pinned by
+// TestPlanHashExcludesAggregateCache in internal/quant).
 // Workers may retain it across Adapter.Reset; strategy must not persist it
 // beyond Adapter.Close.
 //
-// [INVENTED v1 — exact cache entries TBD when fitness package is implemented]
+// Intentionally empty: the fitness package landed without needing any
+// memoization. Add fields here when a real reuse opportunity appears.
 type AggregateCache struct{}
 
 // EvaluablePlan is the per-Epoch read-only evaluation context. It is
