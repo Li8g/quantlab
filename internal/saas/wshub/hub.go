@@ -14,6 +14,7 @@ import (
 	"quantlab/internal/saas/store"
 	"quantlab/internal/strategy"
 	"quantlab/internal/wire"
+	"quantlab/internal/wsconn"
 )
 
 // Defaults from docs/saas-ws-protocol-v1.md §4.4 + §4.2.
@@ -141,13 +142,13 @@ func (h *Hub) nowMs() int64   { return h.nowFn().UnixMilli() }
 // the connection closes — gin compatible (a *gin.Context calls
 // HandlerFunc(c.Writer, c.Request)).
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
-	c, err := defaultUpgrader.Upgrade(w, r, nil)
+	c, err := wsconn.ServerUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrader has already written the HTTP error.
 		h.log.Warn("ws_upgrade_failed", "err", err, "remote", r.RemoteAddr)
 		return
 	}
-	conn := newGorillaConn(c)
+	conn := wsconn.NewGorillaConn(c)
 	h.runConn(r.Context(), conn)
 }
 

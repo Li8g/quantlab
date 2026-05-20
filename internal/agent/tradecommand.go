@@ -1,0 +1,229 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/shopspring/decimal"
+
+	"quantlab/internal/wire"
+	"quantlab/internal/wsconn"
+)
+
+// handleTradeCommand is the heart of the Agent: take an incoming trade
+// command, dedupe by client_order_id, submit to the exchange, ack, and
+// fire OrderUpdate for fills.
+func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env wire.Envelope) {
+	tc, err := wire.DecodePayload[wire.TradeCommand](env)
+	if err != nil {
+		c.sendError(ctx, conn, wire.ErrorCodeDecodeFailed, err.Error(), env.MsgID)
+		return
+	}
+
+	// Expiry check (§5.8): if valid_until_ms has passed (per Agent wall
+	// clock OR per SaaS's NowMsAtSaaS, whichever is later), reject with
+	// status=expired without submitting.
+	clk := c.nowMs()
+	saasClk := tc.NowMsAtSaaS
+	wallClk := clk
+	if saasClk > wallClk {
+		wallClk = saasClk
+	}
+	if tc.ValidUntilMs > 0 && wallClk > tc.ValidUntilMs {
+		c.sendAck(ctx, conn, wire.Ack{
+			ClientOrderID: tc.ClientOrderID,
+			Status:        wire.AckStatusExpired,
+			ExchangeNowMs: clk,
+			RejectReason:  "valid_until_ms passed before submit",
+		})
+		return
+	}
+
+	// Idempotency check (§2.5): same client_order_id already seen?
+	if existing, ok, _ := c.idempotency.Get(tc.ClientOrderID); ok {
+		c.sendAck(ctx, conn, c.duplicateAck(existing, clk))
+		return
+	}
+
+	// Parse decimal quantities.
+	qty, err := decimal.NewFromString(tc.QuantityDecimal)
+	if err != nil || qty.IsZero() {
+		c.sendAck(ctx, conn, wire.Ack{
+			ClientOrderID: tc.ClientOrderID,
+			Status:        wire.AckStatusRejected,
+			ExchangeNowMs: clk,
+			RejectReason:  "invalid quantity_decimal",
+		})
+		return
+	}
+	limit := decimal.Zero
+	if tc.OrderType == "limit" {
+		if tc.LimitPriceDecimal == "" {
+			c.sendAck(ctx, conn, wire.Ack{
+				ClientOrderID: tc.ClientOrderID,
+				Status:        wire.AckStatusRejected,
+				ExchangeNowMs: clk,
+				RejectReason:  "limit order missing limit_price_decimal",
+			})
+			return
+		}
+		limit, err = decimal.NewFromString(tc.LimitPriceDecimal)
+		if err != nil {
+			c.sendAck(ctx, conn, wire.Ack{
+				ClientOrderID: tc.ClientOrderID,
+				Status:        wire.AckStatusRejected,
+				ExchangeNowMs: clk,
+				RejectReason:  "invalid limit_price_decimal",
+			})
+			return
+		}
+	}
+
+	// Pre-record so a crash mid-submit doesn't double-execute on
+	// retry: the next attempt will find an existing pending record
+	// and report duplicate_pending.
+	preRec := IdempotencyRecord{
+		ClientOrderID: tc.ClientOrderID,
+		Status:        IdempotencyStatusPending,
+		SubmittedAtMs: clk,
+		LastUpdatedMs: clk,
+	}
+	if err := c.idempotency.Put(preRec); err != nil {
+		c.sendError(ctx, conn, wire.ErrorCodeInternalError, err.Error(), env.MsgID)
+		return
+	}
+
+	// Submit to exchange.
+	res, err := c.exchange.Submit(ctx, ExchangeOrder{
+		ClientOrderID: tc.ClientOrderID,
+		Symbol:        tc.Symbol,
+		Side:          tc.Side,
+		OrderType:     tc.OrderType,
+		Quantity:      qty,
+		LimitPrice:    limit,
+	})
+	if err != nil {
+		_ = c.idempotency.UpdateStatus(tc.ClientOrderID, IdempotencyStatusRejected, "", c.nowMs())
+		c.sendAck(ctx, conn, wire.Ack{
+			ClientOrderID: tc.ClientOrderID,
+			Status:        wire.AckStatusRejected,
+			ExchangeNowMs: c.nowMs(),
+			RejectReason:  errors.Unwrap(err).Error(),
+		})
+		return
+	}
+
+	// Determine the slippage reference: market → res.MarketRef from
+	// exchange; limit → original LimitPrice.
+	ref := res.MarketRef
+	if tc.OrderType == "limit" {
+		ref = limit
+	}
+
+	// Update idempotency to accepted, with exchange_order_id.
+	rec := IdempotencyRecord{
+		ClientOrderID:   tc.ClientOrderID,
+		ExchangeOrderID: res.ExchangeOrderID,
+		Status:          IdempotencyStatusAccepted,
+		MarketRef:       ref,
+		SubmittedAtMs:   preRec.SubmittedAtMs,
+		LastUpdatedMs:   res.AcceptedAtMs,
+	}
+
+	// Send Ack first.
+	c.sendAck(ctx, conn, wire.Ack{
+		ClientOrderID:   tc.ClientOrderID,
+		Status:          wire.AckStatusAccepted,
+		ExchangeOrderID: res.ExchangeOrderID,
+		ExchangeNowMs:   res.AcceptedAtMs,
+	})
+
+	// Mock fills immediately; surface OrderUpdate with fills. Bump
+	// status to filled if the cumulative quantity matches the order.
+	if len(res.Fills) > 0 {
+		ou := wire.OrderUpdate{
+			ClientOrderID:   tc.ClientOrderID,
+			ExchangeOrderID: res.ExchangeOrderID,
+			Status:          wire.OrderStatusFilled,
+			Fills:           make([]wire.Fill, 0, len(res.Fills)),
+		}
+		cum := decimal.Zero
+		for _, f := range res.Fills {
+			cum = cum.Add(f.FillQuantity)
+			slippageBps := computeSlippageBps(tc.Side, ref, f.FillPrice)
+			ou.Fills = append(ou.Fills, wire.Fill{
+				FillQuantityDecimal:  formatDecimal(f.FillQuantity),
+				FillPriceDecimal:     formatDecimal(f.FillPrice),
+				FillFeeAsset:         f.FillFeeAsset,
+				FillFeeAmountDecimal: formatDecimal(f.FillFeeAmount),
+				FilledAtExchangeMs:   f.FilledAtExchangeMs,
+				ActualSlippageBps:    slippageBps,
+			})
+		}
+		ou.CumulativeFilledQuantityDecimal = formatDecimal(cum)
+
+		// Set final status: filled if cum >= ordered qty; otherwise partial.
+		if cum.GreaterThanOrEqual(qty) {
+			ou.Status = wire.OrderStatusFilled
+			rec.Status = IdempotencyStatusFilled
+		} else {
+			ou.Status = wire.OrderStatusPartialFilled
+		}
+		_ = c.sendTyped(ctx, conn, wire.TypeOrderUpdate, ou)
+	}
+
+	rec.LastUpdatedMs = c.nowMs()
+	_ = c.idempotency.Put(rec)
+}
+
+// duplicateAck builds the Ack for a repeated client_order_id.
+func (c *Client) duplicateAck(existing IdempotencyRecord, nowMs int64) wire.Ack {
+	if existing.IsTerminal() {
+		return wire.Ack{
+			ClientOrderID:   existing.ClientOrderID,
+			Status:          wire.AckStatusDuplicateTerminal,
+			ExchangeOrderID: existing.ExchangeOrderID,
+			ExchangeNowMs:   nowMs,
+			RejectReason:    fmt.Sprintf("already %s", existing.Status),
+		}
+	}
+	return wire.Ack{
+		ClientOrderID:   existing.ClientOrderID,
+		Status:          wire.AckStatusDuplicatePending,
+		ExchangeOrderID: existing.ExchangeOrderID,
+		ExchangeNowMs:   nowMs,
+	}
+}
+
+// sendAck wraps sendTyped for the Ack case (most common write path).
+func (c *Client) sendAck(ctx context.Context, conn wsconn.Conn, ack wire.Ack) {
+	_ = c.sendTyped(ctx, conn, wire.TypeAck, ack)
+}
+
+// computeSlippageBps follows §8.2:
+//
+//   - market buy: (fill - ref) / ref × 10000   (positive = worse)
+//   - market sell: (ref - fill) / ref × 10000
+//   - limit (either side): same as market with limit_price as ref
+//
+// Sign convention: positive ⇒ worse than reference for the Agent's
+// side. Returns float64 because bps is already a derived (lossy)
+// quantity per §2.2.
+func computeSlippageBps(side string, ref, fill decimal.Decimal) float64 {
+	if ref.IsZero() {
+		return 0
+	}
+	var diff decimal.Decimal
+	switch side {
+	case "buy":
+		diff = fill.Sub(ref)
+	case "sell":
+		diff = ref.Sub(fill)
+	default:
+		return 0
+	}
+	bps := diff.Div(ref).Mul(decimal.NewFromInt(10000))
+	f, _ := bps.Float64()
+	return f
+}
