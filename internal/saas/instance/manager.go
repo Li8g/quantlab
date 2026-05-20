@@ -71,20 +71,21 @@ type ChampionGeneLoader interface {
 }
 
 // TradeCommandDispatcher delivers macro/micro OrderIntents to the
-// downstream channel that ultimately reaches the LocalAgent. Phase 6.1
-// ships an interface so Phase 8 (WS Hub) can plug a real impl without
-// touching Manager.
+// downstream channel that ultimately reaches the LocalAgent. The
+// implementation (wshub.Hub in production, LogDispatcher in dev) converts
+// each OrderIntent to a wire.TradeCommand using latestClose to render
+// quantity_decimal (saas-ws-protocol-v1.md §5.8).
 type TradeCommandDispatcher interface {
-	Dispatch(ctx context.Context, instanceID, accountID string, orders []strategy.OrderIntent) error
+	Dispatch(ctx context.Context, instanceID, accountID string, latestClose float64, orders []strategy.OrderIntent) error
 }
 
 // LogDispatcher is the zero-config TradeCommandDispatcher: it slog.Info's
-// each command. Useful while Phase 8 is unbuilt and for tests.
+// each command. Useful while Phase 7/8 wiring is incomplete and for tests.
 type LogDispatcher struct {
 	Logger *slog.Logger
 }
 
-func (d *LogDispatcher) Dispatch(_ context.Context, instanceID, accountID string, orders []strategy.OrderIntent) error {
+func (d *LogDispatcher) Dispatch(_ context.Context, instanceID, accountID string, latestClose float64, orders []strategy.OrderIntent) error {
 	log := d.Logger
 	if log == nil {
 		log = slog.Default()
@@ -93,6 +94,7 @@ func (d *LogDispatcher) Dispatch(_ context.Context, instanceID, accountID string
 		log.Info("trade_command_dispatch",
 			"instance_id", instanceID,
 			"account_id", accountID,
+			"latest_close", latestClose,
 			"kind", string(o.Kind),
 			"side", string(o.Side),
 			"type", string(o.OrderType),
@@ -326,12 +328,18 @@ func (m *Manager) Tick(ctx context.Context, inst store.StrategyInstance) error {
 
 	// Step 9: dispatch OrderIntents. Macro + micro share the same wire
 	// type; the consumer (Agent) reads Kind to route. Empty slices skip
-	// the dispatcher entirely.
+	// the dispatcher entirely. latestClose lets the dispatcher convert
+	// QuantityUSD (engine-side float) into quantity_decimal (wire-side
+	// asset-unit string) per saas-ws-protocol-v1.md §5.8.
 	orders := make([]strategy.OrderIntent, 0, len(output.MacroOrders)+len(output.MicroOrders))
 	orders = append(orders, output.MacroOrders...)
 	orders = append(orders, output.MicroOrders...)
 	if len(orders) > 0 {
-		if err := m.dispatcher.Dispatch(ctx, inst.InstanceID, inst.AccountID, orders); err != nil {
+		latestClose := 0.0
+		if n := len(closes); n > 0 {
+			latestClose = closes[n-1]
+		}
+		if err := m.dispatcher.Dispatch(ctx, inst.InstanceID, inst.AccountID, latestClose, orders); err != nil {
 			return fmt.Errorf("tick: dispatch orders: %w", err)
 		}
 	}
