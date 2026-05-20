@@ -24,8 +24,6 @@ import (
 	"quantlab/internal/verification"
 )
 
-// ===== [INVENTED v1] window-loop constants =====
-
 // initialUSDT is the cold-start cash position per CrucibleWindow.
 // [INVENTED v1] — neither EvaluablePlan nor EvolutionTask currently
 // carry an "initial capital" field; bake $10,000 here and revisit
@@ -40,8 +38,6 @@ const initialUSDT = 10_000.0
 //
 // Without this cap, ComputeSignal's quant.EMA call is O(n) per bar
 // and the loop is O(n²) — 260k 1m bars × 260k = 70B ops per gene.
-// [INVENTED v1] — bump to 5× period if convergence proves
-// insufficient under sweep.
 const stepHistoryCap = MaxChromosomePeriod * 3
 
 // evaluateWindow runs strat.Step over every bar in window.Bars,

@@ -45,7 +45,7 @@ const (
 // §8.2 MinEvalBars guarantees real data), return (Quiet, 1.0). "No
 // long-window movement" is the natural definition of quiet, and the
 // 1.0 ratio makes volRatioCentred = 0 so the signal stays neutral.
-// [INVENTED v1] — spec doesn't cover this corner.
+// (The spec doesn't cover this degenerate corner.)
 func ComputeMarketState(closes []float64, mavShortPeriod, mavLongPeriod int, quietThreshold float64) (MarketState, float64) {
 	mavShort := quant.MAVAbsChangeWindow(closes, mavShortPeriod)
 	mavLong := quant.MAVAbsChangeWindow(closes, mavLongPeriod)

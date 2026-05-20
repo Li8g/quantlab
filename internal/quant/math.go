@@ -51,10 +51,9 @@ func StdDev(series []float64) float64 {
 // MAVAbsChange returns the mean of |x[i] - x[i-1]| over the whole series.
 // Returns 0 for len(series) < 2.
 //
-// [INVENTED v1] The framework doc names this primitive without specifying a
-// window. This implementation is the simplest interpretation (no window).
-// If a caller needs a rolling window, add a sibling function rather than
-// reworking this signature.
+// The framework doc names this primitive without specifying a window.
+// This is the simplest interpretation (no window); callers that need a
+// rolling window use MAVAbsChangeWindow.
 func MAVAbsChange(series []float64) float64 {
 	n := len(series)
 	if n < 2 {
@@ -110,9 +109,9 @@ func ClipFloat64(x, lo, hi float64) float64 {
 // for USDT quote amounts on most pairs. Using math.Round (banker's rounding
 // would diverge across platforms) for deterministic results.
 //
-// [INVENTED v1] Precision picked from Binance trading rules; if a strategy
-// needs a different rounding step (e.g. pair-specific tickSize), introduce
-// a separate helper rather than reparameterizing this one.
+// If a strategy needs a different rounding step (e.g. pair-specific
+// tickSize), introduce a separate helper rather than reparameterizing
+// this one.
 func RoundToUSDT(x float64) float64 {
 	const scale = 1e8
 	return math.Round(x*scale) / scale

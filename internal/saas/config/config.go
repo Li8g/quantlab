@@ -110,8 +110,7 @@ type GAConfig struct {
 	SbbBlockLenFallback  int     `yaml:"sbb_block_len_fallback"`
 }
 
-// DataFeedConfig is the datafeeder defaults. [INVENTED v1] — feeder
-// settings will firm up during Phase 1.5.
+// DataFeedConfig is the datafeeder defaults.
 type DataFeedConfig struct {
 	BinanceArchiveBaseURL string        `yaml:"binance_archive_base_url"`
 	BinanceAPIBaseURL     string        `yaml:"binance_api_base_url"`

@@ -30,7 +30,7 @@ const DayMs = int64(86_400_000)
 //
 // Resolution of the source-doc ambiguity around the 10y window
 // (§4.2 says Span = "全量最长序列"; §4.3 says "评估区间前可预留最多 1200 天
-// warmup"): [INVENTED v1]
+// warmup"):
 //
 //	6m / 2y / 5y → eval = last N days of IS; warmup ≤ warmupDays before.
 //	10y          → eval = entire IS minus warmup (i.e. evalDays =

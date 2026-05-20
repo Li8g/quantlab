@@ -98,10 +98,9 @@ type EvolvableStrategy interface {
 	//   - Initializing promote.DecisionStatus = DecisionStatusPending.
 	// Everything else is taken verbatim from the engine inputs.
 	//
-	// [INVENTED v1 — phase plan suggested a narrower 5-arg form but it
-	// omits ReproducibilityMetadata and GAConfigSnapshot, both of which
-	// the strategy needs to populate core. Expanded here; revisit when
-	// fitness/EncodeResult tests land in Phase 5B.]
+	// The phase plan suggested a narrower 5-arg form but it omits
+	// ReproducibilityMetadata and GAConfigSnapshot, both of which the
+	// strategy needs to populate core. Expanded here.
 	EncodeResult(
 		gene domain.Gene,
 		spawn resultpkg.SpawnPointPayload,

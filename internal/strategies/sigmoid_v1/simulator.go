@@ -83,9 +83,9 @@ func applyMicroBuy(p strategy.PortfolioSnapshot, order strategy.OrderIntent, pri
 // applyMicroSell converts FloatBTC into USDT. `order.QuantityUSD` is
 // the THEORETICAL notional Step() wants to sell; we map it to a BTC
 // quantity via the close-of-bar price, then cap at FloatBTC available.
-// Skip when FloatBTC is zero. [INVENTED v1] capping vs skipping:
-// partial fill (cap) is more graceful for a strategy that targets a
-// fraction of equity.
+// Skip when FloatBTC is zero. Capping (partial fill) vs skipping: the
+// former is more graceful for a strategy that targets a fraction of
+// equity.
 func applyMicroSell(p strategy.PortfolioSnapshot, order strategy.OrderIntent, price float64, fp domain.FrictionParams) (strategy.PortfolioSnapshot, bool) {
 	if order.Kind != strategy.OrderKindMicro || order.Side != strategy.OrderSideSell {
 		return p, false

@@ -20,22 +20,13 @@ import (
 	"quantlab/internal/strategy"
 )
 
-// ===== [INVENTED v1] wedge filter + order-form constants =====
-//
-// The upstream §5.5 contract names these thresholds but does not pin
-// numerical values. Values below are the prototype defaults; each
-// freezes when the first GA sweep lands. Tunable: bump any threshold
-// here without touching Step() body — no callers depend on the values
-// outside this file.
-
 // minMicroOrderUSD is the §5.5 "粉尘最小阈值". Orders with
 // |theoreticalUSD| below this magnitude are normally dropped (treated
 // as dust); §5.5 allows a wedge-break to force a minimum-sized order
 // through in active state.
 //
 // 5.0 mirrors Binance's typical BTC/USDT spot minimum NOTIONAL — going
-// lower would be unfillable on the real venue. [INVENTED v1] — bump
-// post-GA-sweep if too many orders dust out.
+// lower would be unfillable on the real venue.
 const minMicroOrderUSD = 5.0
 
 // Wedge-break thresholds. Either condition forces a dust-amount order
@@ -49,8 +40,7 @@ const minMicroOrderUSD = 5.0
 //     i.e. genuinely active — passing dust orders here is preferable
 //     to silent inaction during a real move.
 //
-// Both numbers are [INVENTED v1]. They can independently drift without
-// breaking each other.
+// The two numbers can independently drift without breaking each other.
 const (
 	wedgeDeltaWeightThreshold = 0.005
 	wedgeVolRatioThreshold    = 2.5
@@ -67,7 +57,6 @@ const orderTTLMs = int64(60_000)
 // v1 leaves it at zero; the chromosome's micro_reserve_pct alone
 // drives the reserve. Splitting the floor out as a named constant
 // makes the §1.1 formula readable and easy to bump later.
-// [INVENTED v1].
 const minReserveUSDT = 0.0
 
 // Step is the per-tick pure-function orchestrator. It composes the

@@ -15,9 +15,9 @@
 // or CONFIG_PATH env var). Database credentials and the binance archive
 // base URL come from there.
 //
-// [INVENTED v1] Subcommand parsing uses the stdlib flag package with one
-// FlagSet per subcommand — simple, no third-party CLI deps. If we ever
-// need rich features (subcommand help, completion), swap to cobra.
+// Subcommand parsing uses the stdlib flag package with one FlagSet per
+// subcommand — simple, no third-party CLI deps. If we ever need rich
+// features (subcommand help, completion), swap to cobra.
 package main
 
 import (
