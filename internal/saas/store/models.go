@@ -389,6 +389,27 @@ type SpotExecution struct {
 	ActualSlippageBPS  float64                                            `json:"actual_slippage_bps"` // Agent-computed
 }
 
+// -------- F. AgentToken (added 2026-05-20 for Phase 7 Step 2) --------
+//
+// Bearer-token persistence for Agent ↔ SaaS WS authentication, per
+// docs/saas-ws-protocol-v1.md §4.3. One row per provisioned Agent.
+// AgentID is embedded in the token prefix (agt_<AgentID>_<secret>) so
+// Verify can target a single row without a full-table bcrypt scan.
+//
+// TokenHash is bcrypt(secret_only), NOT bcrypt(full_token) — the agent_id
+// portion is non-secret routing metadata.
+type AgentToken struct {
+	ID         uint       `gorm:"primaryKey"                       json:"id"`
+	CreatedAt  time.Time  `gorm:"index"                            json:"created_at"`
+	UpdatedAt  time.Time                                            `json:"updated_at"`
+	AgentID    string     `gorm:"type:varchar(32);uniqueIndex"     json:"agent_id"`     // ULID
+	AccountID  string     `gorm:"type:varchar(32);index;not null"  json:"account_id"`   // ULID
+	TokenHash  string     `gorm:"type:varchar(60);not null"        json:"-"`            // bcrypt(secret) cost=12
+	Label      string     `gorm:"type:varchar(64)"                 json:"label,omitempty"`
+	LastSeenAt *time.Time                                            `json:"last_seen_at,omitempty"`
+	RevokedAt  *time.Time `gorm:"index"                            json:"revoked_at,omitempty"`
+}
+
 // -------- E. AuditLog --------
 
 type AuditAction string
@@ -460,5 +481,7 @@ func AllModels() []interface{} {
 		&TradeRecord{},
 		&SpotExecution{},
 		&AuditLog{},
+		// Phase 7 Step 2 — Agent WS bearer-token table (saas-ws-protocol-v1.md §4.3)
+		&AgentToken{},
 	}
 }
