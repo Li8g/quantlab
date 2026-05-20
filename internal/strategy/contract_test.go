@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-// TestOrderIntentRoundTrip verifies the [INVENTED v1] OrderIntent draft
-// survives JSON marshal/unmarshal so it can flow Step → SaaS → Agent.
+// TestOrderIntentRoundTrip verifies OrderIntent survives JSON marshal /
+// unmarshal so the dispatcher can hand it to wire.TradeCommand on the
+// Step → SaaS → Agent path (docs/saas-ws-protocol-v1.md §5.8).
 func TestOrderIntentRoundTrip(t *testing.T) {
 	in := OrderIntent{
 		Kind:          OrderKindMicro,

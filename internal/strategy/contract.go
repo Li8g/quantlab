@@ -45,12 +45,9 @@ const (
 )
 
 // OrderIntent is the strategy-side order proposal emitted by Step().
-//
-// [INVENTED v1 — needs architect review before Phase 7 LocalAgent.]
-// The current draft mirrors docs/策略数学引擎.md §8.3; this struct must be
-// aligned with the Agent-side TradeCommand once that contract is frozen.
-// Adding/removing fields here is a breaking change for both the strategy
-// layer and the agent protocol.
+// The SaaS dispatcher converts each OrderIntent into a wire.TradeCommand
+// (docs/saas-ws-protocol-v1.md §5.8 + appendix B): QuantityUSD is divided
+// by the latest close price to produce quantity_decimal in asset units.
 type OrderIntent struct {
 	Kind          OrderKind `json:"kind"`
 	Side          OrderSide `json:"side"`

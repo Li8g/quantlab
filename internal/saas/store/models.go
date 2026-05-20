@@ -6,9 +6,8 @@
 //   - Tier 2 (live-trading state, frozen per docs/saas-tier2-schema-v1.md
 //     2026-05-20): User, StrategyTemplate, StrategyInstance,
 //     PortfolioState, RuntimeState, AuditLog. SpotLot, TradeRecord,
-//     SpotExecution carry the v1 design but field details may shift
-//     when Phase 7 OrderIntent / TradeCommand protocol freezes —
-//     marked [INVENTED v1 — sync with TradeCommand v1].
+//     SpotExecution Group-D fields align with docs/saas-ws-protocol-v1.md
+//     §5.8/§5.9/§5.10 (TradeCommand / Ack / OrderUpdate; frozen 2026-05-20).
 //
 // Tier 1 uses gorm.Model (uint PK + soft-delete) where applicable.
 // Tier 2 uses explicit ID + CreatedAt (+ UpdatedAt where applicable)
@@ -311,10 +310,9 @@ type RuntimeState struct {
 
 // -------- D. SpotLot + TradeRecord + SpotExecution --------
 //
-// [INVENTED v1 — sync with TradeCommand v1]: this group's field set
-// depends on the OrderIntent / WS TradeCommand protocol that lands
-// in Phase 7. Current shape is the design-doc v1 alignment; review
-// once `internal/strategy/contract.go:54` OrderIntent freezes.
+// Field set aligned with docs/saas-ws-protocol-v1.md §5.8/§5.9/§5.10
+// (frozen 2026-05-20). See appendix B of that doc for the field-by-field
+// mapping between GORM columns here and the wire payloads.
 
 type LotKind string
 
@@ -358,15 +356,15 @@ type TradeRecord struct {
 	ID            uint        `gorm:"primaryKey"                              json:"id"`
 	CreatedAt     time.Time                                                 `json:"created_at"`
 	UpdatedAt     time.Time                                                 `json:"updated_at"`
-	ClientOrderID string      `gorm:"type:varchar(32);uniqueIndex"            json:"client_order_id"` // [INVENTED v1 — sync with TradeCommand v1]
+	ClientOrderID string      `gorm:"type:varchar(32);uniqueIndex"            json:"client_order_id"`
 	InstanceID    string      `gorm:"type:varchar(32);index;not null"         json:"instance_id"`
 	Symbol        string      `gorm:"type:varchar(16);index;not null"         json:"symbol"`
-	Side          string      `gorm:"type:varchar(8);not null"                json:"side"`            // [INVENTED v1 — sync with OrderIntent.OrderSide]
-	OrderType     string      `gorm:"type:varchar(16);not null"               json:"order_type"`      // [INVENTED v1 — sync with OrderIntent.OrderType]
+	Side          string      `gorm:"type:varchar(8);not null"                json:"side"`
+	OrderType     string      `gorm:"type:varchar(16);not null"               json:"order_type"`
 	QuantityUSD   float64     `gorm:"not null"                                 json:"quantity_usd"`
 	LimitPrice    *float64                                                  `json:"limit_price,omitempty"`
 	NowMsAtSaaS   int64       `gorm:"not null"                                 json:"now_ms_at_saas"`
-	ValidUntilMs  int64       `gorm:"not null"                                 json:"valid_until_ms"`   // [INVENTED v1 — sync with TradeCommand v1]
+	ValidUntilMs  int64       `gorm:"not null"                                 json:"valid_until_ms"`
 	Status        TradeStatus `gorm:"type:varchar(16);index;default:'pending'" json:"status"`
 	LotID         *string     `gorm:"type:varchar(32);index"                   json:"lot_id,omitempty"`
 }
@@ -451,8 +449,8 @@ func AllModels() []interface{} {
 		&KLineGap{},
 		&SharpeBank{},
 		&ChampionHistory{},
-		// Tier 2 (frozen 2026-05-20; Group D fields tagged
-		// [INVENTED v1 — sync with TradeCommand v1] inline)
+		// Tier 2 (frozen 2026-05-20; Group D wire-aligned per
+		// docs/saas-ws-protocol-v1.md §5.8/§5.9/§5.10)
 		&User{},
 		&StrategyTemplate{},
 		&StrategyInstance{},
