@@ -24,9 +24,13 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"quantlab/internal/api"
+	"quantlab/internal/api/middleware"
 	"quantlab/internal/repository"
+	"quantlab/internal/saas/auth"
 	"quantlab/internal/saas/config"
+	"quantlab/internal/saas/cron"
 	"quantlab/internal/saas/epoch"
+	"quantlab/internal/saas/instance"
 	"quantlab/internal/saas/store"
 )
 
@@ -39,6 +43,12 @@ var (
 	engineVersion   = "v0.1.0-proto"
 	strategyVersion = "v0.1.0-proto"
 )
+
+// ulidIssuer satisfies api.IDIssuer using the package-shared ULID
+// generator (store.NewULID, MonotonicEntropy mode).
+type ulidIssuer struct{}
+
+func (ulidIssuer) NewID() string { return store.NewULID() }
 
 func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: $CONFIG_PATH or ./config.yaml)")
@@ -61,6 +71,9 @@ func main() {
 	challengerRepo := repository.NewChallengerRepo(db)
 	championRepo := repository.NewChampionRepo(db)
 	sharpeRepo := repository.NewSharpeBankRepo(db)
+	instanceRepo := repository.NewInstanceRepo(db)
+	portfolioRepo := repository.NewPortfolioRepo(db)
+	runtimeRepo := repository.NewRuntimeRepo(db)
 
 	registry := epoch.DefaultRegistry()
 	svc := epoch.New(
@@ -80,11 +93,32 @@ func main() {
 		epoch.DefaultDefaults(),
 	)
 
+	// Phase 6.3: auth + instance lifecycle + scheduler.
+	authSvc, err := auth.NewService(cfg.JWT)
+	if err != nil {
+		log.Fatalf("saas: auth service: %v", err)
+	}
+	tickManager := instance.New(
+		instanceRepo, portfolioRepo, runtimeRepo,
+		&instance.DefaultBarLoader{DB: db},
+		&instance.DefaultStrategyResolver{Registry: registry},
+		&instance.DefaultChampionGeneLoader{Challengers: challengerRepo},
+		nil, // dispatcher: LogDispatcher until Phase 8 WS Hub
+		nil, // logger: slog.Default
+	)
+	scheduler := cron.New(instanceRepo, tickManager, cron.Config{})
+
 	h := &api.Handlers{
 		Epoch:       svc,
 		Tasks:       taskRepo,
 		Challengers: challengerRepo,
 		Champions:   championRepo,
+		Instances:   instanceRepo,
+		IDIssuer:    ulidIssuer{},
+		AuthRequired: middleware.AuthRequired(authSvc),
+		RequireOperator: middleware.RequireRole(
+			store.UserRoleOperator, store.UserRoleAdmin,
+		),
 	}
 
 	if cfg.AppRole != config.AppRoleDev {
@@ -107,6 +141,11 @@ func main() {
 			log.Fatalf("saas: http server: %v", err)
 		}
 	}()
+
+	// Cron Tick scheduler (Phase 6.2). Runs in-process; stops cleanly
+	// when ctx is cancelled. In-flight Ticks complete on their own
+	// (per-instance mutex in Manager).
+	go scheduler.Run(ctx)
 
 	<-ctx.Done()
 	log.Printf("saas: shutdown signal received, draining within %s", cfg.Server.ShutdownTimeout)

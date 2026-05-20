@@ -114,3 +114,34 @@ func (r *RetireChampionRequest) Validate() error {
 	}
 	return nil
 }
+
+// Validate is invoked by POST /api/v1/instances. Field constraints
+// match StrategyInstance schema (non-empty + pair must be in the
+// supported interval set isn't needed here — pair format is opaque
+// to api; strategy resolution at Tick time catches typos).
+func (r *CreateInstanceRequest) Validate() error {
+	if r == nil {
+		return errors.New("CreateInstanceRequest is nil")
+	}
+	if r.StrategyID == "" {
+		return errors.New("strategy_id is required")
+	}
+	if r.Pair == "" {
+		return errors.New("pair is required")
+	}
+	if r.AccountID == "" {
+		return errors.New("account_id is required")
+	}
+	return nil
+}
+
+// Validate checks the deploy-champion payload.
+func (r *DeployChampionRequest) Validate() error {
+	if r == nil {
+		return errors.New("DeployChampionRequest is nil")
+	}
+	if r.ChallengerID == "" {
+		return errors.New("challenger_id is required")
+	}
+	return nil
+}

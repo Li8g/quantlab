@@ -44,7 +44,10 @@ func TestChallengerRepo_SaveRoundTrip(t *testing.T) {
 	const challengerID = "ch-integration-001"
 
 	// Clean prior runs so the unique-index doesn't fail on retry.
-	if err := db.Where("challenger_id = ?", challengerID).Delete(&store.GeneRecord{}).Error; err != nil {
+	// Unscoped() bypasses GORM soft-delete: gene_records uses
+	// gorm.Model and its uniqueIndex on challenger_id is not partial
+	// on deleted_at, so soft-deleted rows would collide on re-insert.
+	if err := db.Unscoped().Where("challenger_id = ?", challengerID).Delete(&store.GeneRecord{}).Error; err != nil {
 		t.Fatalf("pre-clean: %v", err)
 	}
 
@@ -74,7 +77,7 @@ func TestChallengerRepo_SaveRoundTrip(t *testing.T) {
 		t.Error("expected unique-constraint violation on duplicate Save")
 	}
 
-	// Cleanup so subsequent runs are idempotent.
-	_ = db.Where("challenger_id = ?", challengerID).Delete(&store.GeneRecord{}).Error
+	// Cleanup so subsequent runs are idempotent (Unscoped: see above).
+	_ = db.Unscoped().Where("challenger_id = ?", challengerID).Delete(&store.GeneRecord{}).Error
 	_ = resultpkg.Window6M // keep the resultpkg import live for go vet
 }

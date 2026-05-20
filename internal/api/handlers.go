@@ -19,9 +19,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"quantlab/internal/api/middleware"
 	"quantlab/internal/resultpkg"
 	"quantlab/internal/saas/store"
 )
@@ -78,7 +80,22 @@ type ChampionUpdater interface {
 	Retire(ctx context.Context, challengerID string, req RetireChampionRequest) error
 }
 
-// Handlers carries the four collaborators the six endpoints need.
+// InstanceStore is the storage surface Phase 6.3 instance handlers
+// need. repository.InstanceRepo satisfies this naturally.
+type InstanceStore interface {
+	Create(ctx context.Context, inst *store.StrategyInstance) error
+	Get(ctx context.Context, instanceID string) (*store.StrategyInstance, error)
+	UpdateStatus(ctx context.Context, instanceID string, status store.InstanceStatus) error
+	SetActiveChampion(ctx context.Context, instanceID string, challengerID string) error
+}
+
+// IDIssuer hands out new InstanceIDs. store.NewULID is the production
+// implementation; tests inject a deterministic fake.
+type IDIssuer interface {
+	NewID() string
+}
+
+// Handlers carries the collaborators every endpoint group needs.
 // cmd/saas builds it with real implementations; tests build it with
 // fakes that satisfy the same interfaces.
 type Handlers struct {
@@ -86,9 +103,19 @@ type Handlers struct {
 	Tasks       TaskGetter
 	Challengers ChallengerReader
 	Champions   ChampionUpdater
+	Instances   InstanceStore
+	IDIssuer    IDIssuer
+
+	// AuthRequired wraps protected routes. When non-nil, it is
+	// installed on the /instances/* group during Register. Tests
+	// that exercise handlers without auth leave this nil.
+	AuthRequired gin.HandlerFunc
+	// RequireOperator gates write endpoints to operator+admin.
+	// Same nil-skip behaviour as AuthRequired.
+	RequireOperator gin.HandlerFunc
 }
 
-// Register attaches all six routes under /api/v1 to the supplied Gin
+// Register attaches all routes under /api/v1 to the supplied Gin
 // engine. Idempotent within a process — call once after the engine is
 // constructed.
 func (h *Handlers) Register(r gin.IRouter) {
@@ -99,6 +126,29 @@ func (h *Handlers) Register(r gin.IRouter) {
 	g.GET("/challengers/:challenger_id/package", h.GetChallengerPackage)
 	g.POST("/challengers/:challenger_id/promote", h.PromoteChallenger)
 	g.POST("/champions/:champion_id/retire", h.RetireChampion)
+
+	// Phase 6.3 instance routes — JWT-protected when middleware is
+	// wired. Read endpoint accepts viewer+; mutating endpoints
+	// require operator+ (see docs/saas-tier2-schema-v1.md §3.2 A2).
+	inst := g.Group("/instances")
+	if h.AuthRequired != nil {
+		inst.Use(h.AuthRequired)
+	}
+	if h.RequireOperator != nil {
+		// Apply per-route for the write endpoints; the GET is left
+		// open to viewer role through the AuthRequired middleware
+		// alone.
+		inst.POST("", h.RequireOperator, h.CreateInstance)
+		inst.POST("/:instance_id/start", h.RequireOperator, h.StartInstance)
+		inst.POST("/:instance_id/stop", h.RequireOperator, h.StopInstance)
+		inst.POST("/:instance_id/deploy-champion", h.RequireOperator, h.DeployChampion)
+	} else {
+		inst.POST("", h.CreateInstance)
+		inst.POST("/:instance_id/start", h.StartInstance)
+		inst.POST("/:instance_id/stop", h.StopInstance)
+		inst.POST("/:instance_id/deploy-champion", h.DeployChampion)
+	}
+	inst.GET("/:instance_id", h.GetInstance)
 }
 
 // ===== handlers =====
@@ -286,4 +336,250 @@ func mapTransitionErr(err error) int {
 
 func writeError(c *gin.Context, status int, err error) {
 	c.AbortWithStatusJSON(status, gin.H{"error": err.Error()})
+}
+
+// ===================================================================
+// Phase 6.3: Instance lifecycle handlers
+// ===================================================================
+
+// ErrInstanceTransitionRefused signals an attempt to push an instance
+// through a state edge the §4.2 graph doesn't allow (e.g. retired →
+// live). Maps to 422.
+var ErrInstanceTransitionRefused = errors.New("instance status transition refused")
+
+// CreateInstance: POST /api/v1/instances. 201 + InstanceResponse.
+// OwnerUserID is taken from the authenticated caller's JWT claims;
+// the request body does not let clients spoof another user.
+func (h *Handlers) CreateInstance(c *gin.Context) {
+	var req CreateInstanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	ownerID, ok := ownerFromContext(c)
+	if !ok {
+		writeError(c, http.StatusInternalServerError, errors.New("missing auth claims"))
+		return
+	}
+	inst := &store.StrategyInstance{
+		InstanceID:  h.IDIssuer.NewID(),
+		StrategyID:  req.StrategyID,
+		Pair:        req.Pair,
+		AccountID:   req.AccountID,
+		OwnerUserID: ownerID,
+		Status:      store.InstanceStatusIdle,
+	}
+	if err := h.Instances.Create(c.Request.Context(), inst); err != nil {
+		writeError(c, mapInstanceCreateErr(err), err)
+		return
+	}
+	c.JSON(http.StatusCreated, toInstanceResponse(inst))
+}
+
+// GetInstance: GET /api/v1/instances/:instance_id.
+func (h *Handlers) GetInstance(c *gin.Context) {
+	id := c.Param("instance_id")
+	if id == "" {
+		writeError(c, http.StatusBadRequest, errors.New("instance_id is required"))
+		return
+	}
+	inst, err := h.Instances.Get(c.Request.Context(), id)
+	if err != nil {
+		writeError(c, mapReadErr(err), err)
+		return
+	}
+	c.JSON(http.StatusOK, toInstanceResponse(inst))
+}
+
+// StartInstance: POST /api/v1/instances/:instance_id/start.
+// Transitions idle / paused → live. Forbidden from retired (terminal).
+func (h *Handlers) StartInstance(c *gin.Context) {
+	h.transitionInstance(c, func(cur store.InstanceStatus) (store.InstanceStatus, error) {
+		switch cur {
+		case store.InstanceStatusIdle, store.InstanceStatusPaused, store.InstanceStatusLive:
+			return store.InstanceStatusLive, nil
+		case store.InstanceStatusRetired:
+			return "", ErrInstanceTransitionRefused
+		default:
+			return "", ErrInstanceTransitionRefused
+		}
+	})
+}
+
+// StopInstance: POST /api/v1/instances/:instance_id/stop.
+// Transitions live → paused (manual pause, recoverable). Idempotent
+// on paused. Forbidden from retired.
+func (h *Handlers) StopInstance(c *gin.Context) {
+	h.transitionInstance(c, func(cur store.InstanceStatus) (store.InstanceStatus, error) {
+		switch cur {
+		case store.InstanceStatusLive, store.InstanceStatusPaused, store.InstanceStatusIdle:
+			return store.InstanceStatusPaused, nil
+		case store.InstanceStatusRetired:
+			return "", ErrInstanceTransitionRefused
+		default:
+			return "", ErrInstanceTransitionRefused
+		}
+	})
+}
+
+// DeployChampion: POST /api/v1/instances/:instance_id/deploy-champion.
+// Sets ActiveChampID on the instance. Per B2 frozen: Promote ⊥ Deploy
+// — this is the only API that touches ActiveChampID.
+func (h *Handlers) DeployChampion(c *gin.Context) {
+	id := c.Param("instance_id")
+	if id == "" {
+		writeError(c, http.StatusBadRequest, errors.New("instance_id is required"))
+		return
+	}
+	var req DeployChampionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.Instances.SetActiveChampion(c.Request.Context(), id, req.ChallengerID); err != nil {
+		writeError(c, mapReadErr(err), err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"instance_id":         id,
+		"active_champion_id":  req.ChallengerID,
+	})
+}
+
+// transitionInstance is the shared body of StartInstance / StopInstance.
+// Computes the next status via the supplied function, then writes it.
+func (h *Handlers) transitionInstance(c *gin.Context, nextStatus func(store.InstanceStatus) (store.InstanceStatus, error)) {
+	id := c.Param("instance_id")
+	if id == "" {
+		writeError(c, http.StatusBadRequest, errors.New("instance_id is required"))
+		return
+	}
+	inst, err := h.Instances.Get(c.Request.Context(), id)
+	if err != nil {
+		writeError(c, mapReadErr(err), err)
+		return
+	}
+	next, err := nextStatus(inst.Status)
+	if err != nil {
+		writeError(c, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if next == inst.Status {
+		// No-op transition (e.g. start on a live instance) is OK;
+		// surface current state for caller convenience.
+		c.JSON(http.StatusOK, gin.H{
+			"instance_id": id,
+			"status":      string(next),
+			"noop":        true,
+		})
+		return
+	}
+	if err := h.Instances.UpdateStatus(c.Request.Context(), id, next); err != nil {
+		writeError(c, http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"instance_id": id,
+		"status":      string(next),
+	})
+}
+
+// mapInstanceCreateErr distinguishes the partial-unique violation
+// from a generic DB failure. The partial unique on
+// (owner_user_id, strategy_id, pair, account_id) WHERE status !=
+// 'retired' triggers when admin tries to create a duplicate active
+// instance — that's 409, not 500.
+func mapInstanceCreateErr(err error) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	msg := err.Error()
+	// pgx surfaces 23505 (unique_violation); GORM wraps it. We don't
+	// have a typed sentinel from gorm, so substring match the
+	// constraint name we set in db.go.
+	if containsUnique(msg) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+
+func containsUnique(s string) bool {
+	for _, needle := range []string{"unique", "duplicate key", "idx_inst_unique_active"} {
+		if substrFold(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// substrFold is a tiny ASCII-fold contains. We don't import strings
+// twice — the package already pulled it out in the typed-sentinels
+// commit; reintroducing here for one helper.
+func substrFold(s, needle string) bool {
+	if len(needle) > len(s) {
+		return false
+	}
+	// fast path: case-sensitive
+	for i := 0; i+len(needle) <= len(s); i++ {
+		if equalFold(s[i:i+len(needle)], needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func equalFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+func toInstanceResponse(inst *store.StrategyInstance) InstanceResponse {
+	out := InstanceResponse{
+		InstanceID:    inst.InstanceID,
+		StrategyID:    inst.StrategyID,
+		Pair:          inst.Pair,
+		AccountID:     inst.AccountID,
+		OwnerUserID:   inst.OwnerUserID,
+		Status:        string(inst.Status),
+		ActiveChampID: inst.ActiveChampID,
+	}
+	if inst.LastTickWallTime != nil {
+		ms := inst.LastTickWallTime.UnixMilli()
+		out.LastTickWallTime = &ms
+	}
+	return out
+}
+
+// ownerFromContext reads the JWT-injected Claims and returns the
+// caller's gorm uint user ID. Returns (0, false) when no claims are
+// present (tests without auth middleware can still exercise handlers
+// by setting middleware.ClaimsFrom-compatible state directly).
+func ownerFromContext(c *gin.Context) (uint, bool) {
+	claims, ok := middleware.ClaimsFrom(c)
+	if !ok {
+		return 0, false
+	}
+	return claims.UserID, true
 }

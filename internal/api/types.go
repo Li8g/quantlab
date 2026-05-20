@@ -111,3 +111,36 @@ type RetireChampionRequest struct {
 	ReviewedBy   string  `json:"reviewed_by"`
 	DecisionNote *string `json:"decision_note,omitempty"`
 }
+
+// ===================================================================
+// Phase 6.3: Instance lifecycle endpoints
+// ===================================================================
+
+// CreateInstanceRequest is the body of POST /api/v1/instances. The
+// instance is created in `idle` state — caller must POST /start
+// (or first /deploy-champion + then /start) to make it tickable.
+type CreateInstanceRequest struct {
+	StrategyID string `json:"strategy_id"`
+	Pair       string `json:"pair"`
+	AccountID  string `json:"account_id"`
+}
+
+// InstanceResponse is the body of GET /api/v1/instances/:instance_id
+// and the 201 Created response from POST /api/v1/instances.
+type InstanceResponse struct {
+	InstanceID       string  `json:"instance_id"`
+	StrategyID       string  `json:"strategy_id"`
+	Pair             string  `json:"pair"`
+	AccountID        string  `json:"account_id"`
+	OwnerUserID      uint    `json:"owner_user_id"`
+	Status           string  `json:"status"`
+	ActiveChampID    *string `json:"active_champion_id,omitempty"`
+	LastTickWallTime *int64  `json:"last_tick_wall_time_ms,omitempty"`
+}
+
+// DeployChampionRequest is the body of
+// POST /api/v1/instances/:instance_id/deploy-champion. Promote-then-
+// Deploy is split per B2 — Promote alone does not touch instances.
+type DeployChampionRequest struct {
+	ChallengerID string `json:"challenger_id"`
+}
