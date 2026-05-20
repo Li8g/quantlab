@@ -290,10 +290,9 @@ idle ──start──→ live ⇄ paused
 
 ```go
 type PortfolioState struct {
-    ID         uint   `gorm:"primaryKey" json:"id"`
+    InstanceID string `gorm:"type:varchar(32);primaryKey"  json:"instance_id"`
+    NowMs      int64  `gorm:"primaryKey"                    json:"now_ms"`
     CreatedAt  time.Time
-    InstanceID string  `gorm:"type:varchar(32);index:idx_ps_inst_now,priority:1;not null" json:"instance_id"`
-    NowMs      int64   `gorm:"index:idx_ps_inst_now,priority:2;not null"                   json:"now_ms"`
 
     DeadBTC       float64 `json:"dead_btc"`
     FloatBTC      float64 `json:"float_btc"`
@@ -303,6 +302,10 @@ type PortfolioState struct {
     LastProcessedBarTime int64 `json:"last_processed_bar_time"`
 }
 ```
+
+**复合 PK `(instance_id, now_ms)` — 而非 synthetic id**（v1.1 修订 2026-05-20，从 Phase 6.0 实施时发现）：
+
+TimescaleDB hypertable 要求**任何唯一索引必须包含分区列** `now_ms`。设 synthetic `id uint primaryKey` 单独 PK 会触发 `SQLSTATE TS103: cannot create a unique index without the column "now_ms"`。klines 表用 `(symbol, interval, open_time)` 复合 PK 是同模式。Append-only 历史下 `(instance_id, now_ms)` 天然唯一（一个 Tick = 一个时刻）。
 
 - **每 Tick 必写一行**（即使 portfolio 数值未变）。理由：提供"实例还在跑"的心跳信号；前端能由最新行的 `NowMs` vs wall now 判断实例健康；Tick 函数代码无条件 INSERT，简化。
 - **复合索引方向 ASC**：`(instance_id, now_ms ASC)`。PG B-tree 双向扫描，"最新行"查询 (`ORDER BY now_ms DESC LIMIT 1`) 反向叶子链扫描成本与正向 DESC 索引一致；选 ASC 是因为它与"时间向前"心智一致，调试/手查时方向不易踩错。

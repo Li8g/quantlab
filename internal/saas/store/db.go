@@ -68,7 +68,34 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 		chunk7DaysMs,
 	)
 	if err := db.WithContext(ctx).Exec(hyperSQL).Error; err != nil {
-		return nil, fmt.Errorf("store.NewDB: create_hypertable: %w", err)
+		return nil, fmt.Errorf("store.NewDB: create_hypertable klines: %w", err)
+	}
+
+	// portfolio_states hypertable (30-day chunks). Per
+	// docs/saas-tier2-schema-v1.md §5.1 / C1: enabling at table-create
+	// time avoids a stop-the-world migration when row counts grow in
+	// live trading.
+	const chunk30DaysMs = int64(30) * 24 * 60 * 60 * 1000
+	psHyperSQL := fmt.Sprintf(
+		`SELECT create_hypertable('portfolio_states', 'now_ms',
+			if_not_exists => TRUE,
+			migrate_data  => TRUE,
+			chunk_time_interval => %d::bigint)`,
+		chunk30DaysMs,
+	)
+	if err := db.WithContext(ctx).Exec(psHyperSQL).Error; err != nil {
+		return nil, fmt.Errorf("store.NewDB: create_hypertable portfolio_states: %w", err)
+	}
+
+	// Partial unique index on strategy_instances per §4.2 / B5:
+	// same (user, strategy, pair, account) can only have one active
+	// instance, but retired instances don't block re-creation.
+	// GORM tags cannot express partial unique, so we DDL explicitly.
+	const psUniqueSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_inst_unique_active
+		ON strategy_instances (owner_user_id, strategy_id, pair, account_id)
+		WHERE status != 'retired'`
+	if err := db.WithContext(ctx).Exec(psUniqueSQL).Error; err != nil {
+		return nil, fmt.Errorf("store.NewDB: partial unique strategy_instances: %w", err)
 	}
 
 	return db, nil
