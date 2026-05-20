@@ -1,6 +1,9 @@
 # SaaS Tier 2 Schema v1 — 设计草案
 
-> **状态**：`[INVENTED v1 — needs architect review]`，未冻结。所有 `[INVENTED v1]` 标记的字段、枚举、关系、约束都是实施者按 Phase 6/7 即将到来的工作合理推测，待人工拍板。
+> **状态（2026-05-20）**：
+> - **22/30 决策已冻结**（跨表 CC1-3、组 A 5 项、组 B 5 项、组 C 4 项、组 E 5 项）。详见 §9 待审清单。
+> - **8 项待审 = 组 D（Lot + Trade + Execution）全部**，显式阻塞于 Phase 7 `OrderIntent` / `TradeCommand` 协议冻结（`docs/系统总体拓扑结构.md` §5 + `internal/strategy/contract.go:54` + `docs/策略数学引擎.md` §I-2.8）。
+> - 已冻结部分可独立实施（见 §8 迁移路径），退役 `internal/saas/store/models.go` 中 8/11 个代码标记（D 组涉及的 SpotLot/TradeRecord/SpotExecution 3 个保留 `[INVENTED v1 — sync with TradeCommand v1]`）。
 
 ## 0. 文档元信息
 
@@ -11,7 +14,7 @@
 | 当前阶段 | Phase 5 已完成（commit `b5372af`）；Phase 6 未开 |
 | 上游来源 | `docs/系统总体拓扑结构.md` §4 / `docs/Coding-plan-dev-phases-prompts_v3_2_2.md` Phase 6/7 |
 | 下游影响 | `internal/saas/store/models.go` Tier 2 9 个 placeholder model 的字段冻结 |
-| 退役标记数 | 11 个 `[INVENTED v1]` 标记将随本稿冻结而退役 |
+| 退役标记数 | 11 个代码标记 → 本轮可退役 8 个（A/B/C/E 涉及表）；剩 3 个（D 组 SpotLot/TradeRecord/SpotExecution）待 Phase 7 TradeCommand 冻结 |
 
 ## 1. 范围与边界
 
@@ -208,14 +211,14 @@ type StrategyTemplate struct {
 
 ```go
 type StrategyInstance struct {
-    ID            uint           `gorm:"primaryKey"                          json:"id"`
-    CreatedAt     time.Time                                                  `json:"created_at"`
-    UpdatedAt     time.Time                                                  `json:"updated_at"`
-    InstanceID    string         `gorm:"type:varchar(32);uniqueIndex"        json:"instance_id"` // ULID
-    StrategyID    string         `gorm:"type:varchar(64);index;not null"     json:"strategy_id"`
-    Pair          string         `gorm:"type:varchar(32);index;not null"     json:"pair"`
-    AccountID     string         `gorm:"type:varchar(64);index;not null"     json:"account_id"`
-    OwnerUserID   uint           `gorm:"index;not null"                       json:"owner_user_id"`
+    ID               uint           `gorm:"primaryKey"                          json:"id"`
+    CreatedAt        time.Time                                                  `json:"created_at"`
+    UpdatedAt        time.Time                                                  `json:"updated_at"`
+    InstanceID       string         `gorm:"type:varchar(32);uniqueIndex"        json:"instance_id"` // ULID
+    StrategyID       string         `gorm:"type:varchar(64);index;not null"     json:"strategy_id"`
+    Pair             string         `gorm:"type:varchar(32);index;not null"     json:"pair"`
+    AccountID        string         `gorm:"type:varchar(64);index;not null"     json:"account_id"` // 字符串标签；语义上 scoped by OwnerUserID
+    OwnerUserID      uint           `gorm:"index;not null"                       json:"owner_user_id"`
     Status           InstanceStatus `gorm:"type:varchar(16);default:'idle';index" json:"status"`
     ActiveChampID    *string        `gorm:"type:varchar(64);index"               json:"active_champion_id,omitempty"`
     LastTickWallTime *time.Time                                                  `json:"last_tick_wall_time,omitempty"`  // wall clock, ops 监控用；策略时间从 PortfolioState 最新行查
@@ -231,32 +234,53 @@ const (
 )
 ```
 
+**复合唯一约束**（GORM struct tag 无法表达 partial unique，需 migration 显式建）：
+
+```sql
+CREATE UNIQUE INDEX idx_inst_unique_active
+  ON strategy_instances (owner_user_id, strategy_id, pair, account_id)
+  WHERE status != 'retired';
+```
+
+含义：同一用户在同一 (strategy, pair, account) 组合上**只能有一个活跃实例**（idle/live/paused），但允许 retired 实例不阻止重建。
+
 状态转移图（v1）：
 
 ```
 idle ──start──→ live ⇄ paused
-              └──retire──→ retired (终态)
+   │              │      │
+   └──retire──────┴──────┴──→ retired (终态)
 ```
 
-### 4.3 `[INVENTED v1]` 决策
+任意非 retired 状态都可转 retired。不引入 `error` / `degraded` 状态；异常通过 AuditLog 记录 + 转 paused 表达。
 
-1. **`AccountID` 语义**：抽象账户标签（`(User, Exchange)` 维度），**不**等同 Binance 子账户 ID。Agent 端持有具体凭证。
-2. **`ActiveChampID` 联动**：Promote 操作**不**自动设置；用户需走单独的 "deploy champion to instance" 动作。
-3. **`StrategyTemplate` 与 `epoch.Registry` 关系**：Registry 是代码内强校验（`DefaultRegistry()` 启动期注册）；Template 是 DB 内 metadata 镜像（前端展示用）。启动期由代码同步 `registry.IDs()` → upsert Template 行。
-4. **状态 4 态**：不引入 `error` 状态（错误由 `AuditLog` 记录并将实例回退到 `paused`）。
-5. **`pair` 字段重复**：可以从 Tick 时联表去 Template 查，但每个 Tick 一次 join 不值，冗余存。
+### 4.3 `[v1 — frozen 2026-05-20]` 决策
+
+1. **`AccountID` 抽象账户标签**：scoped by `OwnerUserID`——alice 的 "main" 和 bob 的 "main" 是不同账户。schema 层不在 Instance 表上加 (owner_user_id, account_id) unique（一个账户可对应多 Instance）；语义上 Agent 通过 (owner_user_id, account_id) 映射到具体交易所凭证。未来若需 Account 一等实体可加 `accounts` 表，那时 unique 落在 accounts 上。
+2. **`ActiveChampID` 联动**：Promote 操作**不**自动设置 ActiveChampID。原因：Promote 是"祝福这个 challenger 为 Champion"；Deploy 是"把 Champion 上岗到 Instance"，两者解耦才能审计回滚。用户需走单独的 `POST /api/v1/instances/:id/deploy-champion` 动作。
+3. **`StrategyTemplate` 与 `epoch.Registry` 关系**：Registry 是代码内强校验（`DefaultRegistry()` 启动期注册），是 SoT；Template 是 DB 内 metadata 镜像（前端展示用）。启动期由代码同步 `registry.IDs()` → upsert Template 行。
+   - **同步规则 1（移除）**：Registry 不再含某 StrategyID，对应 Template 行设 `Active=false`，不硬删（历史 GeneRecord 仍能联表显示）。
+   - **同步规则 2（更新）**：代码字段（DisplayName/Version/Description/ChromosomeSchemaJSON）总是 Overwrite——代码是 SoT，admin 想改显示名应改代码。`Active boolean` 例外保留（admin 在 DB 手动禁用应保留）。
+4. **状态 4 态**：idle/live/paused/retired。**任意非 retired 状态都可转 retired**（含 idle→retired，paused→retired）。不引入 `error` / `degraded` 状态——异常通过 AuditLog (`agent.heartbeat_stale` / `task.fail` 等) + 转 paused 表达。
+5. **复合唯一约束（partial unique）**：`(owner_user_id, strategy_id, pair, account_id) WHERE status != 'retired'`。同用户、同 (strategy, pair, account) 只能有一个活跃实例（防重复部署事故）；retired 实例不阻止重建。`pair` 在 Instance 上是本质属性（Template 不持 pair），不是冗余。
 
 ### 4.4 备选方案与影响
 
 | 决策 | 备选 | 影响 |
 |---|---|---|
-| `ActiveChampID` 联动 | Promote 自动 deploy 到匹配实例 | 减一步操作；但 Promote 变成有副作用，难审计 |
-| Template+Registry | 仅保留 Registry（删 Template 表） | -1 张表；前端无法显示模板元数据 |
-| Template+Registry | 仅保留 Template（hot-load 策略） | 需要 plugin/wasm 机制；原型期 over-engineered |
-| 状态 enum | 加 `error` 状态 | 出错时实例锁死；恢复路径要明确 |
-| 状态 enum | 加 `degraded`（agent 心跳超时） | §5.7 心跳协议落地后可加；本稿先不加 |
+| AccountID scoped by user (本稿) | 全局唯一 AccountID | 多用户冲突（"main" 名字撞）；强制前缀解决但约定脆 |
+| AccountID scoped by user (本稿) | 加 Accounts 一等表 | 更规范；原型期未触发需求 |
+| `ActiveChampID` Never auto-deploy (本稿) | Auto-deploy when null（冷启动场景） | 减一步操作；规则两段式（null vs not-null 不同行为）|
+| `ActiveChampID` Never auto-deploy (本稿) | Always auto-deploy 到匹配实例 | 一步到位；Promote 变成有副作用，难审计 |
+| Template 同步：Active=false 不删 (本稿) | 硬删 row | 历史 GeneRecord 联表破裂 |
+| Template 同步：代码 Overwrite (本稿) | Preserve, 仅补全空字段 | admin 可在 DB 改 DisplayName；代码改名后历史不同步 |
+| Template+Registry 共存 (本稿) | 仅保留 Registry（删 Template 表） | -1 张表；前端无法显示模板元数据 |
+| Template+Registry 共存 (本稿) | 仅保留 Template（hot-load 策略） | 需要 plugin/wasm 机制；原型期 over-engineered |
+| 状态 4 态 (本稿) | 加 `error` 状态 | 出错时实例锁死；恢复路径要明确 |
+| 状态 4 态 (本稿) | 加 `degraded`（agent 心跳超时） | §5.7 心跳协议落地后可加；本稿先不加 |
 | Instance 多 ActiveChamp | A/B 测试同时挂俩 | 摩擦记账复杂度爆炸；不在原型期 |
-| Pair 冗余存 | 仅存 TemplateID + 查表 | 节省 32 字节/行；Tick 时每分钟一次 join 不划算 |
+| 复合 partial unique (本稿) | 不加 unique，允许重复 | 允许同 (strategy, pair, account) 多实例（变体）；订单可能在同 account 上混 |
+| 复合 partial unique (本稿) | 加全状态 unique（含 retired） | retired 实例阻止重建——退役后无法在同配置重新部署 |
 
 ---
 
@@ -280,9 +304,19 @@ type PortfolioState struct {
 }
 ```
 
-- **每 Tick 追加一行**。最新态查询：`SELECT ... WHERE instance_id = ? ORDER BY now_ms DESC LIMIT 1`。
-- 复合索引 `(instance_id, now_ms)` 支持上述查询零扫表。
+- **每 Tick 必写一行**（即使 portfolio 数值未变）。理由：提供"实例还在跑"的心跳信号；前端能由最新行的 `NowMs` vs wall now 判断实例健康；Tick 函数代码无条件 INSERT，简化。
+- **复合索引方向 ASC**：`(instance_id, now_ms ASC)`。PG B-tree 双向扫描，"最新行"查询 (`ORDER BY now_ms DESC LIMIT 1`) 反向叶子链扫描成本与正向 DESC 索引一致；选 ASC 是因为它与"时间向前"心智一致，调试/手查时方向不易踩错。
 - 不用 `gorm.Model`（无软删，无 UpdatedAt）。
+- **TimescaleDB hypertable 现在就开**：与 klines 同模式，`chunk_time_interval = 30d`。一行 SQL 成本；实盘期上线后才迁移 hypertable 需要停服重建，现在开零代价。
+
+```sql
+SELECT create_hypertable(
+  'portfolio_states',
+  'now_ms',
+  if_not_exists => TRUE,
+  chunk_time_interval => 30 * 24 * 60 * 60 * 1000  -- 30 天，毫秒
+);
+```
 
 ### 5.2 RuntimeState v1（**当前态替换**）
 
@@ -299,14 +333,20 @@ type RuntimeState struct {
 
 - **每 Tick UPSERT 一行**（`ON CONFLICT (instance_id) DO UPDATE`）。
 - 旧值丢失；策略自己负责在 `StateJSON` 内编码必要的历史尾巴。
+- **StateJSON ≤ 64KB 软约束**：超过 jsonb 单 page (8KB) 走 TOAST 表外存储；64KB 是经验上限，超过应在 RuntimeState 之外另存。原型期不强制 trigger 校验；emitter 自觉。
+- **实例 retire 后行保留**：InstanceID 是 ULID 不重用，保留 row 是廉价防御；不引入 retire→delete 的 hook。
 
-### 5.3 `[INVENTED v1]` 决策
+### 5.3 `[v1 — frozen 2026-05-20]` 决策
 
 1. **PortfolioState = 追加历史 / RuntimeState = 当前态**。两表语义不同：
    - PortfolioState 引擎可解释（4 个数值字段），有时序审计价值
    - RuntimeState 对引擎不透明（opaque blob），保存历史无审计价值
-2. **TimescaleDB hypertable 推迟**：PortfolioState 一年 ~525k 行/实例/分钟级，原型阶段无需 hypertable；Phase 6.5+ 视行数决定。
-3. **`LastProcessedBarTime` 放 PortfolioState 而不是 RuntimeState**：它是引擎需要的字段（Tick 函数读取），不属于策略私有。
+2. **PortfolioState 每 Tick 必写**（不做"未变跳过"优化）：提供心跳；简化 Tick 代码；525k 行/年/实例对 PG 完全可接受。
+3. **PortfolioState 复合索引方向 ASC**：`(instance_id, now_ms ASC)` 单索引；PG 双向扫描，DESC 查询性能等价；ASC 与时间向前的心智一致。
+4. **TimescaleDB hypertable 现在就开**：`portfolio_states` 走 hypertable，`chunk_time_interval = 30d`。与 klines 同模式；实盘后迁移需要停服重建。
+5. **`LastProcessedBarTime` 放 PortfolioState 而不是 RuntimeState**：它是引擎需要的字段（Tick 函数读取），不属于策略私有。
+6. **RuntimeState 实例 retire 后保留行**：InstanceID 是 ULID 不重用，保留 row 是廉价防御。
+7. **`StateJSON ≤ 64KB` 软约束**：超过 jsonb page 走 TOAST；emitter 自觉，不引入 trigger 校验。
 
 ### 5.4 备选方案与影响
 
@@ -314,9 +354,14 @@ type RuntimeState struct {
 |---|---|---|
 | PortfolioState 历史 | 当前态 1 行 UPDATE | 表只剩 ~实例数行；丢历史，故障时无法重建 |
 | PortfolioState 历史 | 两表并存（current + history） | 一致性同步复杂；prototype 阶段不值 |
+| 每 Tick 必写 | 仅在 portfolio 变化时写 | 行数大幅下降；失去心跳信号；上次 Tick 时间需查 StrategyInstance.LastTickWallTime |
+| 索引方向 ASC（本稿） | `(instance_id, now_ms DESC)` 索引 | PG B-tree 双向扫描，性能等价；DESC 让"最新行"查询省 `DESC` 关键字 4 字符 |
+| 索引方向 ASC（本稿） | 两个方向都建 | 多 ~50% 索引空间；写代价更高；现阶段无需 |
 | RuntimeState 历史 | 也用追加历史 | 写量 2x；opaque blob 大小未知，可能爆 |
 | RuntimeState 历史 | last-N 环形缓冲 | 复杂度上升，价值未证明 |
-| Hypertable | 立即用 | TimescaleDB chunk 管理；现阶段查询模式简单不必 |
+| Hypertable 现在开（本稿） | 推迟到 Phase 6.5+ | 推迟则迁移需停服重建已有数据；现在开成本一行 SQL |
+| StateJSON ≤64KB 软约束（本稿） | GORM 硬限制 / trigger 校验 | jsonb 无 size GORM tag；需 trigger 或 app 层 |
+| RuntimeState retire 后保留 | 硬删 | 干净；但若同名重部署需冷启动 — ULID 不重用前提下不会发生 |
 
 ---
 
@@ -562,18 +607,18 @@ const (
 
 ### StrategyTemplate + StrategyInstance
 
-- [ ] **B1**: AccountID = 抽象账户标签，非 Binance 子账户
-- [ ] **B2**: ActiveChampID 不自动联动 Promote
-- [ ] **B3**: Template 与 Registry 共存，启动期同步
-- [ ] **B4**: InstanceStatus 4 态（idle/live/paused/retired）
-- [ ] **B5**: Instance 冗余 pair 字段
+- [x] **B1**: AccountID 是抽象字符串标签，scoped by OwnerUserID（alice 的 "main" 和 bob 的 "main" 是不同账户）；schema 层不强制 (owner, account) unique（一账户可对应多 Instance）；未来 Accounts 一等表化时 unique 落在 accounts 表上。【已审，2026-05-20】
+- [x] **B2**: Promote 不自动 deploy；走单独 `POST /api/v1/instances/:id/deploy-champion` 接口。两个决策解耦才能审计回滚。【已审，2026-05-20】
+- [x] **B3**: Template + Registry 共存；启动期同步规则：(1) 代码移除策略 → Template `Active=false` 不删；(2) 代码字段更新 → Overwrite（Active boolean 例外保留）。【已审，2026-05-20】
+- [x] **B4**: 4 态 (idle/live/paused/retired)；任意非 retired → retired 都允许；不引入 error/degraded 状态（异常用 AuditLog + paused 表达）。【已审，2026-05-20】
+- [x] **B5**: 修正原文表述错误：`pair` 在 Instance 上不是冗余（Template 不持 pair）。加 partial unique `(owner_user_id, strategy_id, pair, account_id) WHERE status != 'retired'`：同用户、同配置只能一个活跃实例；retired 不阻止重建。【已审，2026-05-20】
 
 ### PortfolioState + RuntimeState
 
-- [ ] **C1**: PortfolioState = 追加历史
-- [ ] **C2**: RuntimeState = 当前态替换（UPSERT）
-- [ ] **C3**: LastProcessedBarTime 放 PortfolioState 而非 RuntimeState
-- [ ] **C4**: TimescaleDB hypertable 推迟到 Phase 6.5+
+- [x] **C1**: PortfolioState = 追加历史，每 Tick 必写（含心跳信号）；复合索引 `(instance_id, now_ms ASC)` 单索引（PG 双向扫描性能等价）；TimescaleDB hypertable **现在就开** chunk=30d（与 klines 一致，避免实盘后停服迁移）。【已审，2026-05-20】
+- [x] **C2**: RuntimeState = 当前态 UPSERT；实例 retire 后行保留（ULID 不重用前提下无重复风险）；StateJSON ≤64KB 软约束（jsonb 1 page = 8KB；超过走 TOAST）。【已审，2026-05-20】
+- [x] **C3**: `LastProcessedBarTime` 放 PortfolioState 而非 RuntimeState（引擎可读字段，非策略私有）。【已审，2026-05-20】
+- [x] **C4**: hypertable 现在就开（与 C1 合并，无需推迟）。【已审，2026-05-20】
 
 ### SpotLot + TradeRecord + SpotExecution
 
