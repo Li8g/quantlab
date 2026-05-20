@@ -12,7 +12,7 @@ import (
 
 func TestDispatch_NoConnection(t *testing.T) {
 	hub, _, _, _ := newTestHub(t)
-	err := hub.Dispatch(context.Background(), "01HKINSTANCE0000000000000A", "01HKACCT00000000000000000A", 50000.0,
+	err := hub.Dispatch(context.Background(), "01HKINSTANCE0000000000000A", "01HKACCT00000000000000000A", "BTCUSDT", 50000.0,
 		[]strategy.OrderIntent{{
 			Kind: strategy.OrderKindMacro, Side: strategy.OrderSideBuy, OrderType: strategy.OrderTypeMarket,
 			QuantityUSD: 1000, ClientOrderID: "01HKCOID000000000000000000",
@@ -25,7 +25,7 @@ func TestDispatch_NoConnection(t *testing.T) {
 
 func TestDispatch_EmptyOrdersIsNoop(t *testing.T) {
 	hub, _, _, _ := newTestHub(t)
-	if err := hub.Dispatch(context.Background(), "i", "a", 50000.0, nil); err != nil {
+	if err := hub.Dispatch(context.Background(), "i", "a", "BTCUSDT", 50000.0, nil); err != nil {
 		t.Errorf("Dispatch empty orders: %v", err)
 	}
 }
@@ -52,7 +52,7 @@ func TestDispatch_HappyPath(t *testing.T) {
 			ValidUntilMs:  time.Now().UnixMilli() + 60000,
 		},
 	}
-	if err := hub.Dispatch(context.Background(), "01HKINSTANCE0000000000000A", accountID, 50000.0, orders); err != nil {
+	if err := hub.Dispatch(context.Background(), "01HKINSTANCE0000000000000A", accountID, "BTCUSDT", 50000.0, orders); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestDispatch_PreReadyReturnsNotConnected(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	err := hub.Dispatch(context.Background(), "i", accountID, 50000.0, []strategy.OrderIntent{{
+	err := hub.Dispatch(context.Background(), "i", accountID, "BTCUSDT", 50000.0, []strategy.OrderIntent{{
 		Kind: strategy.OrderKindMacro, Side: strategy.OrderSideBuy, OrderType: strategy.OrderTypeMarket,
 		QuantityUSD: 1000, ClientOrderID: "01HKCOID0000000000000PRE99",
 		ValidUntilMs: time.Now().UnixMilli() + 60000,
@@ -127,7 +127,7 @@ func TestDispatch_InvalidLatestClose(t *testing.T) {
 	driveHandshake(t, pc, accountID, token)
 	waitReady(t, hub, accountID)
 
-	err := hub.Dispatch(context.Background(), "i", accountID, 0, []strategy.OrderIntent{{
+	err := hub.Dispatch(context.Background(), "i", accountID, "BTCUSDT", 0, []strategy.OrderIntent{{
 		Kind: strategy.OrderKindMacro, Side: strategy.OrderSideBuy, OrderType: strategy.OrderTypeMarket,
 		QuantityUSD: 1000, ClientOrderID: "01HKCOID0000000000000ZERO9",
 		ValidUntilMs: time.Now().UnixMilli() + 60000,

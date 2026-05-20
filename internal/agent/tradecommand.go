@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/shopspring/decimal"
@@ -105,11 +104,13 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 	})
 	if err != nil {
 		_ = c.idempotency.UpdateStatus(tc.ClientOrderID, IdempotencyStatusRejected, "", c.nowMs())
+		// errors.Unwrap returns nil for non-wrapped errors; use the
+		// outer message directly to avoid a nil-pointer panic.
 		c.sendAck(ctx, conn, wire.Ack{
 			ClientOrderID: tc.ClientOrderID,
 			Status:        wire.AckStatusRejected,
 			ExchangeNowMs: c.nowMs(),
-			RejectReason:  errors.Unwrap(err).Error(),
+			RejectReason:  err.Error(),
 		})
 		return
 	}

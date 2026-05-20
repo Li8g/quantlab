@@ -247,11 +247,18 @@ func (c *Connection) dispatchInbound(ctx context.Context, env wire.Envelope) {
 	case wire.TypePong:
 		c.handlePong(env)
 	case wire.TypeAck, wire.TypeOrderUpdate, wire.TypeDeltaReport:
-		// Step 4/5 will hook persistence here. For now: structured log
-		// so end-to-end traffic is visible in tests and dev.
+		// Always structured-log so dev/test traffic is visible; also
+		// fire the OnAgentMessage hook so downstream persistence
+		// (Step 4/5) can react without parsing logs.
 		c.log.Info("ws_agent_msg",
 			"account_id", c.AccountID, "type", env.Type, "msg_id", env.MsgID,
 			"payload", string(env.Payload))
+		if c.hub.onAgentMessage != nil {
+			if err := c.hub.onAgentMessage(ctx, c.AccountID, env); err != nil {
+				c.log.Warn("ws_agent_msg_hook_err",
+					"account_id", c.AccountID, "type", env.Type, "err", err)
+			}
+		}
 	case wire.TypeError:
 		c.log.Warn("ws_agent_error",
 			"account_id", c.AccountID, "msg_id", env.MsgID,

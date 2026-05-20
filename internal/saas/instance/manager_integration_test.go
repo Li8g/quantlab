@@ -199,12 +199,13 @@ type itRecordingDispatcher struct {
 type itDispatchCall struct {
 	instanceID  string
 	accountID   string
+	symbol      string
 	latestClose float64
 	orders      []strategy.OrderIntent
 }
 
-func (d *itRecordingDispatcher) Dispatch(_ context.Context, instID, acctID string, latestClose float64, orders []strategy.OrderIntent) error {
-	d.calls = append(d.calls, itDispatchCall{instID, acctID, latestClose, append([]strategy.OrderIntent(nil), orders...)})
+func (d *itRecordingDispatcher) Dispatch(_ context.Context, instID, acctID, symbol string, latestClose float64, orders []strategy.OrderIntent) error {
+	d.calls = append(d.calls, itDispatchCall{instID, acctID, symbol, latestClose, append([]strategy.OrderIntent(nil), orders...)})
 	return nil
 }
 

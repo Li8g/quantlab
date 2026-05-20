@@ -76,7 +76,7 @@ type ChampionGeneLoader interface {
 // each OrderIntent to a wire.TradeCommand using latestClose to render
 // quantity_decimal (saas-ws-protocol-v1.md §5.8).
 type TradeCommandDispatcher interface {
-	Dispatch(ctx context.Context, instanceID, accountID string, latestClose float64, orders []strategy.OrderIntent) error
+	Dispatch(ctx context.Context, instanceID, accountID, symbol string, latestClose float64, orders []strategy.OrderIntent) error
 }
 
 // LogDispatcher is the zero-config TradeCommandDispatcher: it slog.Info's
@@ -85,7 +85,7 @@ type LogDispatcher struct {
 	Logger *slog.Logger
 }
 
-func (d *LogDispatcher) Dispatch(_ context.Context, instanceID, accountID string, latestClose float64, orders []strategy.OrderIntent) error {
+func (d *LogDispatcher) Dispatch(_ context.Context, instanceID, accountID, symbol string, latestClose float64, orders []strategy.OrderIntent) error {
 	log := d.Logger
 	if log == nil {
 		log = slog.Default()
@@ -94,6 +94,7 @@ func (d *LogDispatcher) Dispatch(_ context.Context, instanceID, accountID string
 		log.Info("trade_command_dispatch",
 			"instance_id", instanceID,
 			"account_id", accountID,
+			"symbol", symbol,
 			"latest_close", latestClose,
 			"kind", string(o.Kind),
 			"side", string(o.Side),
@@ -339,7 +340,7 @@ func (m *Manager) Tick(ctx context.Context, inst store.StrategyInstance) error {
 		if n := len(closes); n > 0 {
 			latestClose = closes[n-1]
 		}
-		if err := m.dispatcher.Dispatch(ctx, inst.InstanceID, inst.AccountID, latestClose, orders); err != nil {
+		if err := m.dispatcher.Dispatch(ctx, inst.InstanceID, inst.AccountID, inst.Pair, latestClose, orders); err != nil {
 			return fmt.Errorf("tick: dispatch orders: %w", err)
 		}
 	}

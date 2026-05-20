@@ -172,17 +172,18 @@ type recordingDispatcher struct {
 type dispatchCall struct {
 	instanceID  string
 	accountID   string
+	symbol      string
 	latestClose float64
 	orders      []strategy.OrderIntent
 }
 
-func (d *recordingDispatcher) Dispatch(_ context.Context, instID, acctID string, latestClose float64, orders []strategy.OrderIntent) error {
+func (d *recordingDispatcher) Dispatch(_ context.Context, instID, acctID, symbol string, latestClose float64, orders []strategy.OrderIntent) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.err != nil {
 		return d.err
 	}
-	d.calls = append(d.calls, dispatchCall{instID, acctID, latestClose, append([]strategy.OrderIntent(nil), orders...)})
+	d.calls = append(d.calls, dispatchCall{instID, acctID, symbol, latestClose, append([]strategy.OrderIntent(nil), orders...)})
 	return nil
 }
 

@@ -56,6 +56,13 @@ type Config struct {
 	// OnStale runs when heartbeat misses cross the threshold. Step 4/5
 	// will wire an AuditLog entry + Redis online-state update.
 	OnStale func(ctx context.Context, accountID string) error
+
+	// OnAgentMessage fires for every Agent-originated business message
+	// (ack / order_update / delta_report) after the envelope has been
+	// decoded. Step 4/5 will wire DB persistence (TradeRecord status
+	// updates, SpotExecution inserts, discrepancy detection). v1 emits
+	// a structured log line in addition to firing this hook.
+	OnAgentMessage func(ctx context.Context, accountID string, env wire.Envelope) error
 }
 
 // Hub is the per-process Agent WS server. One per cmd/saas process.
@@ -75,8 +82,9 @@ type Hub struct {
 	stateSyncTimeout time.Duration
 	writeTimeout     time.Duration
 
-	onStateSync func(ctx context.Context, accountID string, payload json.RawMessage) error
-	onStale     func(ctx context.Context, accountID string) error
+	onStateSync    func(ctx context.Context, accountID string, payload json.RawMessage) error
+	onStale        func(ctx context.Context, accountID string) error
+	onAgentMessage func(ctx context.Context, accountID string, env wire.Envelope) error
 }
 
 // New constructs a Hub with cfg overrides applied to the package defaults.
@@ -96,6 +104,7 @@ func New(auth *agentauth.Service, cfg Config) *Hub {
 		writeTimeout:     cfg.WriteTimeout,
 		onStateSync:      cfg.OnStateSync,
 		onStale:          cfg.OnStale,
+		onAgentMessage:   cfg.OnAgentMessage,
 	}
 	if h.log == nil {
 		h.log = slog.Default()
@@ -168,15 +177,22 @@ func (h *Hub) runConn(ctx context.Context, conn Conn) {
 // (using latestClose to render quantity_decimal), and enqueues the
 // frames on the connection's outbox.
 //
+// symbol is the trading pair (instance-scoped) the Agent should target;
+// OrderIntent carries no symbol since the strategy is bound to one
+// pair via StrategyInput.
+//
 // Returns ErrAccountNotConnected if no Ready connection exists. Caller
 // (instance.Manager.Tick) treats this as a non-fatal warning — the
 // Agent will state-sync on next reconnect.
-func (h *Hub) Dispatch(ctx context.Context, instanceID, accountID string, latestClose float64, orders []strategy.OrderIntent) error {
+func (h *Hub) Dispatch(ctx context.Context, instanceID, accountID, symbol string, latestClose float64, orders []strategy.OrderIntent) error {
 	if len(orders) == 0 {
 		return nil
 	}
 	if latestClose <= 0 {
 		return fmt.Errorf("wshub.Dispatch: invalid latestClose=%v", latestClose)
+	}
+	if symbol == "" {
+		return errors.New("wshub.Dispatch: symbol empty")
 	}
 	cn, err := h.registry.Get(accountID)
 	if err != nil {
@@ -186,7 +202,7 @@ func (h *Hub) Dispatch(ctx context.Context, instanceID, accountID string, latest
 		return ErrAccountNotConnected
 	}
 	for _, oi := range orders {
-		tc, err := buildTradeCommand(oi, instanceID, latestClose, h.nowMs())
+		tc, err := buildTradeCommand(oi, instanceID, symbol, latestClose, h.nowMs())
 		if err != nil {
 			return fmt.Errorf("wshub.Dispatch: build %s: %w", oi.ClientOrderID, err)
 		}
@@ -232,7 +248,7 @@ func (h *Hub) BroadcastGracefulShutdown(retryIn time.Duration) {
 // 8 decimal places matches Binance BTC step size; deeper precision would
 // be silently truncated downstream. Symbol-specific step tables are
 // Phase 8 polish.
-func buildTradeCommand(oi strategy.OrderIntent, instanceID string, latestClose float64, nowMs int64) (wire.TradeCommand, error) {
+func buildTradeCommand(oi strategy.OrderIntent, instanceID, symbol string, latestClose float64, nowMs int64) (wire.TradeCommand, error) {
 	if oi.ClientOrderID == "" {
 		return wire.TradeCommand{}, errors.New("OrderIntent.ClientOrderID empty")
 	}
@@ -245,7 +261,7 @@ func buildTradeCommand(oi strategy.OrderIntent, instanceID string, latestClose f
 		IntentKind:      wire.IntentKind(oi.Kind),
 		ClientOrderID:   oi.ClientOrderID,
 		InstanceID:      instanceID,
-		Symbol:          "",     // TODO Step 4/5: lookup from instance metadata
+		Symbol:          symbol,
 		Side:            string(oi.Side),
 		OrderType:       string(oi.OrderType),
 		QuantityDecimal: qtyStr,
