@@ -98,11 +98,12 @@ func planFixture() *domain.EvaluablePlan {
 		{OpenTime: 2000, Open: 10.5, High: 12, Low: 10, Close: 11, Volume: 150},
 	}
 	return &domain.EvaluablePlan{
-		Pair:     "BTCUSDT",
-		Spawn:    resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
-		LotStep:  0.00001,
-		LotMin:   0.00001,
-		FatalMDD: 0.5,
+		Pair:        "BTCUSDT",
+		Spawn:       resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
+		LotStep:     0.00001,
+		LotMin:      0.00001,
+		FatalMDD:    0.5,
+		InitialUSDT: 10_000,
 		Windows: []domain.CrucibleWindow{{
 			Name:      resultpkg.Window6M,
 			StartTS:   bars[0].OpenTime,

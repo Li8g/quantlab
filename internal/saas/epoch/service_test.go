@@ -3,6 +3,9 @@ package epoch
 import (
 	"sync"
 	"testing"
+
+	"quantlab/internal/api"
+	"quantlab/internal/fitness"
 )
 
 // lockFor and the (strategy, pair) mutex are the only Service knobs
@@ -25,6 +28,57 @@ func TestService_lockFor_DifferentTupleReturnsDifferentMutex(t *testing.T) {
 	c := s.lockFor("toy", "BTCUSDT")
 	if a == b || a == c || b == c {
 		t.Errorf("different tuples must yield different mutexes; a=%p b=%p c=%p", a, b, c)
+	}
+}
+
+func TestResolveDefaults_NilFieldsUseBase(t *testing.T) {
+	base := DefaultDefaults()
+	got := resolveDefaults(base, api.CreateEvolutionTaskRequest{})
+	if got != base {
+		t.Errorf("nil request overrides should leave Defaults untouched\n  got=%+v\n  want=%+v", got, base)
+	}
+}
+
+func TestResolveDefaults_NonNilFieldsOverride(t *testing.T) {
+	base := DefaultDefaults()
+	warmup := 180
+	lotStep := 0.001
+	lotMin := 0.005
+	initialUSDT := 5_000.0
+	req := api.CreateEvolutionTaskRequest{
+		WarmupDays:  &warmup,
+		LotStep:     &lotStep,
+		LotMin:      &lotMin,
+		InitialUSDT: &initialUSDT,
+		DCA: &api.DCAConfigRequest{
+			InitialCapital: 7_500,
+			MonthlyInject:  250,
+		},
+	}
+	got := resolveDefaults(base, req)
+	want := Defaults{
+		WarmupDays:  180,
+		LotStep:     0.001,
+		LotMin:      0.005,
+		InitialUSDT: 5_000,
+		DCA:         fitness.GhostDCAConfig{InitialCapital: 7_500, MonthlyInject: 250},
+	}
+	if got != want {
+		t.Errorf("override mismatch\n  got=%+v\n  want=%+v", got, want)
+	}
+}
+
+func TestResolveDefaults_PartialOverride(t *testing.T) {
+	base := DefaultDefaults()
+	warmup := 90
+	req := api.CreateEvolutionTaskRequest{WarmupDays: &warmup}
+	got := resolveDefaults(base, req)
+	if got.WarmupDays != 90 {
+		t.Errorf("WarmupDays = %d, want 90 (overridden)", got.WarmupDays)
+	}
+	if got.LotStep != base.LotStep || got.LotMin != base.LotMin ||
+		got.InitialUSDT != base.InitialUSDT || got.DCA != base.DCA {
+		t.Errorf("unrelated fields drifted: got=%+v want_baseline=%+v", got, base)
 	}
 }
 

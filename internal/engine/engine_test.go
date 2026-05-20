@@ -26,10 +26,11 @@ func miniPlan() *domain.EvaluablePlan {
 		Pair:     "BTCUSDT",
 		Spawn:    resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
 		LotStep:  0.0001,
-		LotMin:   0.001,
-		FatalMDD: 0.5,
-		Windows:  windows,
-		Friction: domain.FrictionParams{TakerFeeBPS: 10, SlippageBPS: 5},
+		LotMin:      0.001,
+		FatalMDD:    0.5,
+		InitialUSDT: 10_000,
+		Windows:     windows,
+		Friction:    domain.FrictionParams{TakerFeeBPS: 10, SlippageBPS: 5},
 	}
 }
 

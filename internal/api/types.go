@@ -33,10 +33,29 @@ type CreateEvolutionTaskRequest struct {
 	OosDays              *int                `json:"oos_days,omitempty"`
 	FatalAuditSampleRate *float64            `json:"fatal_audit_sample_rate,omitempty"`
 
+	// Plan-construction overrides. All nil → server-side defaults from
+	// epoch.DefaultDefaults() (WarmupDays=365, LotStep=LotMin=0.00001,
+	// InitialUSDT=10000, DCA={10000, 0}). Setting any of them is a
+	// per-task override; engine merges these into PlanOptions before
+	// building the EvaluablePlan.
+	WarmupDays  *int              `json:"warmup_days,omitempty"`
+	LotStep     *float64          `json:"lot_step,omitempty"`
+	LotMin      *float64          `json:"lot_min,omitempty"`
+	InitialUSDT *float64          `json:"initial_usdt,omitempty"`
+	DCA         *DCAConfigRequest `json:"dca,omitempty"`
+
 	// SpawnPoint is required when SpawnMode == "manual" and must be nil
 	// otherwise. Engine passes the raw bytes through to the strategy's
 	// SpawnPoint decoder; api/handlers do not inspect the payload.
 	SpawnPoint *json.RawMessage `json:"spawn_point,omitempty"`
+}
+
+// DCAConfigRequest is the wire shape of the optional `dca` field on
+// CreateEvolutionTaskRequest. Mirrors fitness.GhostDCAConfig but lives
+// in api so the wire boundary doesn't depend on the fitness package.
+type DCAConfigRequest struct {
+	InitialCapital float64 `json:"initial_capital"`
+	MonthlyInject  float64 `json:"monthly_inject"`
 }
 
 // EvolutionTaskStatusResponse is the body of

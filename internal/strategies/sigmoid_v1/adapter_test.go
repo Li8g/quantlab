@@ -32,8 +32,9 @@ func fourWindowPlan(bars []domain.Bar, warmup int, friction domain.FrictionParam
 			mk(resultpkg.Window5Y),
 			mk(resultpkg.Window10Y),
 		},
-		FatalMDD: 0.5,
-		Friction: friction,
+		FatalMDD:    0.5,
+		InitialUSDT: 10_000,
+		Friction:    friction,
 	}
 }
 
@@ -68,7 +69,8 @@ func fatalPlan() *domain.EvaluablePlan {
 			mk(resultpkg.Window5Y, flat),
 			mk(resultpkg.Window10Y, flat),
 		},
-		FatalMDD: 0.5,
+		FatalMDD:    0.5,
+		InitialUSDT: 10_000,
 	}
 }
 

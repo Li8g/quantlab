@@ -54,6 +54,18 @@ func TestCreateEvolutionTaskRequest_Validate(t *testing.T) {
 			r.FatalAuditSampleRate = f64Ptr(1.5)
 		}},
 		{"oos_days zero", func(r *CreateEvolutionTaskRequest) { r.OosDays = intPtr(0) }},
+		{"warmup_days zero", func(r *CreateEvolutionTaskRequest) { r.WarmupDays = intPtr(0) }},
+		{"lot_step zero", func(r *CreateEvolutionTaskRequest) { r.LotStep = f64Ptr(0) }},
+		{"lot_step neg", func(r *CreateEvolutionTaskRequest) { r.LotStep = f64Ptr(-0.001) }},
+		{"lot_min zero", func(r *CreateEvolutionTaskRequest) { r.LotMin = f64Ptr(0) }},
+		{"initial_usdt zero", func(r *CreateEvolutionTaskRequest) { r.InitialUSDT = f64Ptr(0) }},
+		{"initial_usdt neg", func(r *CreateEvolutionTaskRequest) { r.InitialUSDT = f64Ptr(-100) }},
+		{"dca initial_capital neg", func(r *CreateEvolutionTaskRequest) {
+			r.DCA = &DCAConfigRequest{InitialCapital: -1, MonthlyInject: 0}
+		}},
+		{"dca monthly_inject neg", func(r *CreateEvolutionTaskRequest) {
+			r.DCA = &DCAConfigRequest{InitialCapital: 1000, MonthlyInject: -1}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

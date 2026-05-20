@@ -70,6 +70,26 @@ func (r *CreateEvolutionTaskRequest) Validate() error {
 	if r.OosDays != nil && *r.OosDays < 1 {
 		return errors.New("oos_days, if set, must be >= 1")
 	}
+	if r.WarmupDays != nil && *r.WarmupDays < 1 {
+		return errors.New("warmup_days, if set, must be >= 1")
+	}
+	if r.LotStep != nil && *r.LotStep <= 0 {
+		return errors.New("lot_step, if set, must be > 0")
+	}
+	if r.LotMin != nil && *r.LotMin <= 0 {
+		return errors.New("lot_min, if set, must be > 0")
+	}
+	if r.InitialUSDT != nil && *r.InitialUSDT <= 0 {
+		return errors.New("initial_usdt, if set, must be > 0")
+	}
+	if r.DCA != nil {
+		if r.DCA.InitialCapital < 0 {
+			return errors.New("dca.initial_capital must be >= 0")
+		}
+		if r.DCA.MonthlyInject < 0 {
+			return errors.New("dca.monthly_inject must be >= 0")
+		}
+	}
 	return nil
 }
 

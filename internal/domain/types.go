@@ -92,12 +92,18 @@ type AggregateCache struct{}
 //
 // plan_hash is SHA256(canonical_json(EvaluablePlan)), computed by
 // internal/quant.PlanHash. AggregateCache is excluded via json:"-".
+//
+// InitialUSDT is the per-CrucibleWindow cold-start cash position used
+// by strategy simulators (sigmoid_v1, etc.). Strategies that don't
+// model a USDT-quoted portfolio may ignore it. Wired through the
+// request → Defaults → PlanOptions chain.
 type EvaluablePlan struct {
 	Pair           string                      `json:"pair"`
 	Spawn          resultpkg.SpawnPointPayload `json:"spawn"`
 	LotStep        float64                     `json:"lot_step"`
 	LotMin         float64                     `json:"lot_min"`
 	FatalMDD       float64                     `json:"fatal_mdd"`
+	InitialUSDT    float64                     `json:"initial_usdt"`
 	Windows        []CrucibleWindow            `json:"windows"`
 	DCABaselines   DCABaselines                `json:"dca_baselines"`
 	OosWindow      *CrucibleWindow             `json:"oos_window,omitempty"`

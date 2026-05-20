@@ -68,27 +68,55 @@ type BuildMeta struct {
 	BuildID           string
 }
 
-// Defaults bundles the per-task knobs that aren't yet exposed on
-// CreateEvolutionTaskRequest. All [INVENTED v1] — when an architect
-// pin lands, promote individual fields to the request struct.
+// Defaults bundles the per-task knobs that the request can optionally
+// override. Each field has a server-side baseline; if the request leaves
+// the matching pointer nil, the Defaults value is used as-is.
 type Defaults struct {
-	WarmupDays int                    // §4.3 caps at 1200; 365 covers all v1 indicators
-	LotStep    float64                // Binance spot BTCUSDT default
-	LotMin     float64                // Binance spot BTCUSDT default
-	DCA        fitness.GhostDCAConfig // mirrors evaluate_window initialUSDT
+	WarmupDays  int                    // §4.3 caps at 1200; 365 covers all v1 indicators
+	LotStep     float64                // Binance spot BTCUSDT default
+	LotMin      float64                // Binance spot BTCUSDT default
+	InitialUSDT float64                // Per-CrucibleWindow cold-start cash for strategy simulator
+	DCA         fitness.GhostDCAConfig // GhostDCA baseline parameters
 }
 
 // DefaultDefaults returns the prototype-phase Defaults baseline.
 func DefaultDefaults() Defaults {
 	return Defaults{
-		WarmupDays: 365,
-		LotStep:    0.00001,
-		LotMin:     0.00001,
+		WarmupDays:  365,
+		LotStep:     0.00001,
+		LotMin:      0.00001,
+		InitialUSDT: 10_000,
 		DCA: fitness.GhostDCAConfig{
 			InitialCapital: 10_000,
 			MonthlyInject:  0,
 		},
 	}
+}
+
+// resolveDefaults merges the request's optional override fields with
+// the server-side Defaults. Non-nil request pointers win; nil falls
+// back to the Defaults value.
+func resolveDefaults(base Defaults, req api.CreateEvolutionTaskRequest) Defaults {
+	eff := base
+	if req.WarmupDays != nil {
+		eff.WarmupDays = *req.WarmupDays
+	}
+	if req.LotStep != nil {
+		eff.LotStep = *req.LotStep
+	}
+	if req.LotMin != nil {
+		eff.LotMin = *req.LotMin
+	}
+	if req.InitialUSDT != nil {
+		eff.InitialUSDT = *req.InitialUSDT
+	}
+	if req.DCA != nil {
+		eff.DCA = fitness.GhostDCAConfig{
+			InitialCapital: req.DCA.InitialCapital,
+			MonthlyInject:  req.DCA.MonthlyInject,
+		}
+	}
+	return eff
 }
 
 // Service is the per-process Epoch orchestrator. One instance per SaaS
@@ -243,16 +271,18 @@ func (s *Service) executeEpoch(
 		spawn.Meta = *req.SpawnPoint
 	}
 
+	effDefaults := resolveDefaults(s.defaults, req)
 	planOpts := data.PlanOptions{
-		Pair:       req.Pair,
-		Spawn:      spawn,
-		WarmupDays: s.defaults.WarmupDays,
-		OosDays:    req.OosDays,
-		Friction:   effective,
-		LotStep:    s.defaults.LotStep,
-		LotMin:     s.defaults.LotMin,
-		FatalMDD:   req.FatalMDD,
-		DCA:        s.defaults.DCA,
+		Pair:        req.Pair,
+		Spawn:       spawn,
+		WarmupDays:  effDefaults.WarmupDays,
+		OosDays:     req.OosDays,
+		Friction:    effective,
+		LotStep:     effDefaults.LotStep,
+		LotMin:      effDefaults.LotMin,
+		FatalMDD:    req.FatalMDD,
+		InitialUSDT: effDefaults.InitialUSDT,
+		DCA:         effDefaults.DCA,
 	}
 	plan, planHash, barsHash, err := data.BuildEvaluablePlan(bars, planOpts)
 	if err != nil {

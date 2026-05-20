@@ -32,15 +32,16 @@ import (
 // builder embeds whatever it receives verbatim into the plan and into
 // the GhostDCA simulator.
 type PlanOptions struct {
-	Pair       string
-	Spawn      resultpkg.SpawnPointPayload
-	WarmupDays int
-	OosDays    *int
-	Friction   domain.FrictionParams
-	LotStep    float64
-	LotMin     float64
-	FatalMDD   float64
-	DCA        fitness.GhostDCAConfig
+	Pair        string
+	Spawn       resultpkg.SpawnPointPayload
+	WarmupDays  int
+	OosDays     *int
+	Friction    domain.FrictionParams
+	LotStep     float64
+	LotMin      float64
+	FatalMDD    float64
+	InitialUSDT float64
+	DCA         fitness.GhostDCAConfig
 }
 
 // BuildEvaluablePlan returns the assembled plan plus its plan_hash and
@@ -83,12 +84,13 @@ func BuildEvaluablePlan(bars []domain.Bar, opts PlanOptions) (*domain.EvaluableP
 	weekly := fitness.SimulateGhostDCAWeekly(opts.DCA, isBars, opts.Friction)
 
 	plan := &domain.EvaluablePlan{
-		Pair:     opts.Pair,
-		Spawn:    opts.Spawn,
-		LotStep:  opts.LotStep,
-		LotMin:   opts.LotMin,
-		FatalMDD: opts.FatalMDD,
-		Windows:  is,
+		Pair:        opts.Pair,
+		Spawn:       opts.Spawn,
+		LotStep:     opts.LotStep,
+		LotMin:      opts.LotMin,
+		FatalMDD:    opts.FatalMDD,
+		InitialUSDT: opts.InitialUSDT,
+		Windows:     is,
 		DCABaselines: domain.DCABaselines{
 			Monthly: domain.DCABaseline{
 				FinalEquity:   monthly.FinalEquity,

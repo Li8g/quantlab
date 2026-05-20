@@ -24,12 +24,6 @@ import (
 	"quantlab/internal/verification"
 )
 
-// initialUSDT is the cold-start cash position per CrucibleWindow.
-// [INVENTED v1] — neither EvaluablePlan nor EvolutionTask currently
-// carry an "initial capital" field; bake $10,000 here and revisit
-// once the engine threads a value through plan.
-const initialUSDT = 10_000.0
-
 // stepHistoryCap bounds the length of the trailing closes/timestamps
 // slices fed into Step(). At MaxChromosomePeriod × 3 = 900 bars, the
 // longest-period EMA (max ema_long_period = 300) has converged to
@@ -61,7 +55,7 @@ const stepHistoryCap = MaxChromosomePeriod * 3
 // discarded before applyStrategyOutput — the test §10
 // TestGapHandlingNoFakeTrades invariant ("never trade on a
 // synthesised bar").
-func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams, fatalMDD float64) (resultpkg.CrucibleResult, *resultpkg.SharpeStats, error) {
+func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams, fatalMDD, initialUSDT float64) (resultpkg.CrucibleResult, *resultpkg.SharpeStats, error) {
 	if len(window.Bars) == 0 {
 		return resultpkg.CrucibleResult{}, nil, fmt.Errorf("evaluateWindow: window %q has no bars", window.Name)
 	}
