@@ -142,10 +142,10 @@ func (s *Service) CreateAndRunTask(
 	req api.CreateEvolutionTaskRequest,
 ) (string, error) {
 	if _, ok := s.registry.Get(req.StrategyID); !ok {
-		return "", fmt.Errorf("epoch: unknown strategy_id %q", req.StrategyID)
+		return "", fmt.Errorf("epoch: unknown strategy_id %q: %w", req.StrategyID, api.ErrUnknownStrategy)
 	}
 	if _, err := data.IntervalToMs(req.Interval); err != nil {
-		return "", err
+		return "", fmt.Errorf("epoch: %w: %v", api.ErrUnsupportedInterval, err)
 	}
 
 	mu := s.lockFor(req.StrategyID, req.Pair)
@@ -292,8 +292,16 @@ func (s *Service) executeEpoch(
 				stats.ObservedSharpe, bankStats.SharpeVariance,
 				bankStats.N, stats.HorizonT, stats.Skew, stats.ExcessKurt,
 			)
+			// DSR=NaN encodes "computed but unreliable" (variance≤0 or
+			// skew/kurt degeneracy). Map to *float64 nil so json.Marshal
+			// stays valid; the diagnostic fields below survive so the
+			// front-end can explain why.
+			var dsrPtr *float64
+			if !math.IsNaN(dsr) {
+				dsrPtr = &dsr
+			}
 			summary := verification.DSRSummary{
-				DSR:            dsr,
+				DSR:            dsrPtr,
 				ObservedSharpe: stats.ObservedSharpe,
 				SharpeVariance: bankStats.SharpeVariance,
 				NTrials:        bankStats.N,

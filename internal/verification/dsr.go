@@ -26,17 +26,23 @@ import (
 // here so callers (Phase 5D Epoch service) can build, marshal, and
 // pass it as a json.RawMessage into BuildChallengerPackage.
 //
-// [INVENTED v1] — the spec mandates the field but doesn't pin the
-// JSON shape. Field names are snake_case so the wire form matches
-// the rest of resultpkg conventions.
+// DSR is *float64 with two-state semantics:
+//   - nil ⇔ ComputeDSR returned NaN (degenerate inputs even though
+//     N ≥ MinTrialsForDSR — e.g. SharpeVariance ≤ 0 or the σ_SR
+//     radicand collapsed). Front-end shows "积累中 / 不可靠"; the
+//     other fields explain why.
+//   - non-nil ⇔ reliable DSR ∈ [0, 1].
+//
+// When N < MinTrialsForDSR the caller skips constructing DSRSummary
+// entirely (VerificationLayer.DSRSummary remains zero-length).
 type DSRSummary struct {
-	DSR            float64 `json:"dsr"`
-	ObservedSharpe float64 `json:"observed_sharpe"`
-	SharpeVariance float64 `json:"sharpe_variance"`
-	NTrials        int     `json:"n_trials"`
-	HorizonT       int     `json:"horizon_t"`
-	Skew           float64 `json:"skew"`
-	ExcessKurt     float64 `json:"excess_kurt"`
+	DSR            *float64 `json:"dsr"`
+	ObservedSharpe float64  `json:"observed_sharpe"`
+	SharpeVariance float64  `json:"sharpe_variance"`
+	NTrials        int      `json:"n_trials"`
+	HorizonT       int      `json:"horizon_t"`
+	Skew           float64  `json:"skew"`
+	ExcessKurt     float64  `json:"excess_kurt"`
 }
 
 // MinTrialsForDSR is the §I-4.2 reliability gate. Below this count

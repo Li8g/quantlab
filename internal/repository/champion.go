@@ -110,13 +110,13 @@ func applyPromote(
 	now time.Time,
 ) (map[string]interface{}, store.ChampionHistory, error) {
 	if rec.TestMode {
-		return nil, store.ChampionHistory{}, errors.New("cannot promote a TestMode=true challenger")
+		return nil, store.ChampionHistory{}, api.ErrCannotPromoteTestMode
 	}
 	if rec.DecisionStatus == resultpkg.DecisionStatusPromoted {
-		return nil, store.ChampionHistory{}, errors.New("challenger already promoted")
+		return nil, store.ChampionHistory{}, api.ErrAlreadyPromoted
 	}
 	if rec.DecisionStatus == resultpkg.DecisionStatusRejected {
-		return nil, store.ChampionHistory{}, errors.New("challenger already rejected; cannot promote")
+		return nil, store.ChampionHistory{}, api.ErrAlreadyRejected
 	}
 	ts := now.UnixMilli()
 	updates := map[string]interface{}{
@@ -144,7 +144,7 @@ func applyRetire(
 	now time.Time,
 ) (map[string]interface{}, error) {
 	if history.RetiredAt != nil {
-		return nil, errors.New("champion already retired")
+		return nil, api.ErrAlreadyRetired
 	}
 	reviewedBy := req.ReviewedBy
 	updates := map[string]interface{}{

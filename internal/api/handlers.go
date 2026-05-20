@@ -19,8 +19,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
-
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
@@ -28,11 +26,34 @@ import (
 	"quantlab/internal/saas/store"
 )
 
-// ErrTaskInProgress signals that another evolution task already holds
-// the (strategy, pair) lock. The Epoch service returns this sentinel
-// so the HTTP handler can map it to 409 Conflict. Defined in api (the
-// wire boundary) to avoid the import cycle api → epoch → api.
-var ErrTaskInProgress = errors.New("a task is already running for this (strategy, pair)")
+// Wire-boundary error sentinels. All cross-package errors that affect
+// HTTP status mapping live here in api so the handler can `errors.Is`
+// without forming import cycles (api → repository would cycle because
+// repository → api for request types; api → epoch would cycle because
+// epoch → api for the same; api → data would be a new edge with no
+// other reason to exist). Callers wrap these with context via
+// fmt.Errorf("...: %w", api.ErrXxx).
+var (
+	// ErrTaskInProgress: another evolution task already holds the
+	// (strategy, pair) lock. → 409 Conflict.
+	ErrTaskInProgress = errors.New("a task is already running for this (strategy, pair)")
+
+	// ErrUnknownStrategy: CreateAndRunTask got a strategy_id not
+	// in the registry. → 400 Bad Request.
+	ErrUnknownStrategy = errors.New("unknown strategy_id")
+
+	// ErrUnsupportedInterval: CreateAndRunTask got an interval that
+	// data.IntervalToMs does not recognise. → 400 Bad Request.
+	ErrUnsupportedInterval = errors.New("unsupported interval")
+
+	// Promote/Retire transition invariants. All four map to 422
+	// Unprocessable Entity — the request was well-formed but the
+	// target's current state forbids the transition.
+	ErrCannotPromoteTestMode = errors.New("cannot promote a TestMode=true challenger")
+	ErrAlreadyPromoted       = errors.New("challenger already promoted")
+	ErrAlreadyRejected       = errors.New("challenger already rejected")
+	ErrAlreadyRetired        = errors.New("champion already retired")
+)
 
 // EpochCreator triggers a new evolution task. The HTTP layer holds
 // only this single verb against the Epoch service.
@@ -228,10 +249,14 @@ func (h *Handlers) RetireChampion(c *gin.Context) {
 // ===== error mapping =====
 
 func mapCreateTaskErr(err error) int {
-	if errors.Is(err, ErrTaskInProgress) {
+	switch {
+	case errors.Is(err, ErrTaskInProgress):
 		return http.StatusConflict
+	case errors.Is(err, ErrUnknownStrategy), errors.Is(err, ErrUnsupportedInterval):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
 	}
-	return http.StatusBadRequest // unknown strategy / interval — caller mis-spec
 }
 
 func mapReadErr(err error) int {
@@ -242,24 +267,21 @@ func mapReadErr(err error) int {
 }
 
 // mapTransitionErr distinguishes "row not found" (404) from invariant
-// violations like "cannot promote TestMode" (422). Repository
-// transitions wrap their pure-kernel errors as plain errors; we match
-// on substring as a pragmatic fallback since the kernels don't
-// currently export typed sentinels.
-//
-// [INVENTED v1] — promote applyPromote / applyRetire to return typed
-// errors when the v3.x error taxonomy lands.
+// violations like "cannot promote TestMode" (422). All transition
+// invariants are typed sentinels — see the var block at the top of
+// this file.
 func mapTransitionErr(err error) int {
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, ErrCannotPromoteTestMode),
+		errors.Is(err, ErrAlreadyPromoted),
+		errors.Is(err, ErrAlreadyRejected),
+		errors.Is(err, ErrAlreadyRetired):
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusInternalServerError
 	}
-	msg := err.Error()
-	for _, n := range []string{"TestMode", "already promoted", "already rejected", "already retired"} {
-		if strings.Contains(msg, n) {
-			return http.StatusUnprocessableEntity
-		}
-	}
-	return http.StatusInternalServerError
 }
 
 func writeError(c *gin.Context, status int, err error) {

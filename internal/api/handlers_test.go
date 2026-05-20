@@ -135,10 +135,26 @@ func TestCreateTask_InProgressReturns409(t *testing.T) {
 }
 
 func TestCreateTask_UnknownStrategyReturns400(t *testing.T) {
-	h := &Handlers{Epoch: &fakeEpoch{err: errors.New("unknown strategy_id")}}
+	h := &Handlers{Epoch: &fakeEpoch{err: ErrUnknownStrategy}}
 	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/evolution/tasks", validCreateBody())
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Code = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateTask_UnsupportedIntervalReturns400(t *testing.T) {
+	h := &Handlers{Epoch: &fakeEpoch{err: ErrUnsupportedInterval}}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/evolution/tasks", validCreateBody())
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Code = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateTask_UnknownErrReturns500(t *testing.T) {
+	h := &Handlers{Epoch: &fakeEpoch{err: errors.New("db connection refused")}}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/evolution/tasks", validCreateBody())
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Code = %d, want 500 (server-side error must not be reported as 400); body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -267,9 +283,25 @@ func TestPromoteChallenger_InvalidBodyReturns400(t *testing.T) {
 }
 
 func TestPromoteChallenger_TestModeReturns422(t *testing.T) {
-	h := &Handlers{Champions: &fakeChampions{
-		promoteErr: errors.New("cannot promote a TestMode=true challenger"),
-	}}
+	h := &Handlers{Champions: &fakeChampions{promoteErr: ErrCannotPromoteTestMode}}
+	body := PromoteChallengerRequest{ReviewedBy: "alice"}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/challengers/ch-001/promote", body)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("Code = %d, want 422", w.Code)
+	}
+}
+
+func TestPromoteChallenger_AlreadyPromotedReturns422(t *testing.T) {
+	h := &Handlers{Champions: &fakeChampions{promoteErr: ErrAlreadyPromoted}}
+	body := PromoteChallengerRequest{ReviewedBy: "alice"}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/challengers/ch-001/promote", body)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("Code = %d, want 422", w.Code)
+	}
+}
+
+func TestPromoteChallenger_AlreadyRejectedReturns422(t *testing.T) {
+	h := &Handlers{Champions: &fakeChampions{promoteErr: ErrAlreadyRejected}}
 	body := PromoteChallengerRequest{ReviewedBy: "alice"}
 	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/challengers/ch-001/promote", body)
 	if w.Code != http.StatusUnprocessableEntity {
@@ -296,7 +328,7 @@ func TestRetireChampion_HappyPath(t *testing.T) {
 }
 
 func TestRetireChampion_AlreadyRetiredReturns422(t *testing.T) {
-	h := &Handlers{Champions: &fakeChampions{retireErr: errors.New("champion already retired")}}
+	h := &Handlers{Champions: &fakeChampions{retireErr: ErrAlreadyRetired}}
 	body := RetireChampionRequest{ReviewedBy: "bob"}
 	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/champions/ch-001/retire", body)
 	if w.Code != http.StatusUnprocessableEntity {
