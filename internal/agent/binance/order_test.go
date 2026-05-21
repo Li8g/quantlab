@@ -64,6 +64,21 @@ func fxOrder() agent.ExchangeOrder {
 	}
 }
 
+// fxLimitOrder returns a valid limit-buy ExchangeOrder. LimitPrice is
+// set well below typical market for symmetry with fxOrder; happy-path
+// tests can rely on the order not crossing the book in the mocked
+// response.
+func fxLimitOrder() agent.ExchangeOrder {
+	return agent.ExchangeOrder{
+		ClientOrderID: "01HKLIM000000000000000099",
+		Symbol:        "BTCUSDT",
+		Side:          "buy",
+		OrderType:     "limit",
+		Quantity:      decimal.RequireFromString("0.001"),
+		LimitPrice:    decimal.RequireFromString("45000.00"),
+	}
+}
+
 func bookHandlerJSON(bid, ask string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
@@ -457,5 +472,251 @@ func TestSubmitMarket_MalformedFillDecimal(t *testing.T) {
 	_, err := c.SubmitMarket(context.Background(), fxOrder())
 	if err == nil || !strings.Contains(err.Error(), "fill[0].price") {
 		t.Errorf("err = %v, want 'fill[0].price'", err)
+	}
+}
+
+// ===== Phase 7.10: SubmitLimit =====
+
+// orderLimitOnly is a minimal handler for the limit-order REST path —
+// SubmitLimit must NOT call BookTicker, so the only route we register
+// is /api/v3/order. Any access to /ticker/bookTicker fails the test.
+type orderLimitOnly struct {
+	orderCalls atomic.Int32
+	order      http.HandlerFunc
+	t          *testing.T
+}
+
+func (h *orderLimitOnly) handle(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/api/v3/ticker/bookTicker":
+		h.t.Errorf("SubmitLimit must NOT call BookTicker (protocol §5.10 fixes MarketRef = limit_price)")
+		w.WriteHeader(500)
+	case "/api/v3/order":
+		h.orderCalls.Add(1)
+		h.order(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func newLimitOnlyClient(t *testing.T, h *orderLimitOnly) (*Client, *httptest.Server) {
+	t.Helper()
+	h.t = t
+	srv := httptest.NewServer(http.HandlerFunc(h.handle))
+	t.Cleanup(srv.Close)
+	c := NewClient("PUBKEY", "SECRET", Options{
+		BaseURL:    srv.URL,
+		HTTPClient: srv.Client(),
+		NowFn:      fixedNow,
+	})
+	return c, srv
+}
+
+func TestSubmitLimit_BuildsLimitOrderParams(t *testing.T) {
+	var orderQuery string
+	h := &orderLimitOnly{
+		order: func(w http.ResponseWriter, r *http.Request) {
+			orderQuery = r.URL.RawQuery
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{
+				"orderId":100,
+				"transactTime":1714000000999,
+				"status":"NEW",
+				"fills":[]
+			}`))
+		},
+	}
+	c, _ := newLimitOnlyClient(t, h)
+	if _, err := c.SubmitLimit(context.Background(), fxLimitOrder()); err != nil {
+		t.Fatalf("SubmitLimit: %v", err)
+	}
+	parsed, err := url.ParseQuery(orderQuery)
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	if got := parsed.Get("type"); got != "LIMIT" {
+		t.Errorf("type = %q, want LIMIT", got)
+	}
+	if got := parsed.Get("timeInForce"); got != "GTC" {
+		t.Errorf("timeInForce = %q, want GTC", got)
+	}
+	if got := parsed.Get("price"); got != "45000" {
+		t.Errorf("price = %q, want 45000 (decimal.String of 45000.00 trims trailing zeros)", got)
+	}
+	if got := parsed.Get("symbol"); got != "BTCUSDT" {
+		t.Errorf("symbol = %q", got)
+	}
+	if got := parsed.Get("side"); got != "BUY" {
+		t.Errorf("side = %q, want BUY", got)
+	}
+	if got := parsed.Get("newOrderRespType"); got != "FULL" {
+		t.Errorf("newOrderRespType = %q, want FULL", got)
+	}
+	if got := parsed.Get("newClientOrderId"); got != "01HKLIM000000000000000099" {
+		t.Errorf("newClientOrderId = %q", got)
+	}
+}
+
+func TestSubmitLimit_NewStatusEmptyFills(t *testing.T) {
+	h := &orderLimitOnly{
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{
+				"orderId":101,
+				"transactTime":1714000000111,
+				"status":"NEW",
+				"fills":[]
+			}`))
+		},
+	}
+	c, _ := newLimitOnlyClient(t, h)
+	res, err := c.SubmitLimit(context.Background(), fxLimitOrder())
+	if err != nil {
+		t.Fatalf("SubmitLimit: %v", err)
+	}
+	if res.ExchangeOrderID != "101" {
+		t.Errorf("ExchangeOrderID = %q, want 101", res.ExchangeOrderID)
+	}
+	if res.AcceptedAtMs != 1714000000111 {
+		t.Errorf("AcceptedAtMs = %d", res.AcceptedAtMs)
+	}
+	if !res.MarketRef.Equal(decimal.RequireFromString("45000")) {
+		t.Errorf("MarketRef = %s, want 45000 (limit_price)", res.MarketRef)
+	}
+	if len(res.Fills) != 0 {
+		t.Errorf("len(Fills) = %d, want 0 (NEW status)", len(res.Fills))
+	}
+	if h.orderCalls.Load() != 1 {
+		t.Errorf("orderCalls = %d, want 1", h.orderCalls.Load())
+	}
+}
+
+func TestSubmitLimit_ImmediateFillCarriesFills(t *testing.T) {
+	// Limit order that crosses the book — Binance returns FILLED inline.
+	h := &orderLimitOnly{
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{
+				"orderId":102,
+				"transactTime":1714000000222,
+				"status":"FILLED",
+				"fills":[
+					{"price":"44995.00","qty":"0.001","commission":"0.04499500","commissionAsset":"USDT"}
+				]
+			}`))
+		},
+	}
+	c, _ := newLimitOnlyClient(t, h)
+	res, err := c.SubmitLimit(context.Background(), fxLimitOrder())
+	if err != nil {
+		t.Fatalf("SubmitLimit: %v", err)
+	}
+	if len(res.Fills) != 1 {
+		t.Fatalf("len(Fills) = %d, want 1", len(res.Fills))
+	}
+	if !res.Fills[0].FillPrice.Equal(decimal.RequireFromString("44995.00")) {
+		t.Errorf("FillPrice = %s", res.Fills[0].FillPrice)
+	}
+	if !res.MarketRef.Equal(decimal.RequireFromString("45000")) {
+		t.Errorf("MarketRef = %s, want 45000 (limit_price; protocol §5.10)", res.MarketRef)
+	}
+}
+
+func TestSubmitLimit_ValidationErrors(t *testing.T) {
+	c, _ := newLimitOnlyClient(t, &orderLimitOnly{
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			t.Error("/api/v3/order must not be reached when local validation fails")
+			w.WriteHeader(500)
+		},
+	})
+	bad := []struct {
+		name  string
+		mut   func(o *agent.ExchangeOrder)
+		match string
+	}{
+		{"empty symbol", func(o *agent.ExchangeOrder) { o.Symbol = "" }, "empty symbol"},
+		{"empty client_order_id", func(o *agent.ExchangeOrder) { o.ClientOrderID = "" }, "empty client_order_id"},
+		{"zero quantity", func(o *agent.ExchangeOrder) { o.Quantity = decimal.Zero }, "quantity="},
+		{"negative quantity", func(o *agent.ExchangeOrder) { o.Quantity = decimal.RequireFromString("-1") }, "must be positive"},
+		{"zero limit_price", func(o *agent.ExchangeOrder) { o.LimitPrice = decimal.Zero }, "limit_price="},
+		{"negative limit_price", func(o *agent.ExchangeOrder) { o.LimitPrice = decimal.RequireFromString("-1") }, "must be positive"},
+		{"invalid side", func(o *agent.ExchangeOrder) { o.Side = "long" }, "invalid side"},
+		{"wrong order_type", func(o *agent.ExchangeOrder) { o.OrderType = "market" }, "order_type="},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			o := fxLimitOrder()
+			tc.mut(&o)
+			_, err := c.SubmitLimit(context.Background(), o)
+			if err == nil {
+				t.Fatal("want error")
+			}
+			if !strings.Contains(err.Error(), tc.match) {
+				t.Errorf("err = %v, want substring %q", err, tc.match)
+			}
+		})
+	}
+}
+
+func TestSubmitLimit_BinanceAPIError_WrapsErrExchangeRejected(t *testing.T) {
+	c, _ := newLimitOnlyClient(t, &orderLimitOnly{
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"code":-1013,"msg":"Filter failure: PRICE_FILTER"}`))
+		},
+	})
+	_, err := c.SubmitLimit(context.Background(), fxLimitOrder())
+	if !errors.Is(err, agent.ErrExchangeRejected) {
+		t.Errorf("err = %v, want errors.Is ErrExchangeRejected", err)
+	}
+	if !strings.Contains(err.Error(), "-1013") {
+		t.Errorf("err = %v, want code -1013 in message", err)
+	}
+}
+
+func TestSubmitLimit_RateLimit429WrapsErrExchangeRejectedWithReason(t *testing.T) {
+	c, _ := newLimitOnlyClient(t, &orderLimitOnly{
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "20")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"code":-1003,"msg":"Too many requests."}`))
+		},
+	})
+	_, err := c.SubmitLimit(context.Background(), fxLimitOrder())
+	if !errors.Is(err, agent.ErrExchangeRejected) {
+		t.Errorf("err = %v, want errors.Is ErrExchangeRejected", err)
+	}
+	if !strings.Contains(err.Error(), "rate_limited") {
+		t.Errorf("err = %v, want reason 'rate_limited'", err)
+	}
+	if !strings.Contains(err.Error(), "20s") {
+		t.Errorf("err = %v, want retry_after=20s", err)
+	}
+}
+
+func TestSubmitLimit_TransportErrorNotWrapped(t *testing.T) {
+	// 5xx body with no Binance code → generic error, not ErrExchangeRejected.
+	c, _ := newLimitOnlyClient(t, &orderLimitOnly{
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(502)
+			_, _ = w.Write([]byte("<html>Bad Gateway</html>"))
+		},
+	})
+	_, err := c.SubmitLimit(context.Background(), fxLimitOrder())
+	if errors.Is(err, agent.ErrExchangeRejected) {
+		t.Errorf("502 transport failure should NOT wrap ErrExchangeRejected; err = %v", err)
+	}
+}
+
+func TestSubmitLimit_MissingOrderID(t *testing.T) {
+	c, _ := newLimitOnlyClient(t, &orderLimitOnly{
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"orderId":0,"transactTime":1,"fills":[]}`))
+		},
+	})
+	_, err := c.SubmitLimit(context.Background(), fxLimitOrder())
+	if err == nil || !strings.Contains(err.Error(), "missing orderId") {
+		t.Errorf("err = %v, want 'missing orderId'", err)
 	}
 }

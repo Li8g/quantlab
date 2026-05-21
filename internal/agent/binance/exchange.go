@@ -245,18 +245,15 @@ func (e *Exchange) doTimeSync(ctx context.Context) {
 
 // ===== agent.Exchange =====
 
-// Submit dispatches by order type. Limit orders are rejected in v1
-// (no user-data-stream wiring yet); market orders delegate to the
-// REST path in order.go.
+// Submit dispatches by order type. Both market and limit go through
+// REST POST /api/v3/order via order.go; async fills for resting limit
+// orders are surfaced by the User Data Stream wiring (Phase 7.11).
 func (e *Exchange) Submit(ctx context.Context, order agent.ExchangeOrder) (*agent.ExchangeSubmitResult, error) {
 	switch order.OrderType {
 	case "market":
 		return e.client.SubmitMarket(ctx, order)
 	case "limit":
-		// v1 scope: limit orders need user-data-stream WS to surface
-		// fills asynchronously. Reject with a stable reason so SaaS
-		// strategies can detect the limitation in test_mode.
-		return nil, fmt.Errorf("%w: limit_orders_not_supported_v1", agent.ErrExchangeRejected)
+		return e.client.SubmitLimit(ctx, order)
 	}
 	return nil, fmt.Errorf("%w: unsupported order_type %q", agent.ErrExchangeRejected, order.OrderType)
 }

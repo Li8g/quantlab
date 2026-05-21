@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,15 +128,34 @@ func TestExchange_SatisfiesAgentExchange(t *testing.T) {
 	var _ agent.Exchange = NewExchange("k", "s", ExchangeOptions{})
 }
 
-func TestExchange_LimitOrderRejected(t *testing.T) {
+func TestExchange_SubmitLimit_DelegatesToOrderEndpoint(t *testing.T) {
+	// Phase 7.10: Exchange.Submit("limit", ...) now hits /api/v3/order
+	// directly without BookTicker — MarketRef is fixed to limit_price
+	// per protocol §5.10.
 	h := &exchangeHandler{
-		orderReply: func(w http.ResponseWriter, _ *http.Request) {
-			t.Error("/api/v3/order must not be called for limit orders")
+		orderReply: func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			if q.Get("type") != "LIMIT" {
+				t.Errorf("type = %q, want LIMIT", q.Get("type"))
+			}
+			if q.Get("timeInForce") != "GTC" {
+				t.Errorf("timeInForce = %q, want GTC", q.Get("timeInForce"))
+			}
 			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{
+				"orderId":200,
+				"transactTime":1714000000333,
+				"status":"NEW",
+				"fills":[]
+			}`))
+		},
+		bookReply: func(w http.ResponseWriter, _ *http.Request) {
+			t.Error("BookTicker must not be called for limit orders")
+			w.WriteHeader(500)
 		},
 	}
-	ex, _ := newExchangeFixture(t, h, 10*time.Hour) // disable ping in this test
-	_, err := ex.Submit(context.Background(), agent.ExchangeOrder{
+	ex, _ := newExchangeFixture(t, h, 10*time.Hour)
+	res, err := ex.Submit(context.Background(), agent.ExchangeOrder{
 		OrderType:     "limit",
 		Symbol:        "BTCUSDT",
 		Side:          "buy",
@@ -145,11 +163,17 @@ func TestExchange_LimitOrderRejected(t *testing.T) {
 		LimitPrice:    decimal.RequireFromString("50000"),
 		ClientOrderID: "01HKLIMIT00000000000000001",
 	})
-	if !errors.Is(err, agent.ErrExchangeRejected) {
-		t.Fatalf("err = %v, want errors.Is ErrExchangeRejected", err)
+	if err != nil {
+		t.Fatalf("Submit(limit): %v", err)
 	}
-	if !strings.Contains(err.Error(), "limit_orders_not_supported_v1") {
-		t.Errorf("err = %v, want stable reason", err)
+	if res.ExchangeOrderID != "200" {
+		t.Errorf("ExchangeOrderID = %q, want 200", res.ExchangeOrderID)
+	}
+	if !res.MarketRef.Equal(decimal.RequireFromString("50000")) {
+		t.Errorf("MarketRef = %s, want 50000 (limit_price)", res.MarketRef)
+	}
+	if h.orders.Load() != 1 || h.books.Load() != 0 {
+		t.Errorf("orders=%d books=%d, want orders=1 books=0", h.orders.Load(), h.books.Load())
 	}
 }
 

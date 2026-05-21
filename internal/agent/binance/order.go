@@ -171,5 +171,120 @@ func mapSide(s string) (string, error) {
 	case "sell":
 		return "SELL", nil
 	}
-	return "", fmt.Errorf("binance.SubmitMarket: invalid side %q", s)
+	return "", fmt.Errorf("binance: invalid side %q", s)
+}
+
+// SubmitLimit places a LIMIT GTC order on Binance Spot. The shape is
+// identical to SubmitMarket except:
+//
+//  1. No BookTicker round-trip — protocol §5.10 fixes MarketRef =
+//     LimitPrice for limit orders, so the snapshot isn't needed.
+//  2. price + timeInForce=GTC are added to the params.
+//  3. Inline fills are usually empty (status=NEW) — the order rests
+//     on the book and asynchronous fills arrive via the User Data
+//     Stream (Phase 7.11). A limit order that immediately crosses the
+//     book returns status=FILLED with inline fills, which we decode
+//     identically to SubmitMarket.
+//
+// Until the User Data Stream wiring lands (7.11), a non-crossing
+// limit order is essentially fire-and-forget — Agent surfaces Ack
+// {status=accepted, exchange_order_id, market_ref=limit_price} and
+// no subsequent OrderUpdate. Acceptable interim state for testnet /
+// paper-trading use.
+func (c *Client) SubmitLimit(ctx context.Context, order agent.ExchangeOrder) (*agent.ExchangeSubmitResult, error) {
+	if order.OrderType != "limit" {
+		return nil, fmt.Errorf("binance.SubmitLimit: order_type=%q, want limit", order.OrderType)
+	}
+	if order.Symbol == "" {
+		return nil, errors.New("binance.SubmitLimit: empty symbol")
+	}
+	if order.ClientOrderID == "" {
+		return nil, errors.New("binance.SubmitLimit: empty client_order_id")
+	}
+	if order.Quantity.IsZero() || order.Quantity.IsNegative() {
+		return nil, fmt.Errorf("binance.SubmitLimit: quantity=%s, must be positive", order.Quantity)
+	}
+	if order.LimitPrice.IsZero() || order.LimitPrice.IsNegative() {
+		return nil, fmt.Errorf("binance.SubmitLimit: limit_price=%s, must be positive", order.LimitPrice)
+	}
+
+	binSide, err := mapSide(order.Side)
+	if err != nil {
+		return nil, err
+	}
+
+	params := url.Values{}
+	params.Set("symbol", order.Symbol)
+	params.Set("side", binSide)
+	params.Set("type", "LIMIT")
+	// GTC = Good Till Cancel. IOC / FOK are out of scope for v1; the
+	// protocol doesn't surface either to SaaS yet, so committing to GTC
+	// keeps the wire contract one-dimensional.
+	params.Set("timeInForce", "GTC")
+	params.Set("quantity", order.Quantity.String())
+	params.Set("price", order.LimitPrice.String())
+	params.Set("newClientOrderId", order.ClientOrderID)
+	params.Set("newOrderRespType", "FULL")
+
+	body, err := c.signed(ctx, http.MethodPost, "/api/v3/order", params)
+	if err != nil {
+		// Same error-class layering as SubmitMarket — RateLimitError
+		// must be checked before APIError because it Unwraps to one.
+		var rlErr *RateLimitError
+		if errors.As(err, &rlErr) {
+			reason := "rate_limited"
+			if rlErr.Banned {
+				reason = "ip_banned"
+			}
+			return nil, fmt.Errorf("%w: %s retry_after=%s",
+				agent.ErrExchangeRejected, reason, rlErr.RetryAfter)
+		}
+		var apiErr *APIError
+		if errors.As(err, &apiErr) {
+			return nil, fmt.Errorf("%w: %s", agent.ErrExchangeRejected, apiErr.Error())
+		}
+		return nil, fmt.Errorf("binance.SubmitLimit: %w", err)
+	}
+
+	var raw rawOrderResponse
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("binance.SubmitLimit: decode response: %w", err)
+	}
+	if raw.OrderID == 0 {
+		return nil, fmt.Errorf("binance.SubmitLimit: response missing orderId: %s", string(body))
+	}
+
+	fills := make([]agent.ExchangeFill, 0, len(raw.Fills))
+	for i, f := range raw.Fills {
+		fillQty, err := decimal.NewFromString(f.Qty)
+		if err != nil {
+			return nil, fmt.Errorf("binance.SubmitLimit: fill[%d].qty %q: %w", i, f.Qty, err)
+		}
+		fillPrice, err := decimal.NewFromString(f.Price)
+		if err != nil {
+			return nil, fmt.Errorf("binance.SubmitLimit: fill[%d].price %q: %w", i, f.Price, err)
+		}
+		fillFee, err := decimal.NewFromString(f.Commission)
+		if err != nil {
+			return nil, fmt.Errorf("binance.SubmitLimit: fill[%d].commission %q: %w", i, f.Commission, err)
+		}
+		fills = append(fills, agent.ExchangeFill{
+			FillQuantity:       fillQty,
+			FillPrice:          fillPrice,
+			FillFeeAsset:       f.CommissionAsset,
+			FillFeeAmount:      fillFee,
+			FilledAtExchangeMs: raw.TransactTime,
+		})
+	}
+
+	return &agent.ExchangeSubmitResult{
+		ExchangeOrderID: strconv.FormatInt(raw.OrderID, 10),
+		AcceptedAtMs:    raw.TransactTime,
+		// Protocol §5.10: limit-order slippage is computed against
+		// LimitPrice, not best-side book — keep the field populated so
+		// downstream sees a consistent non-zero MarketRef for both
+		// order types.
+		MarketRef: order.LimitPrice,
+		Fills:     fills,
+	}, nil
 }
