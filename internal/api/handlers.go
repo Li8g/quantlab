@@ -120,6 +120,24 @@ type TradeLister interface {
 	ListByInstance(ctx context.Context, instanceID string, limit int) ([]store.TradeRecord, error)
 }
 
+// SharpeBankStatter computes the §I-4.2 reliability stats for a
+// (strategy_id, pair) SharpeBank bucket. repository.SharpeBankRepo
+// satisfies this — the wider repo has Add too, but the HTTP layer is
+// read-only so we expose only Stats here.
+type SharpeBankStatter interface {
+	Stats(ctx context.Context, strategyID, pairID string) (SharpeBankStatsSnapshot, error)
+}
+
+// SharpeBankStatsSnapshot is the boundary type for SharpeBankStatter.
+// Mirrors repository.SharpeBankStats but lives here so the api package
+// doesn't import repository (cycle break — repository → api for the
+// Promote/Retire request types).
+type SharpeBankStatsSnapshot struct {
+	N              int
+	SharpeMean     float64
+	SharpeVariance float64
+}
+
 // IDIssuer hands out new InstanceIDs. store.NewULID is the production
 // implementation; tests inject a deterministic fake.
 type IDIssuer interface {
@@ -145,6 +163,7 @@ type Handlers struct {
 	ChampionHistory ChampionHistoryReader
 	Gaps            KLineGapLister
 	Trades          TradeLister
+	SharpeBank      SharpeBankStatter
 
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests
@@ -180,6 +199,9 @@ func (h *Handlers) Register(r gin.IRouter) {
 	}
 	if h.Gaps != nil {
 		g.GET("/data/gaps", h.ListGaps)
+	}
+	if h.SharpeBank != nil {
+		g.GET("/ga/sharpebank/stats", h.GetSharpeBankStats)
 	}
 
 	// Phase 6.3 instance routes — JWT-protected when middleware is

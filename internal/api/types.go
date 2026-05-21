@@ -248,3 +248,17 @@ type ListInstanceTradesResponse struct {
 	Items []TradeRecordSummary `json:"items"`
 	Count int                  `json:"count"`
 }
+
+// SharpeBankStatsResponse is the body of GET /api/v1/ga/sharpebank/stats.
+// Surfaces the §I-4.2 reliability stats so the SaaS UI can show DSR
+// confidence to operators before they Promote: until N reaches
+// MinTrialsForDSR, DSR cannot be computed from this bucket.
+type SharpeBankStatsResponse struct {
+	StrategyID        string  `json:"strategy_id"`
+	Pair              string  `json:"pair"`
+	N                 int     `json:"n"`
+	SharpeMean        float64 `json:"sharpe_mean"`
+	SharpeVariance    float64 `json:"sharpe_variance"`
+	MinTrialsForDSR   int     `json:"min_trials_for_dsr"`
+	DSREligible       bool    `json:"dsr_eligible"`
+}

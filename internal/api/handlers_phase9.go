@@ -23,6 +23,7 @@ import (
 
 	"quantlab/internal/api/middleware"
 	"quantlab/internal/saas/store"
+	"quantlab/internal/verification"
 )
 
 // Per-endpoint pagination defaults and hard caps. Defaults are tuned
@@ -235,6 +236,38 @@ func (h *Handlers) ListInstanceTrades(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, ListInstanceTradesResponse{Items: items, Count: len(items)})
+}
+
+// ===== /api/v1/ga/sharpebank/stats =====
+
+// GetSharpeBankStats: GET /api/v1/ga/sharpebank/stats?strategy_id=&pair=.
+// Both query params are REQUIRED — Stats is keyed by (strategy_id,
+// pair_id) and the SharpeBank table doesn't index by either alone.
+// dsr_eligible is derived (N >= verification.MinTrialsForDSR) so the
+// UI doesn't have to import the verification constant to render the
+// gate.
+func (h *Handlers) GetSharpeBankStats(c *gin.Context) {
+	strategyID := c.Query("strategy_id")
+	pair := c.Query("pair")
+	if strategyID == "" || pair == "" {
+		writeError(c, http.StatusBadRequest,
+			errors.New("strategy_id and pair are required"))
+		return
+	}
+	snap, err := h.SharpeBank.Stats(c.Request.Context(), strategyID, pair)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, SharpeBankStatsResponse{
+		StrategyID:      strategyID,
+		Pair:            pair,
+		N:               snap.N,
+		SharpeMean:      snap.SharpeMean,
+		SharpeVariance:  snap.SharpeVariance,
+		MinTrialsForDSR: verification.MinTrialsForDSR,
+		DSREligible:     snap.N >= verification.MinTrialsForDSR,
+	})
 }
 
 // canViewInstance enforces ownership for read-only endpoints. Tests

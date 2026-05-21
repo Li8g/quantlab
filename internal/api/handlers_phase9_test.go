@@ -88,6 +88,20 @@ func (f *fakeInstanceStore) SetActiveChampion(_ context.Context, _ string, _ str
 	return errors.New("not used")
 }
 
+type fakeSharpeBank struct {
+	snap SharpeBankStatsSnapshot
+	err  error
+	got  struct {
+		strategyID, pair string
+	}
+}
+
+func (f *fakeSharpeBank) Stats(_ context.Context, strategyID, pair string) (SharpeBankStatsSnapshot, error) {
+	f.got.strategyID = strategyID
+	f.got.pair = pair
+	return f.snap, f.err
+}
+
 type fakeTradeLister struct {
 	rows []store.TradeRecord
 	err  error
@@ -462,6 +476,72 @@ func TestListInstanceTrades_OwnerSeesOwnInstance(t *testing.T) {
 	w := doRequest(r, http.MethodGet, "/api/v1/instances/inst-1/trades", nil)
 	if w.Code != http.StatusOK {
 		t.Errorf("Code = %d, want 200 (owner)", w.Code)
+	}
+}
+
+// ===== /ga/sharpebank/stats =====
+
+func TestGetSharpeBankStats_HappyPath_DSREligible(t *testing.T) {
+	f := &fakeSharpeBank{snap: SharpeBankStatsSnapshot{
+		N: 7, SharpeMean: 1.2, SharpeVariance: 0.05,
+	}}
+	h := &Handlers{SharpeBank: f}
+	w := doJSON(newRouter(h), http.MethodGet,
+		"/api/v1/ga/sharpebank/stats?strategy_id=sigmoid_v1&pair=BTCUSDT", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Code = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp SharpeBankStatsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.N != 7 || resp.SharpeMean != 1.2 || resp.SharpeVariance != 0.05 {
+		t.Errorf("resp = %+v", resp)
+	}
+	if resp.MinTrialsForDSR != 5 {
+		t.Errorf("MinTrialsForDSR = %d, want 5", resp.MinTrialsForDSR)
+	}
+	if !resp.DSREligible {
+		t.Error("DSREligible = false; N=7 ≥ 5 → must be eligible")
+	}
+}
+
+func TestGetSharpeBankStats_BelowMinTrialsIneligible(t *testing.T) {
+	f := &fakeSharpeBank{snap: SharpeBankStatsSnapshot{N: 3}}
+	h := &Handlers{SharpeBank: f}
+	w := doJSON(newRouter(h), http.MethodGet,
+		"/api/v1/ga/sharpebank/stats?strategy_id=sigmoid_v1&pair=BTCUSDT", nil)
+	var resp SharpeBankStatsResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.DSREligible {
+		t.Errorf("DSREligible = true at N=%d; want false (gate is %d)",
+			resp.N, resp.MinTrialsForDSR)
+	}
+}
+
+func TestGetSharpeBankStats_MissingQueryParamsReturns400(t *testing.T) {
+	h := &Handlers{SharpeBank: &fakeSharpeBank{}}
+	w := doJSON(newRouter(h), http.MethodGet, "/api/v1/ga/sharpebank/stats", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Code = %d, want 400", w.Code)
+	}
+}
+
+func TestGetSharpeBankStats_RepoError500(t *testing.T) {
+	h := &Handlers{SharpeBank: &fakeSharpeBank{err: errors.New("db down")}}
+	w := doJSON(newRouter(h), http.MethodGet,
+		"/api/v1/ga/sharpebank/stats?strategy_id=s&pair=p", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Code = %d, want 500", w.Code)
+	}
+}
+
+func TestGetSharpeBankStats_RouteNotRegisteredWhenStatterNil(t *testing.T) {
+	h := &Handlers{} // no SharpeBank
+	w := doJSON(newRouter(h), http.MethodGet,
+		"/api/v1/ga/sharpebank/stats?strategy_id=s&pair=p", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Code = %d, want 404", w.Code)
 	}
 }
 

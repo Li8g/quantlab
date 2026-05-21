@@ -49,6 +49,23 @@ var (
 	strategyVersion = "v0.1.0-proto"
 )
 
+// sharpeBankAdapter bridges repository.SharpeBankRepo to the api
+// layer's SharpeBankStatter — translates between the two stats types
+// without making repository → api → repository introspect each other.
+type sharpeBankAdapter struct{ repo *repository.SharpeBankRepo }
+
+func (a sharpeBankAdapter) Stats(ctx context.Context, strategyID, pair string) (api.SharpeBankStatsSnapshot, error) {
+	s, err := a.repo.Stats(ctx, strategyID, pair)
+	if err != nil {
+		return api.SharpeBankStatsSnapshot{}, err
+	}
+	return api.SharpeBankStatsSnapshot{
+		N:              s.N,
+		SharpeMean:     s.SharpeMean,
+		SharpeVariance: s.SharpeVariance,
+	}, nil
+}
+
 // ulidIssuer satisfies api.IDIssuer using the package-shared ULID
 // generator (store.NewULID, MonotonicEntropy mode).
 type ulidIssuer struct{}
@@ -160,6 +177,7 @@ func main() {
 		ChampionHistory: championRepo,
 		Gaps:            gapRepo,
 		Trades:          tradeRepo,
+		SharpeBank:      sharpeBankAdapter{repo: sharpeRepo},
 		AuthRequired:    middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,
