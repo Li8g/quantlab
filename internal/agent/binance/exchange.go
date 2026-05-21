@@ -32,8 +32,16 @@ var _ agent.Exchange = (*Exchange)(nil)
 // session never logs more than once per minute about Ping and so a
 // dead Binance edge surfaces within ~1 ping interval to Reachable().
 const (
-	DefaultPingInterval = 30 * time.Second
-	defaultPingTimeout  = 5 * time.Second
+	DefaultPingInterval     = 30 * time.Second
+	defaultPingTimeout      = 5 * time.Second
+	DefaultTimeSyncInterval = 5 * time.Minute
+	defaultTimeSyncTimeout  = 5 * time.Second
+
+	// timeSyncWarnThresholdMs is when |serverOffset| first becomes
+	// noisy enough to flag. recvWindow defaults to 5s; a 1s drift is
+	// non-fatal but worth a Warn so ops can spot a sick clock before
+	// signed requests start being rejected.
+	timeSyncWarnThresholdMs = 1000
 )
 
 // ExchangeOptions tunes the Binance adapter. Zero values produce
@@ -49,6 +57,12 @@ type ExchangeOptions struct {
 	// PingInterval bounds Reachable() staleness. 0 → DefaultPingInterval.
 	PingInterval time.Duration
 
+	// TimeSyncInterval bounds how stale the cached server-clock offset
+	// can get. 0 → DefaultTimeSyncInterval. Negative disables periodic
+	// resync (first sync still runs at Start to surface configuration
+	// errors before the first signed request).
+	TimeSyncInterval time.Duration
+
 	// Logger is used for ping success/failure structured logs.
 	// nil → slog.Default().
 	Logger *slog.Logger
@@ -57,10 +71,12 @@ type ExchangeOptions struct {
 // Exchange is the production-grade agent.Exchange backed by Binance
 // Spot REST. One per Agent process is sufficient.
 type Exchange struct {
-	client       *Client
-	pingInterval time.Duration
-	pingTimeout  time.Duration
-	logger       *slog.Logger
+	client           *Client
+	pingInterval     time.Duration
+	pingTimeout      time.Duration
+	timeSyncInterval time.Duration
+	timeSyncTimeout  time.Duration
+	logger           *slog.Logger
 
 	reachable atomic.Bool
 
@@ -68,7 +84,10 @@ type Exchange struct {
 	closeOnce sync.Once
 	started   atomic.Bool
 	stopCh    chan struct{}
-	doneCh    chan struct{}
+	// pingDoneCh / timeSyncDoneCh close when their respective goroutines
+	// exit; Close() waits on both before returning.
+	pingDoneCh     chan struct{}
+	timeSyncDoneCh chan struct{}
 }
 
 // NewExchange constructs the adapter without starting the ping loop.
@@ -84,6 +103,14 @@ func NewExchange(apiKey, apiSecret string, opts ExchangeOptions) *Exchange {
 	if pi <= 0 {
 		pi = DefaultPingInterval
 	}
+	// TimeSyncInterval semantics:
+	//   0       → DefaultTimeSyncInterval (periodic resync on)
+	//   < 0     → disable periodic resync (first sync still runs)
+	//   > 0     → explicit interval
+	tsi := opts.TimeSyncInterval
+	if tsi == 0 {
+		tsi = DefaultTimeSyncInterval
+	}
 	return &Exchange{
 		client: NewClient(apiKey, apiSecret, Options{
 			BaseURL:      opts.BaseURL,
@@ -91,11 +118,14 @@ func NewExchange(apiKey, apiSecret string, opts ExchangeOptions) *Exchange {
 			RecvWindowMs: opts.RecvWindowMs,
 			NowFn:        opts.NowFn,
 		}),
-		pingInterval: pi,
-		pingTimeout:  defaultPingTimeout,
-		logger:       logger,
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
+		pingInterval:     pi,
+		pingTimeout:      defaultPingTimeout,
+		timeSyncInterval: tsi,
+		timeSyncTimeout:  defaultTimeSyncTimeout,
+		logger:           logger,
+		stopCh:           make(chan struct{}),
+		pingDoneCh:       make(chan struct{}),
+		timeSyncDoneCh:   make(chan struct{}),
 	}
 }
 
@@ -104,24 +134,26 @@ func NewExchange(apiKey, apiSecret string, opts ExchangeOptions) *Exchange {
 // covered by the agent.Exchange interface.
 func (e *Exchange) Client() *Client { return e.client }
 
-// Start launches the ping loop. Subsequent calls are no-ops. The
-// goroutine exits when ctx is cancelled OR Close is called, whichever
-// happens first.
+// Start launches the background loops (ping + time sync). Subsequent
+// calls are no-ops. The goroutines exit when ctx is cancelled OR Close
+// is called, whichever happens first.
 func (e *Exchange) Start(ctx context.Context) {
 	e.startOnce.Do(func() {
 		e.started.Store(true)
 		go e.pingLoop(ctx)
+		go e.timeSyncLoop(ctx)
 	})
 }
 
-// Close stops the ping loop and waits for the goroutine to exit.
+// Close stops the background loops and waits for goroutines to exit.
 // Idempotent. Safe to call before Start (returns immediately).
 func (e *Exchange) Close() error {
 	e.closeOnce.Do(func() {
 		close(e.stopCh)
 	})
 	if e.started.Load() {
-		<-e.doneCh
+		<-e.pingDoneCh
+		<-e.timeSyncDoneCh
 	}
 	return nil
 }
@@ -130,7 +162,7 @@ func (e *Exchange) Close() error {
 // run the first probe inline (with its own timeout) so a misconfigured
 // API key is visible in Reachable() before the first Submit attempt.
 func (e *Exchange) pingLoop(ctx context.Context) {
-	defer close(e.doneCh)
+	defer close(e.pingDoneCh)
 
 	e.doPing(ctx)
 
@@ -148,6 +180,33 @@ func (e *Exchange) pingLoop(ctx context.Context) {
 	}
 }
 
+// timeSyncLoop runs an inline first SyncTime then (unless disabled)
+// resyncs every timeSyncInterval. The inline call surfaces a
+// misconfigured base_url / firewall blocking unsigned endpoints before
+// the first signed Submit, which would otherwise look like an
+// API-credentials failure.
+func (e *Exchange) timeSyncLoop(ctx context.Context) {
+	defer close(e.timeSyncDoneCh)
+
+	e.doTimeSync(ctx)
+
+	if e.timeSyncInterval < 0 {
+		return
+	}
+	t := time.NewTicker(e.timeSyncInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.stopCh:
+			return
+		case <-t.C:
+			e.doTimeSync(ctx)
+		}
+	}
+}
+
 // doPing performs one Ping and updates reachable. Bounded by
 // pingTimeout so a hung TCP socket cannot block the loop past one
 // tick.
@@ -160,6 +219,28 @@ func (e *Exchange) doPing(ctx context.Context) {
 		return
 	}
 	e.reachable.Store(true)
+}
+
+// doTimeSync performs one SyncTime call. Bounded by timeSyncTimeout
+// so the loop cannot stall on a hung socket. Failures keep the prior
+// offset (SyncTime is responsible for that invariant).
+func (e *Exchange) doTimeSync(ctx context.Context) {
+	syncCtx, cancel := context.WithTimeout(ctx, e.timeSyncTimeout)
+	defer cancel()
+	if err := e.client.SyncTime(syncCtx); err != nil {
+		e.logger.Warn("binance_time_sync_failed",
+			"err", err,
+			"offset_ms", e.client.ServerOffsetMs())
+		return
+	}
+	off := e.client.ServerOffsetMs()
+	abs := off
+	if abs < 0 {
+		abs = -abs
+	}
+	if abs >= timeSyncWarnThresholdMs {
+		e.logger.Warn("binance_time_sync_large_drift", "offset_ms", off)
+	}
 }
 
 // ===== agent.Exchange =====

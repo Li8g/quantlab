@@ -101,6 +101,21 @@ func (c *Client) SubmitMarket(ctx context.Context, order agent.ExchangeOrder) (*
 
 	body, err := c.signed(ctx, http.MethodPost, "/api/v3/order", params)
 	if err != nil {
+		// Check RateLimitError BEFORE APIError — RateLimitError also
+		// satisfies errors.As(*APIError) via Unwrap, so the order is
+		// important. The order never reached the matching engine
+		// (Binance throttles before evaluation) so we surface it as a
+		// rejection with a stable reason, preserving retry hints in
+		// the message for ops/diagnostic.
+		var rlErr *RateLimitError
+		if errors.As(err, &rlErr) {
+			reason := "rate_limited"
+			if rlErr.Banned {
+				reason = "ip_banned"
+			}
+			return nil, fmt.Errorf("%w: %s retry_after=%s",
+				agent.ErrExchangeRejected, reason, rlErr.RetryAfter)
+		}
 		var apiErr *APIError
 		if errors.As(err, &apiErr) {
 			return nil, fmt.Errorf("%w: %s", agent.ErrExchangeRejected, apiErr.Error())

@@ -309,6 +309,165 @@ func TestDo_PropagatesContextCancel(t *testing.T) {
 	}
 }
 
+// ===== Phase 7.9: rate-limit awareness =====
+
+func TestDo_ParsesUsedWeightHeader(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-MBX-USED-WEIGHT-1m", "742")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	if _, err := c.unsigned(context.Background(), http.MethodGet, "/api/v3/ping", nil); err != nil {
+		t.Fatalf("unsigned: %v", err)
+	}
+	if got := c.LastUsedWeight1m(); got != 742 {
+		t.Errorf("LastUsedWeight1m = %d, want 742", got)
+	}
+}
+
+func TestDo_HandlesMissingUsedWeightHeader(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	if _, err := c.unsigned(context.Background(), http.MethodGet, "/api/v3/ping", nil); err != nil {
+		t.Fatalf("unsigned: %v", err)
+	}
+	if got := c.LastUsedWeight1m(); got != 0 {
+		t.Errorf("LastUsedWeight1m = %d, want 0 (no observation)", got)
+	}
+}
+
+func TestDo_RateLimit429ReturnsRateLimitError(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("X-MBX-USED-WEIGHT-1m", "1201")
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"code":-1003,"msg":"Too many requests."}`))
+	})
+	_, err := c.unsigned(context.Background(), http.MethodGet, "/api/v3/ping", nil)
+	if err == nil {
+		t.Fatal("want error on 429")
+	}
+	var rlErr *RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("err = %v, want *RateLimitError", err)
+	}
+	if rlErr.Banned {
+		t.Error("Banned = true, want false (429 is throttle, not ban)")
+	}
+	if rlErr.RetryAfter != 60*time.Second {
+		t.Errorf("RetryAfter = %s, want 60s", rlErr.RetryAfter)
+	}
+	if rlErr.Code != -1003 {
+		t.Errorf("inner APIError.Code = %d, want -1003", rlErr.Code)
+	}
+	// errors.As(*APIError) must still succeed via Unwrap.
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Error("errors.As(*APIError) failed against RateLimitError")
+	}
+	if got := c.LastUsedWeight1m(); got != 1201 {
+		t.Errorf("LastUsedWeight1m = %d, want 1201 (header parsed even on 429)", got)
+	}
+}
+
+func TestDo_RateLimit418ReturnsRateLimitErrorBanned(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "300")
+		w.WriteHeader(418)
+		_, _ = w.Write([]byte(`{"code":-1003,"msg":"WAY too many requests; IP banned."}`))
+	})
+	_, err := c.unsigned(context.Background(), http.MethodGet, "/api/v3/ping", nil)
+	var rlErr *RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("err = %v, want *RateLimitError", err)
+	}
+	if !rlErr.Banned {
+		t.Error("Banned = false, want true (418 → IP ban)")
+	}
+	if rlErr.RetryAfter != 300*time.Second {
+		t.Errorf("RetryAfter = %s, want 5min", rlErr.RetryAfter)
+	}
+}
+
+func TestDo_RateLimit429NoBodyStillRateLimitError(t *testing.T) {
+	// Some Binance edges return 429 with a plain-text body. Verify
+	// RateLimitError is still produced (Banned=false, RetryAfter parsed,
+	// inner APIError.Message carries the snippet).
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "10")
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`rate limited`))
+	})
+	_, err := c.unsigned(context.Background(), http.MethodGet, "/api/v3/ping", nil)
+	var rlErr *RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("err = %v, want *RateLimitError", err)
+	}
+	if rlErr.RetryAfter != 10*time.Second {
+		t.Errorf("RetryAfter = %s, want 10s", rlErr.RetryAfter)
+	}
+	if rlErr.Message != "rate limited" {
+		t.Errorf("inner Message = %q, want trimmed snippet", rlErr.Message)
+	}
+}
+
+func TestDo_RateLimitMissingRetryAfterHeader(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"code":-1003,"msg":"slow down"}`))
+	})
+	_, err := c.unsigned(context.Background(), http.MethodGet, "/api/v3/ping", nil)
+	var rlErr *RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("err = %v, want *RateLimitError", err)
+	}
+	if rlErr.RetryAfter != 0 {
+		t.Errorf("RetryAfter = %s, want 0 (no header)", rlErr.RetryAfter)
+	}
+}
+
+func TestParseRetryAfter_HTTPDate(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	later := now.Add(45 * time.Second).UTC().Format(http.TimeFormat)
+	if got := parseRetryAfter(later, now); got != 45*time.Second {
+		t.Errorf("HTTP-date: got %s, want 45s", got)
+	}
+}
+
+func TestParseRetryAfter_PastDateClampsZero(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	past := now.Add(-1 * time.Hour).UTC().Format(http.TimeFormat)
+	if got := parseRetryAfter(past, now); got != 0 {
+		t.Errorf("past HTTP-date: got %s, want 0", got)
+	}
+}
+
+func TestParseRetryAfter_Garbage(t *testing.T) {
+	if got := parseRetryAfter("not-a-time", time.Now()); got != 0 {
+		t.Errorf("garbage: got %s, want 0", got)
+	}
+	if got := parseRetryAfter("", time.Now()); got != 0 {
+		t.Errorf("empty: got %s, want 0", got)
+	}
+}
+
+func TestRateLimitError_ErrorString(t *testing.T) {
+	rl := &RateLimitError{
+		APIError:   APIError{HTTPStatus: 429, Code: -1003, Message: "too many"},
+		RetryAfter: 5 * time.Second,
+		Banned:     false,
+	}
+	if !strings.Contains(rl.Error(), "rate_limited") || !strings.Contains(rl.Error(), "5s") {
+		t.Errorf("Error() = %q, want rate_limited + 5s", rl.Error())
+	}
+	rl.Banned = true
+	if !strings.Contains(rl.Error(), "ip_banned") {
+		t.Errorf("Error() = %q, want ip_banned for Banned=true", rl.Error())
+	}
+}
+
 func TestSigned_QueryStringMatchesSignedPayloadByte(t *testing.T) {
 	// Defends the invariant: whatever we sign is EXACTLY what we send.
 	// If we re-encode params between signing and sending the server's

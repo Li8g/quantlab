@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -73,6 +74,43 @@ func (e *APIError) Error() string {
 		e.HTTPStatus, e.Code, e.Message)
 }
 
+// RateLimitError is returned on HTTP 429 (rate limit) or 418 (IP
+// banned). Inner APIError is populated when Binance returned a
+// well-formed `{code, msg}` body (typical); otherwise APIError.Code
+// is zero and Message holds the trimmed body snippet.
+//
+// RetryAfter is parsed from the standard Retry-After response header.
+// Zero means the header was missing — callers can treat this as
+// "default backoff window" (recommended: at least 60s for 429, much
+// longer for 418).
+//
+// Banned discriminates the two cases: 418 is a stronger signal that
+// the IP is temporarily banned (Binance docs: minutes-to-days);
+// callers should usually surface 418 as fatal and stop pushing
+// requests rather than retrying.
+type RateLimitError struct {
+	APIError
+	RetryAfter time.Duration
+	Banned     bool
+}
+
+func (e *RateLimitError) Error() string {
+	prefix := "rate_limited"
+	if e.Banned {
+		prefix = "ip_banned"
+	}
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("binance: %s retry_after=%s (%s)",
+			prefix, e.RetryAfter, e.APIError.Error())
+	}
+	return fmt.Sprintf("binance: %s (%s)", prefix, e.APIError.Error())
+}
+
+// Unwrap exposes the inner APIError so errors.As(*APIError) works
+// against a RateLimitError too — useful for callers that only care
+// about Code without distinguishing the rate-limit subclass.
+func (e *RateLimitError) Unwrap() error { return &e.APIError }
+
 // ErrEmptyAPIKey / ErrEmptyAPISecret guard signed() against silent
 // misconfiguration. Public-only callers (Ping, BookTicker) can use
 // NewPublicClient and skip the secret entirely.
@@ -113,6 +151,20 @@ type Client struct {
 	httpClient   *http.Client
 	recvWindowMs int
 	nowFn        func() time.Time
+
+	// serverOffsetMs is added to the local clock when stamping
+	// signed-request timestamps. Maintained by SyncTime; default 0
+	// (treat local clock as authoritative). Atomic so the Exchange's
+	// background re-sync goroutine can update concurrently with
+	// in-flight signed requests.
+	serverOffsetMs atomic.Int64
+
+	// lastUsedWeight1m caches the most recent X-MBX-USED-WEIGHT-1m
+	// header value (Binance's 1-minute rolling request-weight tally).
+	// Updated by do() on every response that carries the header. Zero
+	// means "no observation yet" (e.g. before any request, or
+	// httptest backends that don't emit the header).
+	lastUsedWeight1m atomic.Int32
 }
 
 // NewClient constructs a Client suitable for signed (account / order)
@@ -183,7 +235,8 @@ func (c *Client) signed(ctx context.Context, method, path string, params url.Val
 	if params == nil {
 		params = url.Values{}
 	}
-	params.Set("timestamp", strconv.FormatInt(c.nowFn().UnixMilli(), 10))
+	params.Set("timestamp", strconv.FormatInt(
+		c.nowFn().UnixMilli()+c.serverOffsetMs.Load(), 10))
 	params.Set("recvWindow", strconv.Itoa(c.recvWindowMs))
 
 	payload := params.Encode()
@@ -203,9 +256,14 @@ func (c *Client) signed(ctx context.Context, method, path string, params url.Val
 
 // do runs the HTTP exchange and normalises the response.
 //   - 2xx: body bytes are returned to the caller.
-//   - non-2xx with a `{"code","msg"}` JSON body: *APIError.
+//   - 429 (throttle) or 418 (IP banned): *RateLimitError (which is
+//     also an *APIError via Unwrap).
+//   - other non-2xx with a `{"code","msg"}` JSON body: *APIError.
 //   - non-2xx with any other body: a generic error carrying the
 //     status code and the first 256 bytes of body for triage.
+//
+// Every response (success or error) updates Client.lastUsedWeight1m
+// from the X-MBX-USED-WEIGHT-1m header when present.
 //
 // Network errors / context cancellation propagate verbatim.
 func (c *Client) do(req *http.Request) ([]byte, error) {
@@ -220,20 +278,29 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 		return nil, fmt.Errorf("binance: read body: %w", err)
 	}
 
+	if v := resp.Header.Get("X-MBX-USED-WEIGHT-1M"); v != "" {
+		if w, perr := strconv.Atoi(v); perr == nil && w >= 0 {
+			c.lastUsedWeight1m.Store(int32(w))
+		}
+	}
+
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return body, nil
 	}
 
-	var apiErr struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-	}
-	if jerr := json.Unmarshal(body, &apiErr); jerr == nil && apiErr.Msg != "" {
-		return nil, &APIError{
-			HTTPStatus: resp.StatusCode,
-			Code:       apiErr.Code,
-			Message:    apiErr.Msg,
+	apiErr, fromJSON := decodeAPIError(resp.StatusCode, body)
+
+	if resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode == http.StatusTeapot { // 418 → Binance IP ban
+		return nil, &RateLimitError{
+			APIError:   apiErr,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), c.nowFn()),
+			Banned:     resp.StatusCode == http.StatusTeapot,
 		}
+	}
+
+	if fromJSON {
+		return nil, &apiErr
 	}
 
 	snippet := body
@@ -241,4 +308,99 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 		snippet = snippet[:256]
 	}
 	return nil, fmt.Errorf("binance: http %d: %s", resp.StatusCode, string(snippet))
+}
+
+// decodeAPIError extracts {code, msg} from a Binance error body. The
+// second return is true when the body was a well-formed {code, msg}
+// JSON document (Binance's standard error shape); false when we fell
+// back to a trimmed snippet (e.g. HTML edge errors, plain-text
+// throttle bodies). Callers use the flag to decide between *APIError
+// and a generic error for non-rate-limit responses — for 429/418 we
+// always want the inner APIError populated even from a snippet.
+func decodeAPIError(status int, body []byte) (APIError, bool) {
+	var raw struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if jerr := json.Unmarshal(body, &raw); jerr == nil && raw.Msg != "" {
+		return APIError{HTTPStatus: status, Code: raw.Code, Message: raw.Msg}, true
+	}
+	snippet := body
+	if len(snippet) > 256 {
+		snippet = snippet[:256]
+	}
+	return APIError{HTTPStatus: status, Code: 0, Message: string(snippet)}, false
+}
+
+// parseRetryAfter handles the two valid Retry-After header formats:
+//   - delta-seconds: e.g. "60" → 60 * time.Second
+//   - HTTP-date:     e.g. "Fri, 31 Dec 1999 23:59:59 GMT" → relative to now
+//
+// Returns 0 when the header is empty or unparseable — callers should
+// treat 0 as "no hint" (use their own default backoff).
+func parseRetryAfter(hdr string, now time.Time) time.Duration {
+	if hdr == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(hdr); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(hdr); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d
+		}
+		return 0
+	}
+	return 0
+}
+
+// LastUsedWeight1m returns the most recent X-MBX-USED-WEIGHT-1m
+// header value observed in any response from this Client. Zero means
+// no observation yet. Binance's default Spot REQUEST_WEIGHT limit is
+// 1200 per rolling minute; downstream callers can compare against
+// their own threshold to decide whether to throttle.
+func (c *Client) LastUsedWeight1m() int32 { return c.lastUsedWeight1m.Load() }
+
+// ServerOffsetMs returns the cached server-vs-local clock skew (ms).
+// Positive means Binance's clock is ahead of ours. Zero before the
+// first SyncTime call. Reads are lock-free.
+func (c *Client) ServerOffsetMs() int64 { return c.serverOffsetMs.Load() }
+
+// SetServerOffsetMs forces the offset to a specific value. Production
+// callers should use SyncTime; this entry point exists for tests that
+// want to assert signing behaviour without standing up a /api/v3/time
+// httptest endpoint.
+func (c *Client) SetServerOffsetMs(off int64) { c.serverOffsetMs.Store(off) }
+
+// SyncTime calls GET /api/v3/time and updates the cached offset using
+// the midpoint of the request/response wall-clock window as the local
+// reference. Result: signed-request timestamps approximate Binance's
+// clock within ~RTT/2 even on hosts with drift the host NTP daemon
+// hasn't caught up with.
+//
+// On error the cached offset is left untouched — a transient network
+// failure must not regress a previously-synced clock to zero.
+func (c *Client) SyncTime(ctx context.Context) error {
+	t0 := c.nowFn().UnixMilli()
+	body, err := c.unsigned(ctx, http.MethodGet, "/api/v3/time", nil)
+	if err != nil {
+		return fmt.Errorf("binance.SyncTime: %w", err)
+	}
+	t2 := c.nowFn().UnixMilli()
+	var raw struct {
+		ServerTime int64 `json:"serverTime"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return fmt.Errorf("binance.SyncTime: decode: %w", err)
+	}
+	if raw.ServerTime <= 0 {
+		return fmt.Errorf("binance.SyncTime: serverTime=%d not positive", raw.ServerTime)
+	}
+	// Assume symmetric network latency: at the moment the response
+	// arrived (t2 local), server clock was approximately serverTime +
+	// (t2 - t0) / 2. We want offset such that local + offset ≈ server,
+	// so subtract the midpoint of the local window from serverTime.
+	midpoint := (t0 + t2) / 2
+	c.serverOffsetMs.Store(raw.ServerTime - midpoint)
+	return nil
 }

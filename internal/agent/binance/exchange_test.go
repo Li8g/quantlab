@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,16 +20,18 @@ import (
 // the background ping loop, MarketRef capture, and order POST without
 // needing a sleep-based oracle.
 type exchangeHandler struct {
-	pings   atomic.Int32
-	books   atomic.Int32
-	orders  atomic.Int32
-	account atomic.Int32
+	pings    atomic.Int32
+	books    atomic.Int32
+	orders   atomic.Int32
+	account  atomic.Int32
+	timeSync atomic.Int32
 
 	// Replies per endpoint. nil → 200 with a default body.
-	pingReply    http.HandlerFunc
-	bookReply    http.HandlerFunc
-	orderReply   http.HandlerFunc
-	accountReply http.HandlerFunc
+	pingReply     http.HandlerFunc
+	bookReply     http.HandlerFunc
+	orderReply    http.HandlerFunc
+	accountReply  http.HandlerFunc
+	timeSyncReply http.HandlerFunc
 }
 
 func (h *exchangeHandler) handle(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +77,16 @@ func (h *exchangeHandler) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"balances":[{"asset":"BTC","free":"1.0","locked":"0"}]}`))
+	case "/api/v3/time":
+		h.timeSync.Add(1)
+		if h.timeSyncReply != nil {
+			h.timeSyncReply(w, r)
+			return
+		}
+		// Echo fixedNow so the default exchange fixture computes an
+		// offset of approximately 0 (modulo httptest RTT, ≤ a few ms).
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"serverTime":1700000000000}`))
 	default:
 		http.NotFound(w, r)
 	}
@@ -345,5 +358,193 @@ func TestExchange_CtxCancel_StopsPingLoop(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	if delta := h.pings.Load() - frozen; delta > 0 {
 		t.Errorf("ping count grew by %d after ctx cancel", delta)
+	}
+}
+
+// ===== time sync (Phase 7.8) =====
+
+// newExchangeFixtureWithSync mirrors newExchangeFixture but lets the
+// caller pin the time-sync interval. ping is parked at 10h so the
+// timing assertions in this section never see ping traffic noise.
+func newExchangeFixtureWithSync(t *testing.T, h *exchangeHandler, syncInterval time.Duration) (*Exchange, *httptest.Server) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(h.handle))
+	t.Cleanup(srv.Close)
+	ex := NewExchange("PUBKEY", "SECRET", ExchangeOptions{
+		BaseURL:          srv.URL,
+		HTTPClient:       srv.Client(),
+		NowFn:            fixedNow,
+		PingInterval:     10 * time.Hour,
+		TimeSyncInterval: syncInterval,
+	})
+	t.Cleanup(func() { _ = ex.Close() })
+	return ex, srv
+}
+
+func TestClient_SyncTime_StoresOffsetFromMidpoint(t *testing.T) {
+	// Handler responds with serverTime that's 1500ms ahead of fixedNow.
+	// With RTT ≈ 0 (httptest in-process), midpoint ≈ fixedNow, so the
+	// resulting offset should be +1500ms.
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/time" {
+			t.Errorf("path = %q, want /api/v3/time", r.URL.Path)
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"serverTime":1700000001500}`))
+	})
+	if err := c.SyncTime(context.Background()); err != nil {
+		t.Fatalf("SyncTime: %v", err)
+	}
+	off := c.ServerOffsetMs()
+	if off != 1500 {
+		t.Errorf("offset = %d, want 1500 (RTT≈0 in-process)", off)
+	}
+}
+
+func TestClient_SyncTime_LeavesOffsetOnHTTPError(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"code":-1001,"msg":"unavailable"}`))
+	})
+	c.SetServerOffsetMs(777)
+	if err := c.SyncTime(context.Background()); err == nil {
+		t.Fatal("want error on 503")
+	}
+	if got := c.ServerOffsetMs(); got != 777 {
+		t.Errorf("offset = %d, want 777 (unchanged after error)", got)
+	}
+}
+
+func TestClient_SyncTime_LeavesOffsetOnDecodeError(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`not json`))
+	})
+	c.SetServerOffsetMs(-42)
+	if err := c.SyncTime(context.Background()); err == nil {
+		t.Fatal("want decode error")
+	}
+	if got := c.ServerOffsetMs(); got != -42 {
+		t.Errorf("offset = %d, want -42 (unchanged)", got)
+	}
+}
+
+func TestClient_SyncTime_RejectsNonPositiveServerTime(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"serverTime":0}`))
+	})
+	c.SetServerOffsetMs(5)
+	if err := c.SyncTime(context.Background()); err == nil {
+		t.Fatal("want error on zero serverTime")
+	}
+	if got := c.ServerOffsetMs(); got != 5 {
+		t.Errorf("offset = %d, want 5 (unchanged)", got)
+	}
+}
+
+func TestClient_SignedTimestamp_AppliesOffset(t *testing.T) {
+	var gotQuery string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	c.SetServerOffsetMs(2500)
+	if _, err := c.signed(context.Background(), http.MethodGet, "/api/v3/account", nil); err != nil {
+		t.Fatalf("signed: %v", err)
+	}
+	parsed, err := url.ParseQuery(gotQuery)
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	// fixedNow = 1_700_000_000_000; offset = +2500; expected timestamp:
+	if got := parsed.Get("timestamp"); got != "1700000002500" {
+		t.Errorf("timestamp = %q, want 1700000002500 (fixedNow + offset)", got)
+	}
+}
+
+func TestExchange_TimeSyncLoop_InlineFirstSync(t *testing.T) {
+	h := &exchangeHandler{}
+	ex, _ := newExchangeFixtureWithSync(t, h, 10*time.Hour) // periodic effectively off
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex.Start(ctx)
+
+	// Inline first sync should fire promptly even though the period is huge.
+	if got := waitForCount(&h.timeSync, 1, 500*time.Millisecond); got < 1 {
+		t.Fatalf("time-sync never observed; got=%d", got)
+	}
+}
+
+func TestExchange_TimeSyncLoop_TicksAtInterval(t *testing.T) {
+	h := &exchangeHandler{}
+	ex, _ := newExchangeFixtureWithSync(t, h, 30*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex.Start(ctx)
+
+	// Expect ≥3 syncs within 500ms: inline + ≥2 tick fires.
+	if got := waitForCount(&h.timeSync, 3, 500*time.Millisecond); got < 3 {
+		t.Errorf("time-sync count = %d, want ≥3", got)
+	}
+}
+
+func TestExchange_TimeSyncLoop_NegativeIntervalDisablesPeriodic(t *testing.T) {
+	h := &exchangeHandler{}
+	ex, _ := newExchangeFixtureWithSync(t, h, -1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex.Start(ctx)
+
+	// Inline call still happens.
+	if got := waitForCount(&h.timeSync, 1, 500*time.Millisecond); got < 1 {
+		t.Fatalf("inline time-sync did not run; got=%d", got)
+	}
+	// Give a window much wider than any plausible follow-up — count must stay at 1.
+	time.Sleep(120 * time.Millisecond)
+	if got := h.timeSync.Load(); got != 1 {
+		t.Errorf("time-sync count = %d, want 1 (periodic disabled)", got)
+	}
+}
+
+func TestExchange_TimeSyncLoop_FailureKeepsOffset(t *testing.T) {
+	h := &exchangeHandler{
+		timeSyncReply: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"code":-1001,"msg":"down"}`))
+		},
+	}
+	ex, _ := newExchangeFixtureWithSync(t, h, 30*time.Millisecond)
+	ex.Client().SetServerOffsetMs(1234)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex.Start(ctx)
+
+	if got := waitForCount(&h.timeSync, 2, 500*time.Millisecond); got < 2 {
+		t.Fatalf("time-sync did not retry; got=%d", got)
+	}
+	if got := ex.Client().ServerOffsetMs(); got != 1234 {
+		t.Errorf("offset = %d after failed syncs, want 1234 (preserved)", got)
+	}
+}
+
+func TestExchange_Close_StopsTimeSyncLoop(t *testing.T) {
+	h := &exchangeHandler{}
+	ex, _ := newExchangeFixtureWithSync(t, h, 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex.Start(ctx)
+
+	if got := waitForCount(&h.timeSync, 2, 500*time.Millisecond); got < 2 {
+		t.Fatalf("time-sync count = %d before Close, want ≥2", got)
+	}
+	if err := ex.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	frozen := h.timeSync.Load()
+	time.Sleep(80 * time.Millisecond)
+	if delta := h.timeSync.Load() - frozen; delta > 1 {
+		t.Errorf("time-sync count grew by %d after Close (want 0-1)", delta)
 	}
 }

@@ -358,6 +358,48 @@ func TestSubmitMarket_BinanceAPIError_WrapsErrExchangeRejected(t *testing.T) {
 	}
 }
 
+func TestSubmitMarket_RateLimit429WrapsErrExchangeRejectedWithReason(t *testing.T) {
+	c, _ := newOrderTestClient(t, &orderHandler{
+		book: bookHandlerJSON("49990.00", "50010.00"),
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"code":-1003,"msg":"Too many requests."}`))
+		},
+	})
+	_, err := c.SubmitMarket(context.Background(), fxOrder())
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !errors.Is(err, agent.ErrExchangeRejected) {
+		t.Errorf("err = %v, want errors.Is ErrExchangeRejected", err)
+	}
+	if !strings.Contains(err.Error(), "rate_limited") {
+		t.Errorf("err = %v, want reason 'rate_limited'", err)
+	}
+	if !strings.Contains(err.Error(), "30s") {
+		t.Errorf("err = %v, want retry_after=30s", err)
+	}
+}
+
+func TestSubmitMarket_IPBanned418WrapsErrExchangeRejectedWithReason(t *testing.T) {
+	c, _ := newOrderTestClient(t, &orderHandler{
+		book: bookHandlerJSON("49990.00", "50010.00"),
+		order: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "600")
+			w.WriteHeader(418)
+			_, _ = w.Write([]byte(`{"code":-1003,"msg":"IP banned"}`))
+		},
+	})
+	_, err := c.SubmitMarket(context.Background(), fxOrder())
+	if !errors.Is(err, agent.ErrExchangeRejected) {
+		t.Errorf("err = %v, want errors.Is ErrExchangeRejected", err)
+	}
+	if !strings.Contains(err.Error(), "ip_banned") {
+		t.Errorf("err = %v, want reason 'ip_banned'", err)
+	}
+}
+
 func TestSubmitMarket_BookTickerFailureNotWrapped(t *testing.T) {
 	// Network-shape failure on MarketRef capture: surfaces as a raw
 	// error so the caller can distinguish "order definitely not sent"
