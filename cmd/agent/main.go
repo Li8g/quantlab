@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -44,7 +45,31 @@ func main() {
 		"ETHUSDT": decimal.NewFromInt(3500),
 	})
 
-	idem := agent.NewMemoryStore()
+	// idempotency.db_path empty (e.g. test config) falls back to the
+	// in-memory store; lifecycle data is lost on restart but that is
+	// acceptable for dev / smoke runs.
+	var idem agent.IdempotencyStore
+	if cfg.Idempotency.DBPath == "" {
+		logger.Warn("idempotency_in_memory_only",
+			"reason", "idempotency.db_path empty in config — Agent restart will lose dedupe state")
+		idem = agent.NewMemoryStore()
+	} else {
+		s, err := agent.NewSqliteStore(cfg.Idempotency.DBPath)
+		if err != nil {
+			log.Fatalf("agent: open idempotency sqlite: %v", err)
+		}
+		defer s.Close()
+		// Startup purge: drop rows older than retention_days. Returns
+		// row count for ops visibility.
+		retention := time.Duration(cfg.Idempotency.RetentionDays) * 24 * time.Hour
+		cutoff := time.Now().Add(-retention).UnixMilli()
+		if n, err := s.Purge(cutoff); err != nil {
+			logger.Warn("idempotency_purge_failed", "err", err)
+		} else if n > 0 {
+			logger.Info("idempotency_purged", "rows", n, "retention_days", cfg.Idempotency.RetentionDays)
+		}
+		idem = s
+	}
 
 	client := agent.NewClient(*cfg, exchange, idem, agent.Options{
 		Logger: logger,

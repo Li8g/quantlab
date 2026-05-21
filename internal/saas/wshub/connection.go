@@ -80,7 +80,15 @@ func NewConnection(hub *Hub, conn Conn, log *slog.Logger) *Connection {
 // read pump. It returns when the connection is closed (clean or error).
 // Blocks the caller's goroutine — Hub.ServeWS uses this directly.
 func (c *Connection) Run(ctx context.Context) {
-	defer c.Close()
+	defer func() {
+		// notifyState fires only once AccountID is known (post-auth).
+		// Pre-handshake failures publish nothing to Redis — there is
+		// no key to clear.
+		if c.AccountID != "" {
+			c.notifyState(ctx, "disconnected", "")
+		}
+		c.Close()
+	}()
 
 	// Write pump runs concurrently from start so handshake replies can
 	// be queued without a read-write race.
@@ -97,6 +105,26 @@ func (c *Connection) Run(ctx context.Context) {
 	go c.heartbeatLoop(ctx)
 
 	c.readPump(ctx)
+}
+
+// notifyState publishes one ConnectionStateEvent to the optional Hub
+// hook. Best-effort: hook errors are logged but never close the
+// connection. Called only after AccountID is set.
+func (c *Connection) notifyState(ctx context.Context, state, lastMsgID string) {
+	if c.hub.onConnectionState == nil {
+		return
+	}
+	ev := ConnectionStateEvent{
+		AccountID: c.AccountID,
+		AgentID:   c.AgentID,
+		State:     state,
+		LastMsgID: lastMsgID,
+		NowMs:     c.hub.nowMs(),
+	}
+	if err := c.hub.onConnectionState(ctx, ev); err != nil {
+		c.log.Warn("ws_connection_state_hook_err",
+			"account_id", c.AccountID, "state", state, "err", err)
+	}
 }
 
 // Close transitions the connection to phaseClosed and signals the write
@@ -246,6 +274,9 @@ func (c *Connection) dispatchInbound(ctx context.Context, env wire.Envelope) {
 	switch env.Type {
 	case wire.TypePong:
 		c.handlePong(env)
+		// Refresh Agent-online TTL on every pong (protocol §7.2).
+		// State stays 'ready' because the connection is past handshake.
+		c.notifyState(ctx, "ready", env.MsgID)
 	case wire.TypeAck, wire.TypeOrderUpdate, wire.TypeDeltaReport:
 		// Always structured-log so dev/test traffic is visible; also
 		// fire the OnAgentMessage hook so downstream persistence
@@ -259,6 +290,9 @@ func (c *Connection) dispatchInbound(ctx context.Context, env wire.Envelope) {
 					"account_id", c.AccountID, "type", env.Type, "err", err)
 			}
 		}
+		// Refresh Agent-online TTL on every Agent → SaaS business
+		// message (protocol §7.2).
+		c.notifyState(ctx, "ready", env.MsgID)
 	case wire.TypeError:
 		c.log.Warn("ws_agent_error",
 			"account_id", c.AccountID, "msg_id", env.MsgID,
@@ -368,6 +402,7 @@ func (c *Connection) doHandshake(ctx context.Context) error {
 		return fmt.Errorf("send auth_ok: %w", err)
 	}
 	c.phase.Store(int32(phaseAuthed))
+	c.notifyState(ctx, "authed", "")
 
 	// Register so Dispatch can find us. Replaces any stale conn for
 	// the same AccountID.
@@ -395,6 +430,7 @@ func (c *Connection) doHandshake(ctx context.Context) error {
 	}
 
 	c.phase.Store(int32(phaseReady))
+	c.notifyState(ctx, "ready", env.MsgID)
 	c.log.Info("ws_agent_ready",
 		"account_id", c.AccountID, "agent_id", c.AgentID)
 	return nil
@@ -455,6 +491,7 @@ func (c *Connection) heartbeatLoop(ctx context.Context) {
 				if c.hub.onStale != nil {
 					_ = c.hub.onStale(ctx, c.AccountID)
 				}
+				c.notifyState(ctx, "stale", "")
 				_ = c.Close()
 				return
 			}

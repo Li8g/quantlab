@@ -63,6 +63,28 @@ type Config struct {
 	// updates, SpotExecution inserts, discrepancy detection). v1 emits
 	// a structured log line in addition to firing this hook.
 	OnAgentMessage func(ctx context.Context, accountID string, env wire.Envelope) error
+
+	// OnConnectionState fires on Connection lifecycle transitions
+	// (authed / ready / stale / disconnected) and on every Agent →
+	// SaaS message (pong / ack / order_update / delta_report) to
+	// refresh the Agent-online TTL per docs/saas-ws-protocol-v1.md §7.2.
+	//
+	// state is the current phase label; lastMsgID is the envelope
+	// MsgID that drove the event (empty on pure transitions like
+	// 'authed' or 'disconnected'). The hook is best-effort —
+	// returned errors are logged but never tear the connection down.
+	OnConnectionState func(ctx context.Context, ev ConnectionStateEvent) error
+}
+
+// ConnectionStateEvent is the payload delivered to OnConnectionState.
+// State labels match docs/saas-ws-protocol-v1.md §7.2 connection_state
+// enum.
+type ConnectionStateEvent struct {
+	AccountID string
+	AgentID   string
+	State     string // "connecting"|"authed"|"ready"|"stale"|"disconnected"
+	LastMsgID string // optional — refresh signals carry the inbound MsgID
+	NowMs     int64
 }
 
 // Hub is the per-process Agent WS server. One per cmd/saas process.
@@ -82,9 +104,10 @@ type Hub struct {
 	stateSyncTimeout time.Duration
 	writeTimeout     time.Duration
 
-	onStateSync    func(ctx context.Context, accountID string, payload json.RawMessage) error
-	onStale        func(ctx context.Context, accountID string) error
-	onAgentMessage func(ctx context.Context, accountID string, env wire.Envelope) error
+	onStateSync       func(ctx context.Context, accountID string, payload json.RawMessage) error
+	onStale           func(ctx context.Context, accountID string) error
+	onAgentMessage    func(ctx context.Context, accountID string, env wire.Envelope) error
+	onConnectionState func(ctx context.Context, ev ConnectionStateEvent) error
 }
 
 // New constructs a Hub with cfg overrides applied to the package defaults.
@@ -102,9 +125,10 @@ func New(auth *agentauth.Service, cfg Config) *Hub {
 		authTimeout:      cfg.AuthTimeout,
 		stateSyncTimeout: cfg.StateSyncTimeout,
 		writeTimeout:     cfg.WriteTimeout,
-		onStateSync:      cfg.OnStateSync,
-		onStale:          cfg.OnStale,
-		onAgentMessage:   cfg.OnAgentMessage,
+		onStateSync:       cfg.OnStateSync,
+		onStale:           cfg.OnStale,
+		onAgentMessage:    cfg.OnAgentMessage,
+		onConnectionState: cfg.OnConnectionState,
 	}
 	if h.log == nil {
 		h.log = slog.Default()
