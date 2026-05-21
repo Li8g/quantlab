@@ -16,8 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shopspring/decimal"
-
 	"quantlab/internal/agent"
 )
 
@@ -35,15 +33,19 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	// v1 hardcodes the mock exchange. Replacing this with a real
-	// exchange impl (binance) is a Phase 7/8 polish item — the
-	// Exchange interface keeps the swap surface-area minimal.
-	exchange := agent.NewMockExchange(map[string]decimal.Decimal{
-		// Seed reasonable prices so dev runs don't crash on first order.
-		// Real-exchange impls discover prices via REST/WS tickers.
-		"BTCUSDT": decimal.NewFromInt(65000),
-		"ETHUSDT": decimal.NewFromInt(3500),
-	})
+	// Signal context drives shutdown of every long-lived goroutine
+	// (binance ping loop + client.Run). Created before buildExchange
+	// so binance.Start receives a ctx that survives until SIGTERM.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	exchange, closeExchange, err := buildExchange(ctx, cfg, logger)
+	if err != nil {
+		log.Fatalf("agent: build exchange: %v", err)
+	}
+	if closeExchange != nil {
+		defer closeExchange()
+	}
 
 	// idempotency.db_path empty (e.g. test config) falls back to the
 	// in-memory store; lifecycle data is lost on restart but that is
@@ -74,9 +76,6 @@ func main() {
 	client := agent.NewClient(*cfg, exchange, idem, agent.Options{
 		Logger: logger,
 	})
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	logger.Info("agent_starting",
 		"agent_id", cfg.AgentID,
