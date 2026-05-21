@@ -89,6 +89,37 @@ type InstanceStore interface {
 	SetActiveChampion(ctx context.Context, instanceID string, challengerID string) error
 }
 
+// ===== Phase 9 batch 1 collaborators =====
+//
+// Each list/lookup endpoint owns a tiny interface so tests can fake
+// the data layer without standing up a DB. Production wiring uses the
+// concrete repos in internal/repository/.
+
+// KLineGapLister reads kline_gaps rows. repository.KLineGapRepo
+// satisfies this.
+type KLineGapLister interface {
+	List(ctx context.Context, symbol, interval string, limit int) ([]store.KLineGap, error)
+}
+
+// EvolutionTaskLister returns recently-created tasks for the index
+// view (newest first).
+type EvolutionTaskLister interface {
+	List(ctx context.Context, limit int) ([]store.EvolutionTask, error)
+}
+
+// ChampionHistoryReader powers /champions/history + /genome/champion.
+// strategyID + pair can both be empty for history listing (no filter);
+// GetActive REQUIRES both to be non-empty.
+type ChampionHistoryReader interface {
+	List(ctx context.Context, strategyID, pair string, limit int) ([]store.ChampionHistory, error)
+	GetActive(ctx context.Context, strategyID, pair string) (*store.ChampionHistory, error)
+}
+
+// TradeLister returns TradeRecord rows for one instance, newest first.
+type TradeLister interface {
+	ListByInstance(ctx context.Context, instanceID string, limit int) ([]store.TradeRecord, error)
+}
+
 // IDIssuer hands out new InstanceIDs. store.NewULID is the production
 // implementation; tests inject a deterministic fake.
 type IDIssuer interface {
@@ -105,6 +136,15 @@ type Handlers struct {
 	Champions   ChampionUpdater
 	Instances   InstanceStore
 	IDIssuer    IDIssuer
+
+	// Phase 9 batch 1: read-only diagnostics + lists. Nil-valued
+	// fields disable the corresponding routes during Register —
+	// tests that focus on Phase 5D / 6.3 endpoints don't need to
+	// wire fake stores for the new listings.
+	TaskLister      EvolutionTaskLister
+	ChampionHistory ChampionHistoryReader
+	Gaps            KLineGapLister
+	Trades          TradeLister
 
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests
@@ -126,6 +166,21 @@ func (h *Handlers) Register(r gin.IRouter) {
 	g.GET("/challengers/:challenger_id/package", h.GetChallengerPackage)
 	g.POST("/challengers/:challenger_id/promote", h.PromoteChallenger)
 	g.POST("/champions/:champion_id/retire", h.RetireChampion)
+
+	// Phase 9 batch 1: read-only diagnostics + listings. Each route
+	// requires its collaborator non-nil — tests that don't wire the
+	// store quietly skip registration, which is the same pattern the
+	// AuthRequired-gated routes follow.
+	if h.TaskLister != nil {
+		g.GET("/evolution/tasks", h.ListTasks)
+	}
+	if h.ChampionHistory != nil {
+		g.GET("/champions/history", h.ListChampionHistory)
+		g.GET("/genome/champion", h.GetChampionGenome)
+	}
+	if h.Gaps != nil {
+		g.GET("/data/gaps", h.ListGaps)
+	}
 
 	// Phase 6.3 instance routes — JWT-protected when middleware is
 	// wired. Read endpoint accepts viewer+; mutating endpoints
@@ -149,6 +204,9 @@ func (h *Handlers) Register(r gin.IRouter) {
 		inst.POST("/:instance_id/deploy-champion", h.DeployChampion)
 	}
 	inst.GET("/:instance_id", h.GetInstance)
+	if h.Trades != nil {
+		inst.GET("/:instance_id/trades", h.ListInstanceTrades)
+	}
 }
 
 // ===== handlers =====

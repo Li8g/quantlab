@@ -144,3 +144,107 @@ type InstanceResponse struct {
 type DeployChampionRequest struct {
 	ChallengerID string `json:"challenger_id"`
 }
+
+// ===================================================================
+// Phase 9 batch 1: read-only diagnostics endpoints
+// ===================================================================
+
+// KLineGapResponse is one row of GET /api/v1/data/gaps. Mirrors the
+// store.KLineGap GORM columns; duration_ms is server-computed for
+// convenience (= gap_end_ms - gap_start_ms).
+type KLineGapResponse struct {
+	Symbol       string `json:"symbol"`
+	Interval     string `json:"interval"`
+	GapStartMs   int64  `json:"gap_start_ms"`
+	GapEndMs     int64  `json:"gap_end_ms"`
+	DurationMs   int64  `json:"duration_ms"`
+	DetectedAtMs int64  `json:"detected_at_ms"`
+}
+
+// ListGapsResponse is the body of GET /api/v1/data/gaps. count is the
+// length of items; clients can use it to detect truncation when a
+// limit was applied.
+type ListGapsResponse struct {
+	Items []KLineGapResponse `json:"items"`
+	Count int                `json:"count"`
+}
+
+// EvolutionTaskSummary is one row of GET /api/v1/evolution/tasks.
+// A subset of EvolutionTaskStatusResponse — list views don't carry
+// challenger_id or failure_reason (clients drill into the per-task
+// status endpoint for those).
+type EvolutionTaskSummary struct {
+	TaskID     string `json:"task_id"`
+	StrategyID string `json:"strategy_id"`
+	Pair       string `json:"pair"`
+	Interval   string `json:"interval"`
+	Status     string `json:"status"`
+	CreatedAt  int64  `json:"created_at_ms"`
+}
+
+// ListTasksResponse is the body of GET /api/v1/evolution/tasks.
+// Items are ordered by created_at_ms descending (newest first).
+type ListTasksResponse struct {
+	Items []EvolutionTaskSummary `json:"items"`
+	Count int                    `json:"count"`
+}
+
+// ChampionHistoryEntry is one row of GET /api/v1/champions/history.
+// retired_at_ms is nil for the currently-active champion(s).
+type ChampionHistoryEntry struct {
+	ID           uint    `json:"id"`
+	StrategyID   string  `json:"strategy_id"`
+	Pair         string  `json:"pair"`
+	ChallengerID string  `json:"challenger_id"`
+	PromotedAtMs int64   `json:"promoted_at_ms"`
+	RetiredAtMs  *int64  `json:"retired_at_ms,omitempty"`
+	RetiredBy    *string `json:"retired_by,omitempty"`
+	RetireNote   *string `json:"retire_note,omitempty"`
+}
+
+// ListChampionHistoryResponse is the body of GET /api/v1/champions/history.
+// Items are ordered by promoted_at descending.
+type ListChampionHistoryResponse struct {
+	Items []ChampionHistoryEntry `json:"items"`
+	Count int                    `json:"count"`
+}
+
+// ChampionGenomeResponse is the body of GET /api/v1/genome/champion.
+// Combines ChampionHistory metadata with the active champion's score
+// summary. Clients that need the full chromosome / result package
+// follow up with GET /api/v1/challengers/:challenger_id/package.
+type ChampionGenomeResponse struct {
+	StrategyID   string   `json:"strategy_id"`
+	Pair         string   `json:"pair"`
+	ChallengerID string   `json:"challenger_id"`
+	PromotedAtMs int64    `json:"promoted_at_ms"`
+	ScoreTotal   *float64 `json:"score_total,omitempty"`
+	PlanHash     string   `json:"plan_hash"`
+	BarsHash     string   `json:"bars_hash"`
+}
+
+// TradeRecordSummary is one row of GET /api/v1/instances/:instance_id/trades.
+// Captures the order-intent shape from store.TradeRecord; per-fill
+// detail (SpotExecution rows) is not included here to keep list
+// payloads bounded — a future /trades/:client_order_id endpoint can
+// drill in.
+type TradeRecordSummary struct {
+	ClientOrderID string   `json:"client_order_id"`
+	Symbol        string   `json:"symbol"`
+	Side          string   `json:"side"`
+	OrderType     string   `json:"order_type"`
+	QuantityUSD   float64  `json:"quantity_usd"`
+	LimitPrice    *float64 `json:"limit_price,omitempty"`
+	NowMsAtSaaS   int64    `json:"now_ms_at_saas"`
+	ValidUntilMs  int64    `json:"valid_until_ms"`
+	Status        string   `json:"status"`
+	CreatedAtMs   int64    `json:"created_at_ms"`
+}
+
+// ListInstanceTradesResponse is the body of
+// GET /api/v1/instances/:instance_id/trades. Items are ordered by
+// CreatedAt descending (newest first).
+type ListInstanceTradesResponse struct {
+	Items []TradeRecordSummary `json:"items"`
+	Count int                  `json:"count"`
+}

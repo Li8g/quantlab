@@ -100,6 +100,53 @@ func (r *ChampionRepo) Retire(ctx context.Context, challengerID string, req api.
 	})
 }
 
+// List returns ChampionHistory rows ordered by PromotedAt descending
+// (most-recently promoted first). Both strategyID and pair are
+// optional filters — empty string means "no filter on that field".
+// limit ≤ 0 returns all rows; callers should cap externally.
+func (r *ChampionRepo) List(ctx context.Context, strategyID, pair string, limit int) ([]store.ChampionHistory, error) {
+	q := r.db.WithContext(ctx).Order("promoted_at DESC")
+	if strategyID != "" {
+		q = q.Where("strategy_id = ?", strategyID)
+	}
+	if pair != "" {
+		q = q.Where("pair = ?", pair)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	var rows []store.ChampionHistory
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// GetActive returns the unretired ChampionHistory row for the given
+// (strategy_id, pair) pair. "Active" = RetiredAt IS NULL. Returns
+// gorm.ErrRecordNotFound when no active champion exists; callers map
+// that to HTTP 404.
+//
+// Invariant: at most one row per (strategy_id, pair) has
+// RetiredAt IS NULL at any time, enforced by Promote refusing to
+// double-promote without an intervening Retire. This method does
+// NOT defend against schema corruption — if two active rows exist,
+// it returns the most-recently-promoted one and lets a future
+// integrity check surface the anomaly.
+func (r *ChampionRepo) GetActive(ctx context.Context, strategyID, pair string) (*store.ChampionHistory, error) {
+	if strategyID == "" || pair == "" {
+		return nil, errors.New("repository.ChampionRepo.GetActive: strategyID and pair required")
+	}
+	var row store.ChampionHistory
+	if err := r.db.WithContext(ctx).
+		Where("strategy_id = ? AND pair = ? AND retired_at IS NULL", strategyID, pair).
+		Order("promoted_at DESC").
+		First(&row).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
 // applyPromote is the pure decision kernel for Promote. Returns the
 // field-update map for gene_records and the new champion_history row.
 // All preconditions are checked here so a unit test can drive every

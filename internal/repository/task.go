@@ -55,6 +55,21 @@ func (r *EvolutionTaskRepo) Create(
 	return r.db.WithContext(ctx).Create(&row).Error
 }
 
+// List returns up to limit recently-created tasks, newest first.
+// limit ≤ 0 falls through to all rows (callers should cap externally).
+// Used by GET /api/v1/evolution/tasks for the index page.
+func (r *EvolutionTaskRepo) List(ctx context.Context, limit int) ([]store.EvolutionTask, error) {
+	q := r.db.WithContext(ctx).Order("created_at DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	var rows []store.EvolutionTask
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // Get fetches the row by task_id. Returns gorm.ErrRecordNotFound when
 // no matching row exists — callers can map this to HTTP 404.
 func (r *EvolutionTaskRepo) Get(ctx context.Context, taskID string) (*store.EvolutionTask, error) {

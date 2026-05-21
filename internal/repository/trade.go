@@ -55,6 +55,27 @@ func (r *TradeRepo) UpdateTradeStatus(ctx context.Context, clientOrderID string,
 	return nil
 }
 
+// ListByInstance returns TradeRecord rows for one instance, ordered
+// by CreatedAt descending (newest first). limit ≤ 0 returns
+// everything matching — callers should cap externally to bound the
+// payload size on long-running instances.
+func (r *TradeRepo) ListByInstance(ctx context.Context, instanceID string, limit int) ([]store.TradeRecord, error) {
+	if instanceID == "" {
+		return nil, errors.New("repository.TradeRepo.ListByInstance: empty instance_id")
+	}
+	q := r.db.WithContext(ctx).
+		Where("instance_id = ?", instanceID).
+		Order("created_at DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	var rows []store.TradeRecord
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // InsertSpotExecution appends one fill row. SpotExecution has no unique
 // index on (client_order_id, filled_at_exchange_ms) — duplicate Fills
 // on retried OrderUpdate frames are deduplicated at the caller via

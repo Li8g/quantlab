@@ -145,6 +145,8 @@ func main() {
 	)
 	scheduler := cron.New(instanceRepo, tickManager, cron.Config{})
 
+	gapRepo := repository.NewKLineGapRepo(db)
+
 	h := &api.Handlers{
 		Epoch:       svc,
 		Tasks:       taskRepo,
@@ -152,7 +154,13 @@ func main() {
 		Champions:   championRepo,
 		Instances:   instanceRepo,
 		IDIssuer:    ulidIssuer{},
-		AuthRequired: middleware.AuthRequired(authSvc),
+		// Phase 9 batch 1 — read-only diagnostics. Each repo doubles
+		// as the interface impl; nothing extra to construct.
+		TaskLister:      taskRepo,
+		ChampionHistory: championRepo,
+		Gaps:            gapRepo,
+		Trades:          tradeRepo,
+		AuthRequired:    middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,
 		),
