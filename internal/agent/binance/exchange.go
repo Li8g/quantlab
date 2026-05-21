@@ -28,6 +28,13 @@ import (
 // build breaks here instead of at the cmd/agent wiring site.
 var _ agent.Exchange = (*Exchange)(nil)
 
+// Compile-time check that *Exchange satisfies the opt-in
+// OrderEventStreamer capability (User Data Stream → async fills).
+// If a refactor drops Subscribe, the Agent client's type assertion
+// would silently stop wiring fills — this assertion makes that a
+// build break instead.
+var _ agent.OrderEventStreamer = (*Exchange)(nil)
+
 // Default tunings for the Exchange struct. Picked so a healthy
 // session never logs more than once per minute about Ping and so a
 // dead Binance edge surfaces within ~1 ping interval to Reachable().
@@ -63,6 +70,25 @@ type ExchangeOptions struct {
 	// errors before the first signed request).
 	TimeSyncInterval time.Duration
 
+	// UDS configuration. Zero values are sensible defaults.
+	//   StreamBaseURL          — auto-derived from BaseURL when empty.
+	//   UDSKeepaliveInterval   — 30 minutes when zero (half of
+	//                            Binance's 60-minute listenKey TTL).
+	//   UDSReconnectMin/Max    — backoff envelope on session failure.
+	//   UDSDialer              — test injection seam; production uses
+	//                            wsconn.Dial.
+	//   UDSDisabled            — when true, Subscribe is still safe to
+	//                            call but no background goroutine is
+	//                            spawned. Use for ops scenarios where
+	//                            the operator wants market-only
+	//                            without UDS network traffic.
+	StreamBaseURL        string
+	UDSKeepaliveInterval time.Duration
+	UDSReconnectMin      time.Duration
+	UDSReconnectMax      time.Duration
+	UDSDialer            UDSDialer
+	UDSDisabled          bool
+
 	// Logger is used for ping success/failure structured logs.
 	// nil → slog.Default().
 	Logger *slog.Logger
@@ -79,6 +105,13 @@ type Exchange struct {
 	logger           *slog.Logger
 
 	reachable atomic.Bool
+
+	// uds is the User Data Stream runtime. nil when UDSDisabled. Even
+	// when nil, Subscribe is safe (records the callback for the
+	// hypothetical future Enable; ignored otherwise).
+	uds            *uds
+	pendingSubMu   sync.Mutex
+	pendingSubFn   func(agent.OrderEvent)
 
 	startOnce sync.Once
 	closeOnce sync.Once
@@ -111,7 +144,7 @@ func NewExchange(apiKey, apiSecret string, opts ExchangeOptions) *Exchange {
 	if tsi == 0 {
 		tsi = DefaultTimeSyncInterval
 	}
-	return &Exchange{
+	ex := &Exchange{
 		client: NewClient(apiKey, apiSecret, Options{
 			BaseURL:      opts.BaseURL,
 			HTTPClient:   opts.HTTPClient,
@@ -127,6 +160,17 @@ func NewExchange(apiKey, apiSecret string, opts ExchangeOptions) *Exchange {
 		pingDoneCh:       make(chan struct{}),
 		timeSyncDoneCh:   make(chan struct{}),
 	}
+	if !opts.UDSDisabled {
+		ex.uds = newUDS(ex.client, udsOptions{
+			StreamBaseURL:     opts.StreamBaseURL,
+			KeepaliveInterval: opts.UDSKeepaliveInterval,
+			ReconnectMin:      opts.UDSReconnectMin,
+			ReconnectMax:      opts.UDSReconnectMax,
+			Dialer:            opts.UDSDialer,
+			Logger:            logger,
+		})
+	}
+	return ex
 }
 
 // Client exposes the underlying REST client for ops / diagnostic use.
@@ -134,14 +178,26 @@ func NewExchange(apiKey, apiSecret string, opts ExchangeOptions) *Exchange {
 // covered by the agent.Exchange interface.
 func (e *Exchange) Client() *Client { return e.client }
 
-// Start launches the background loops (ping + time sync). Subsequent
-// calls are no-ops. The goroutines exit when ctx is cancelled OR Close
-// is called, whichever happens first.
+// Start launches the background loops (ping + time sync + UDS).
+// Subsequent calls are no-ops. The goroutines exit when ctx is
+// cancelled OR Close is called, whichever happens first.
 func (e *Exchange) Start(ctx context.Context) {
 	e.startOnce.Do(func() {
 		e.started.Store(true)
 		go e.pingLoop(ctx)
 		go e.timeSyncLoop(ctx)
+		if e.uds != nil {
+			// Re-apply any Subscribe call that landed before Start so
+			// the streamer doesn't drop events that arrive in the
+			// first tick. (Subscribe is always safe pre-Start; this
+			// is the bridge that makes that contract real.)
+			e.pendingSubMu.Lock()
+			if e.pendingSubFn != nil {
+				e.uds.Subscribe(e.pendingSubFn)
+			}
+			e.pendingSubMu.Unlock()
+			e.uds.Start(ctx)
+		}
 	})
 }
 
@@ -150,12 +206,40 @@ func (e *Exchange) Start(ctx context.Context) {
 func (e *Exchange) Close() error {
 	e.closeOnce.Do(func() {
 		close(e.stopCh)
+		if e.uds != nil {
+			e.uds.Close()
+		}
 	})
 	if e.started.Load() {
 		<-e.pingDoneCh
 		<-e.timeSyncDoneCh
+		if e.uds != nil {
+			e.uds.Wait()
+		}
 	}
 	return nil
+}
+
+// Subscribe implements agent.OrderEventStreamer. If UDS is enabled the
+// callback is forwarded to the streamer; otherwise the callback is
+// retained so a later Start (with UDS enabled in a different build)
+// would still apply it — but in the current binary, UDSDisabled means
+// no events fire. v1 last-wins replacement semantics.
+//
+// Safe to call at any time, including before Start.
+func (e *Exchange) Subscribe(cb func(agent.OrderEvent)) {
+	if e.uds != nil {
+		// Cache locally too — Start re-applies before launching the
+		// streamer so the pre-Start window doesn't drop events.
+		e.pendingSubMu.Lock()
+		e.pendingSubFn = cb
+		e.pendingSubMu.Unlock()
+		e.uds.Subscribe(cb)
+		return
+	}
+	e.pendingSubMu.Lock()
+	e.pendingSubFn = cb
+	e.pendingSubMu.Unlock()
 }
 
 // pingLoop runs the synchronous startup ping then a ticker loop. We

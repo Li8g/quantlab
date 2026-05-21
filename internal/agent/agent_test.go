@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -506,4 +507,255 @@ func TestKillSwitch_AckAccepted(t *testing.T) {
 	cancel()
 	_ = pc.Close()
 	<-errCh
+}
+
+// ===== Phase 7.11: OrderEventStreamer wiring + onOrderEvent =====
+
+// streamerMockExchange is MockExchange + Subscribe(), used by tests that
+// need to exercise the OrderEventStreamer code path.
+type streamerMockExchange struct {
+	*MockExchange
+	cb func(OrderEvent)
+}
+
+func newStreamerMockExchange() *streamerMockExchange {
+	return &streamerMockExchange{
+		MockExchange: NewMockExchange(map[string]decimal.Decimal{"BTCUSDT": decimal.NewFromInt(50000)}),
+	}
+}
+
+func (s *streamerMockExchange) Subscribe(cb func(OrderEvent)) { s.cb = cb }
+
+func (s *streamerMockExchange) emit(ev OrderEvent) {
+	if s.cb != nil {
+		s.cb(ev)
+	}
+}
+
+// compile-time confirmation that streamerMockExchange satisfies both interfaces.
+var _ Exchange = (*streamerMockExchange)(nil)
+var _ OrderEventStreamer = (*streamerMockExchange)(nil)
+
+func TestNewClient_SubscribesWhenExchangeIsStreamer(t *testing.T) {
+	ex := newStreamerMockExchange()
+	c := newTestClient(t, []*pipeConn{}, ex)
+	if ex.cb == nil {
+		t.Fatal("NewClient should have called Subscribe on a streamer-capable exchange")
+	}
+	// Sanity: cb is wired to c.onOrderEvent (compile + identity check).
+	_ = c // c retains the registered callback path; no need to invoke here.
+}
+
+func TestNewClient_DoesNotSubscribeWhenExchangeIsNotStreamer(t *testing.T) {
+	// Plain *MockExchange does not implement OrderEventStreamer.
+	var ex Exchange = NewMockExchange(nil)
+	if _, ok := ex.(OrderEventStreamer); ok {
+		t.Fatal("plain MockExchange must NOT satisfy OrderEventStreamer (test premise broken)")
+	}
+	c := newTestClient(t, []*pipeConn{}, ex)
+	if c == nil {
+		t.Fatal("NewClient returned nil")
+	}
+}
+
+// onOrderEventTestFixture wires a Client + pipeConn + streamer mock
+// directly, bypassing Run(). Used for unit-style assertions on
+// onOrderEvent. The pipeConn is installed manually so c.connMu/c.conn
+// already exists, mimicking the post-handshake state.
+func newOnOrderEventFixture(t *testing.T) (*Client, *pipeConn, *streamerMockExchange) {
+	t.Helper()
+	pc := newPipeConn()
+	ex := newStreamerMockExchange()
+	c := newTestClient(t, []*pipeConn{}, ex)
+	c.connMu.Lock()
+	c.conn = pc
+	c.connMu.Unlock()
+	return c, pc, ex
+}
+
+func TestOnOrderEvent_BuildsWireOrderUpdateForFill(t *testing.T) {
+	c, pc, ex := newOnOrderEventFixture(t)
+
+	// Pre-populate idempotency with a limit-order accepted record.
+	ref := decimal.RequireFromString("45000")
+	rec := IdempotencyRecord{
+		ClientOrderID:   "COID-EV-1",
+		ExchangeOrderID: "X-1",
+		Status:          IdempotencyStatusAccepted,
+		MarketRef:       ref,
+		SubmittedAtMs:   1_700_000_000_000,
+		LastUpdatedMs:   1_700_000_000_000,
+	}
+	if err := c.idempotency.Put(rec); err != nil {
+		t.Fatalf("idempotency.Put: %v", err)
+	}
+
+	ex.emit(OrderEvent{
+		ClientOrderID:   "COID-EV-1",
+		ExchangeOrderID: "X-1",
+		Status:          "filled",
+		Side:            "buy",
+		Fill: &ExchangeFill{
+			FillQuantity:       decimal.RequireFromString("0.001"),
+			FillPrice:          decimal.RequireFromString("45045"), // +10 bps above ref
+			FillFeeAsset:       "USDT",
+			FillFeeAmount:      decimal.RequireFromString("0.045"),
+			FilledAtExchangeMs: 1_700_000_001_000,
+		},
+		CumulativeFillQuantity: decimal.RequireFromString("0.001"),
+	})
+
+	env := pc.hubReadEnv(t)
+	if env.Type != wire.TypeOrderUpdate {
+		t.Fatalf("type = %q, want order_update", env.Type)
+	}
+	ou, _ := wire.DecodePayload[wire.OrderUpdate](env)
+	if ou.ClientOrderID != "COID-EV-1" {
+		t.Errorf("ClientOrderID = %q", ou.ClientOrderID)
+	}
+	if ou.ExchangeOrderID != "X-1" {
+		t.Errorf("ExchangeOrderID = %q", ou.ExchangeOrderID)
+	}
+	if ou.Status != wire.OrderStatusFilled {
+		t.Errorf("Status = %q, want filled", ou.Status)
+	}
+	if len(ou.Fills) != 1 {
+		t.Fatalf("len(Fills) = %d, want 1", len(ou.Fills))
+	}
+	// (45045-45000)/45000 * 10000 = 10 bps
+	if ou.Fills[0].ActualSlippageBps < 9.9 || ou.Fills[0].ActualSlippageBps > 10.1 {
+		t.Errorf("ActualSlippageBps = %f, want ~10", ou.Fills[0].ActualSlippageBps)
+	}
+	if ou.CumulativeFilledQuantityDecimal == "" {
+		t.Error("CumulativeFilledQuantityDecimal empty")
+	}
+
+	// Idempotency status flipped to filled.
+	got, ok, _ := c.idempotency.Get("COID-EV-1")
+	if !ok || got.Status != IdempotencyStatusFilled {
+		t.Errorf("idem status = %v, want filled", got.Status)
+	}
+}
+
+func TestOnOrderEvent_DropsWhenUnknownClientOrderID(t *testing.T) {
+	c, pc, ex := newOnOrderEventFixture(t)
+
+	ex.emit(OrderEvent{
+		ClientOrderID: "COID-UNKNOWN",
+		Status:        "filled",
+		Side:          "buy",
+		Fill:          &ExchangeFill{FillQuantity: decimal.NewFromInt(1), FillPrice: decimal.NewFromInt(1)},
+	})
+
+	// No frame should arrive — drain channel with a tight timeout.
+	select {
+	case frame := <-pc.serverWrites:
+		t.Errorf("unexpected frame for unknown client_order_id: %s", string(frame))
+	case <-time.After(50 * time.Millisecond):
+	}
+	_ = c
+}
+
+func TestOnOrderEvent_DropsWhenNoActiveConn(t *testing.T) {
+	c, pc, ex := newOnOrderEventFixture(t)
+	// Take the conn back away to mimic between-session state.
+	c.connMu.Lock()
+	c.conn = nil
+	c.connMu.Unlock()
+
+	_ = c.idempotency.Put(IdempotencyRecord{
+		ClientOrderID: "COID-OFFLINE",
+		Status:        IdempotencyStatusAccepted,
+		MarketRef:     decimal.NewFromInt(100),
+	})
+
+	ex.emit(OrderEvent{
+		ClientOrderID: "COID-OFFLINE",
+		Status:        "filled",
+		Side:          "buy",
+		Fill: &ExchangeFill{
+			FillQuantity: decimal.NewFromInt(1),
+			FillPrice:    decimal.NewFromInt(100),
+		},
+	})
+	select {
+	case frame := <-pc.serverWrites:
+		t.Errorf("unexpected frame while conn=nil: %s", string(frame))
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestOnOrderEvent_PartialFilledDoesNotChangeIdemStatus(t *testing.T) {
+	c, pc, ex := newOnOrderEventFixture(t)
+	_ = c.idempotency.Put(IdempotencyRecord{
+		ClientOrderID: "COID-PART",
+		Status:        IdempotencyStatusAccepted,
+		MarketRef:     decimal.NewFromInt(50000),
+	})
+	ex.emit(OrderEvent{
+		ClientOrderID:          "COID-PART",
+		Status:                 "partial_filled",
+		Side:                   "buy",
+		Fill:                   &ExchangeFill{FillQuantity: decimal.RequireFromString("0.0005"), FillPrice: decimal.NewFromInt(50000)},
+		CumulativeFillQuantity: decimal.RequireFromString("0.0005"),
+	})
+
+	env := pc.hubReadEnv(t)
+	ou, _ := wire.DecodePayload[wire.OrderUpdate](env)
+	if ou.Status != wire.OrderStatusPartialFilled {
+		t.Errorf("wire status = %q, want partial_filled", ou.Status)
+	}
+	got, _, _ := c.idempotency.Get("COID-PART")
+	if got.Status != IdempotencyStatusAccepted {
+		t.Errorf("idem status = %v after partial fill, want accepted (unchanged)", got.Status)
+	}
+}
+
+func TestOnOrderEvent_CancelledHasNoFills(t *testing.T) {
+	c, pc, ex := newOnOrderEventFixture(t)
+	_ = c.idempotency.Put(IdempotencyRecord{
+		ClientOrderID: "COID-CANCEL",
+		Status:        IdempotencyStatusAccepted,
+		MarketRef:     decimal.NewFromInt(50000),
+	})
+	ex.emit(OrderEvent{ClientOrderID: "COID-CANCEL", Status: "cancelled"})
+
+	env := pc.hubReadEnv(t)
+	ou, _ := wire.DecodePayload[wire.OrderUpdate](env)
+	if ou.Status != wire.OrderStatusCancelled {
+		t.Errorf("Status = %q, want cancelled", ou.Status)
+	}
+	if len(ou.Fills) != 0 {
+		t.Errorf("len(Fills) = %d, want 0 on cancellation", len(ou.Fills))
+	}
+	got, _, _ := c.idempotency.Get("COID-CANCEL")
+	if got.Status != IdempotencyStatusCancelled {
+		t.Errorf("idem status = %v after cancellation, want cancelled", got.Status)
+	}
+}
+
+func TestOnOrderEvent_FallsBackToFillQtyWhenCumulativeZero(t *testing.T) {
+	c, pc, ex := newOnOrderEventFixture(t)
+	_ = c.idempotency.Put(IdempotencyRecord{
+		ClientOrderID: "COID-NOCUM",
+		Status:        IdempotencyStatusAccepted,
+		MarketRef:     decimal.NewFromInt(50000),
+	})
+	ex.emit(OrderEvent{
+		ClientOrderID: "COID-NOCUM",
+		Status:        "filled",
+		Side:          "buy",
+		Fill: &ExchangeFill{
+			FillQuantity: decimal.RequireFromString("0.002"),
+			FillPrice:    decimal.NewFromInt(50000),
+		},
+		// CumulativeFillQuantity intentionally zero.
+	})
+
+	env := pc.hubReadEnv(t)
+	ou, _ := wire.DecodePayload[wire.OrderUpdate](env)
+	// Should be 0.002 (from fill qty) not "" or "0".
+	if !strings.Contains(ou.CumulativeFilledQuantityDecimal, "0.00200000") {
+		t.Errorf("CumulativeFilledQuantityDecimal = %q, want fallback 0.002", ou.CumulativeFilledQuantityDecimal)
+	}
 }

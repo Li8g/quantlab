@@ -215,6 +215,32 @@ func (c *Client) unsigned(ctx context.Context, method, path string, params url.V
 	return c.do(req)
 }
 
+// withAPIKey issues a request with the X-MBX-APIKEY header but NO
+// timestamp/recvWindow/signature. Used by Binance's USER_STREAM
+// security tier (listenKey lifecycle: POST/PUT/DELETE
+// /api/v3/userDataStream). signed() is wrong for these endpoints —
+// Binance rejects the listenKey-keepalive PUT with -1101 ("illegal
+// characters in query") if a signature is appended.
+//
+// params may be nil. Empty apiKey trips ErrEmptyAPIKey at call time
+// rather than at NewClient so a public-only client can still boot.
+func (c *Client) withAPIKey(ctx context.Context, method, path string, params url.Values) ([]byte, error) {
+	if c.apiKey == "" {
+		return nil, ErrEmptyAPIKey
+	}
+	u := c.baseURL + path
+	if len(params) > 0 {
+		u += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("binance: build api-key request: %w", err)
+	}
+	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+	req.Header.Set("User-Agent", userAgent)
+	return c.do(req)
+}
+
 // signed issues an authenticated request. timestamp + recvWindow are
 // appended to params, the canonical-encoded query string is HMAC-SHA256
 // signed with apiSecret, and the resulting signature is added as the

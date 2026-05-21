@@ -108,6 +108,19 @@ func NewClient(cfg Config, ex Exchange, idem IdempotencyStore, opt Options) *Cli
 			return 0.8 + rand.Float64()*0.4
 		}
 	}
+	// Opt-in: if the exchange backend can stream async order events
+	// (Binance UDS, future websocket streamers), subscribe so resting
+	// limit-order fills reach SaaS via wire.OrderUpdate. MockExchange
+	// does not implement OrderEventStreamer so this falls through to
+	// the no-op path silently.
+	//
+	// REFACTOR HOOK — when adding a second streamer-capable backend,
+	// keep this assertion site as the single integration point. If a
+	// backend needs to expose multiple capability interfaces, prefer
+	// multiple discrete asserts here over a single fat interface.
+	if streamer, ok := ex.(OrderEventStreamer); ok {
+		streamer.Subscribe(c.onOrderEvent)
+	}
 	return c
 }
 
@@ -379,4 +392,154 @@ func formatDecimal(d decimal.Decimal) string {
 	// strconv-rounded; matches SaaS-side rendering for symmetry.
 	f, _ := d.Float64()
 	return strconv.FormatFloat(f, 'f', 8, 64)
+}
+
+// onOrderEvent is the callback registered with the exchange's
+// OrderEventStreamer at construction. Invoked from the streamer's
+// own single goroutine (binance.uds.run) — must be lightweight + safe
+// for concurrent access to c.conn.
+//
+// Flow:
+//
+//  1. Look up the idempotency record by ClientOrderID. MarketRef from
+//     the record is the slippage reference (limit_price for limit
+//     orders, captured best-side for market orders).
+//  2. Build wire.OrderUpdate. For TRADE events (Fill != nil), compute
+//     ActualSlippageBps via §8.2. For cancel/reject, emit a zero-fill
+//     update so SaaS can reconcile the lifecycle.
+//  3. Update idempotency status to match the event.
+//  4. Write the frame on the active conn under c.connMu. If no active
+//     session (e.g. between disconnect and the next dial), drop the
+//     event with a warn log — v1 limitation per saas-ws-protocol-v1.md
+//     §11 Q7 (state_sync_response would replay missed fills; not in
+//     v1 scope).
+//
+// REFACTOR HOOK — when adding reconciliation across disconnects:
+//
+//   - Persist undispatched events to the idempotency-adjacent table.
+//   - On reconnect, after StateSyncResponse, drain the queue.
+//
+// Do NOT block here on a conn that's missing; the streamer goroutine
+// must keep advancing to consume Binance's queue.
+func (c *Client) onOrderEvent(ev OrderEvent) {
+	if ev.ClientOrderID == "" {
+		c.log.Warn("agent_order_event_missing_client_order_id", "event", ev)
+		return
+	}
+
+	rec, ok, _ := c.idempotency.Get(ev.ClientOrderID)
+	if !ok {
+		// Either the order was placed by a previous Agent process
+		// (sqlite retention covers 7d; some events outlive that), or
+		// the executionReport raced ahead of the Submit ack record
+		// write. Drop with warn — SaaS-side reconciliation handles
+		// this in v2.
+		c.log.Warn("agent_order_event_unknown_order",
+			"client_order_id", ev.ClientOrderID,
+			"exchange_order_id", ev.ExchangeOrderID,
+			"status", ev.Status)
+		return
+	}
+
+	side := ev.Side // OrderEvent carries it for streamers that know
+	// (binance does); fall back to "" if not — slippage will be 0
+	// (computeSlippageBps short-circuits unknown sides).
+
+	ou := wire.OrderUpdate{
+		ClientOrderID:   ev.ClientOrderID,
+		ExchangeOrderID: orFallback(ev.ExchangeOrderID, rec.ExchangeOrderID),
+		Status:          mapEventStatusToWire(ev.Status),
+		Fills:           []wire.Fill{}, // wire requires non-nil slice
+	}
+
+	// Cumulative qty: prefer streamer-provided value (binance UDS `z`);
+	// fall back to this event's Fill qty (lossy for multi-fill but
+	// better than zero).
+	cum := ev.CumulativeFillQuantity
+	if cum.IsZero() && ev.Fill != nil {
+		cum = ev.Fill.FillQuantity
+	}
+	ou.CumulativeFilledQuantityDecimal = formatDecimal(cum)
+
+	if ev.Fill != nil {
+		slip := computeSlippageBps(side, rec.MarketRef, ev.Fill.FillPrice)
+		ou.Fills = append(ou.Fills, wire.Fill{
+			FillQuantityDecimal:  formatDecimal(ev.Fill.FillQuantity),
+			FillPriceDecimal:     formatDecimal(ev.Fill.FillPrice),
+			FillFeeAsset:         ev.Fill.FillFeeAsset,
+			FillFeeAmountDecimal: formatDecimal(ev.Fill.FillFeeAmount),
+			FilledAtExchangeMs:   ev.Fill.FilledAtExchangeMs,
+			ActualSlippageBps:    slip,
+		})
+	}
+
+	// Update idempotency status to the latest terminal/non-terminal
+	// state. The mapping mirrors mapEventStatusToWire.
+	newStatus := mapEventStatusToIdem(ev.Status, rec.Status)
+	if newStatus != rec.Status {
+		_ = c.idempotency.UpdateStatus(
+			ev.ClientOrderID, newStatus, ou.ExchangeOrderID, c.nowMs())
+	}
+
+	// Snapshot the active conn under the same lock that runSession
+	// uses to populate it. Drop if no session.
+	c.connMu.Lock()
+	conn := c.conn
+	c.connMu.Unlock()
+	if conn == nil {
+		c.log.Warn("agent_order_event_no_active_session",
+			"client_order_id", ev.ClientOrderID,
+			"status", ev.Status)
+		return
+	}
+
+	// Use a fresh background context so a long-running outer ctx
+	// timeout doesn't abort an OrderUpdate send. sendTyped applies
+	// its own 5s deadline internally.
+	if err := c.sendTyped(context.Background(), conn, wire.TypeOrderUpdate, ou); err != nil {
+		c.log.Warn("agent_order_event_send_failed",
+			"err", err, "client_order_id", ev.ClientOrderID)
+	}
+}
+
+// mapEventStatusToWire converts the OrderEvent.Status string to the
+// wire.OrderStatus enum. Unknown strings fall back to "rejected" so
+// SaaS sees a terminal state and the lifecycle doesn't dangle.
+func mapEventStatusToWire(s string) wire.OrderStatus {
+	switch s {
+	case "filled":
+		return wire.OrderStatusFilled
+	case "partial_filled":
+		return wire.OrderStatusPartialFilled
+	case "cancelled":
+		return wire.OrderStatusCancelled
+	case "rejected":
+		return wire.OrderStatusRejected
+	}
+	return wire.OrderStatusRejected
+}
+
+// mapEventStatusToIdem updates the IdempotencyStatus based on the
+// event. partial_filled keeps the current status (accepted → accepted)
+// since the record only flips to filled on terminal completion.
+func mapEventStatusToIdem(s string, current IdempotencyStatus) IdempotencyStatus {
+	switch s {
+	case "filled":
+		return IdempotencyStatusFilled
+	case "cancelled":
+		return IdempotencyStatusCancelled
+	case "rejected":
+		return IdempotencyStatusRejected
+	case "partial_filled":
+		return current // unchanged — terminal will follow
+	}
+	return current
+}
+
+// orFallback returns primary if non-empty, otherwise fallback.
+func orFallback(primary, fallback string) string {
+	if primary != "" {
+		return primary
+	}
+	return fallback
 }
