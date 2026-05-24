@@ -17,8 +17,13 @@ database:
   max_open_conns: 50
   max_idle_conns: 10
 
+# Redis publishes Agent online state (key `agent:{accountID}:status`)
+# per docs/saas-ws-protocol-v1.md §7.2. Empty addr skips the startup
+# ping — saas falls back to NopReporter and the online-state key is not
+# published, which is fine for single-node dev / unit tests. For
+# multi-process or prod, set addr to a real Redis (e.g. localhost:6379).
 redis:
-  addr: localhost:6379
+  addr: ""
   password: ""
   db: 0
 
@@ -26,7 +31,12 @@ jwt:
   # MUST be >= 32 bytes when app_role=saas (HS256 / RFC 7518).
   # Generate with: openssl rand -hex 32
   secret: change-me-to-a-random-string-of-at-least-32-bytes
+  # ttl bounds viewer + operator JWT lifetime (default 24h).
   ttl: 24h
+  # admin_ttl bounds the sudo-style elevated session (default 10min).
+  # Shorter = smaller fat-finger window for /promote, /retire,
+  # instance writes, etc. Re-login is the way to extend.
+  admin_ttl: 10m
 
 server:
   http_listen: ":8080"
