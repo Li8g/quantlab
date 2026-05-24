@@ -172,6 +172,11 @@ type Handlers struct {
 	// RequireOperator gates write endpoints to operator+admin.
 	// Same nil-skip behaviour as AuthRequired.
 	RequireOperator gin.HandlerFunc
+
+	// Login collaborators. Both must be non-nil for /auth/login to be
+	// registered — tests that don't exercise login leave them nil.
+	Users  UserAuthenticator
+	Tokens TokenIssuer
 }
 
 // Register attaches all routes under /api/v1 to the supplied Gin
@@ -202,6 +207,12 @@ func (h *Handlers) Register(r gin.IRouter) {
 	}
 	if h.SharpeBank != nil {
 		g.GET("/ga/sharpebank/stats", h.GetSharpeBankStats)
+	}
+
+	// Auth surface. /auth/login is the only public-by-design endpoint
+	// under the otherwise-AuthRequired'd surface.
+	if h.Users != nil && h.Tokens != nil {
+		g.POST("/auth/login", h.Login)
 	}
 
 	// Phase 6.3 instance routes — JWT-protected when middleware is

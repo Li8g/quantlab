@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/redis/go-redis/v9"
 
@@ -72,8 +74,30 @@ type ulidIssuer struct{}
 
 func (ulidIssuer) NewID() string { return store.NewULID() }
 
+// seedUser creates one User row with role=admin. Returns an error if a
+// row with the same email already exists (the unique index surfaces the
+// collision); the operator must delete the row manually before
+// re-seeding. bcrypt cost matches agentauth.DefaultBcryptCost = 12 so
+// brute force costs the same on both surfaces.
+func seedUser(ctx context.Context, db *gorm.DB, email, password string) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return fmt.Errorf("bcrypt: %w", err)
+	}
+	u := &store.User{
+		UserID:       store.NewULID(),
+		Email:        email,
+		PasswordHash: string(hash),
+		Role:         store.UserRoleAdmin,
+		Active:       true,
+	}
+	return repository.NewUserRepo(db).Create(ctx, u)
+}
+
 func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: $CONFIG_PATH or ./config.yaml)")
+	seedEmail := flag.String("seed-user-email", "", "if set, seed one User row with this email and exit (use with --seed-user-password)")
+	seedPassword := flag.String("seed-user-password", "", "password for --seed-user-email; bcrypt-hashed at cost 12, then discarded")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -87,6 +111,20 @@ func main() {
 	db, err := store.NewDB(ctx, cfg)
 	if err != nil {
 		log.Fatalf("saas: open db: %v", err)
+	}
+
+	// Seed mode: create one admin User row, then exit. Single-account
+	// design — manual seeding via this flag is the only User-creation
+	// path in v1; there is no signup endpoint.
+	if *seedEmail != "" || *seedPassword != "" {
+		if *seedEmail == "" || *seedPassword == "" {
+			log.Fatalf("saas: --seed-user-email and --seed-user-password must both be provided")
+		}
+		if err := seedUser(ctx, db, *seedEmail, *seedPassword); err != nil {
+			log.Fatalf("saas: seed user: %v", err)
+		}
+		log.Printf("saas: seeded user email=%s role=admin; exiting", *seedEmail)
+		return
 	}
 
 	taskRepo := repository.NewEvolutionTaskRepo(db)
@@ -163,6 +201,7 @@ func main() {
 	scheduler := cron.New(instanceRepo, tickManager, cron.Config{})
 
 	gapRepo := repository.NewKLineGapRepo(db)
+	userRepo := repository.NewUserRepo(db)
 
 	h := &api.Handlers{
 		Epoch:       svc,
@@ -182,6 +221,10 @@ func main() {
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,
 		),
+		// Sudo-style login: viewer-default JWTs with the long TTL,
+		// admin JWTs auto-expire on JWT.AdminTTL (cfg default 10min).
+		Users:  userRepo,
+		Tokens: authSvc,
 	}
 
 	if cfg.AppRole != config.AppRoleDev {

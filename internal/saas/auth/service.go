@@ -15,8 +15,9 @@ import (
 
 // Service signs and verifies tokens.
 type Service struct {
-	secret []byte
-	ttl    time.Duration
+	secret   []byte
+	ttl      time.Duration
+	adminTTL time.Duration
 }
 
 // Claims is QuantLab's JWT body.
@@ -35,32 +36,53 @@ func NewService(cfg config.JWTConfig) (*Service, error) {
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
+	adminTTL := cfg.AdminTTL
+	if adminTTL <= 0 {
+		adminTTL = 10 * time.Minute
+	}
 	return &Service{
-		secret: []byte(cfg.Secret),
-		ttl:    ttl,
+		secret:   []byte(cfg.Secret),
+		ttl:      ttl,
+		adminTTL: adminTTL,
 	}, nil
 }
 
-// SignToken issues a JWT for the given user.
+// IssueToken signs a JWT and returns both the token and its expiry.
+// Admin-role tokens use AdminTTL (default 10min, sudo-style); other
+// roles use TTL (default 24h). Login handlers surface ExpiresAt to the
+// client so the UI can prompt for re-login before the token dies.
+//
 // Note: time.Now() is allowed here — this is HTTP-handler-adjacent code,
 // not 策略 Step() / engine Evaluate. See 铁律 2 exception list in
 // docs/系统总体拓扑结构.md §8.3.
-func (s *Service) SignToken(userID uint, role string) (string, error) {
+func (s *Service) IssueToken(userID uint, role string) (string, time.Time, error) {
+	ttl := s.ttl
+	if role == "admin" {
+		ttl = s.adminTTL
+	}
 	now := time.Now()
+	expiresAt := now.Add(ttl)
 	claims := Claims{
 		UserID: userID,
 		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.ttl)),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(s.secret)
 	if err != nil {
-		return "", fmt.Errorf("auth: sign: %w", err)
+		return "", time.Time{}, fmt.Errorf("auth: sign: %w", err)
 	}
-	return signed, nil
+	return signed, expiresAt, nil
+}
+
+// SignToken is the original signature kept for existing test callers
+// that only need the token string.
+func (s *Service) SignToken(userID uint, role string) (string, error) {
+	tok, _, err := s.IssueToken(userID, role)
+	return tok, err
 }
 
 // ParseToken verifies a JWT and returns its claims.

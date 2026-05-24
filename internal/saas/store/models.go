@@ -216,6 +216,38 @@ const (
 	UserRoleViewer   UserRole = "viewer"   // 只读
 )
 
+// roleRank orders the three roles for hierarchy comparisons; higher
+// number = more privilege.
+var roleRank = map[UserRole]int{
+	UserRoleViewer:   1,
+	UserRoleOperator: 2,
+	UserRoleAdmin:    3,
+}
+
+// ParseUserRole validates the input string and returns the
+// corresponding UserRole. Unknown values return (_, false).
+func ParseUserRole(s string) (UserRole, bool) {
+	r := UserRole(s)
+	_, ok := roleRank[r]
+	return r, ok
+}
+
+// RoleAtLeast reports whether `have` is at least as privileged as
+// `want`. Used by /auth/login to cap the requested role at the user's
+// DB role: a request for admin from a viewer-DB-row is rejected. Both
+// inputs must be valid UserRole values — unknown roles return false.
+func RoleAtLeast(have, want UserRole) bool {
+	h, ok := roleRank[have]
+	if !ok {
+		return false
+	}
+	w, ok := roleRank[want]
+	if !ok {
+		return false
+	}
+	return h >= w
+}
+
 // User is the human / API caller (§3.1).
 type User struct {
 	ID           uint       `gorm:"primaryKey"                          json:"id"`

@@ -78,6 +78,12 @@ type RedisConfig struct {
 type JWTConfig struct {
 	Secret string        `yaml:"secret"`
 	TTL    time.Duration `yaml:"ttl"`
+
+	// AdminTTL bounds how long an admin-role JWT lives. Sudo-style
+	// step-up: most sessions are viewer/operator with the longer TTL;
+	// admin tokens auto-expire quickly to shrink the fat-finger window.
+	// 0 → 10 minutes.
+	AdminTTL time.Duration `yaml:"admin_ttl"`
 }
 
 type ServerConfig struct {
@@ -159,6 +165,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.JWT.TTL == 0 {
 		c.JWT.TTL = 24 * time.Hour
+	}
+	if c.JWT.AdminTTL == 0 {
+		c.JWT.AdminTTL = 10 * time.Minute
 	}
 	if c.Server.HTTPListen == "" {
 		c.Server.HTTPListen = ":8080"
