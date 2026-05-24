@@ -1,21 +1,24 @@
 package agent
 
-import "github.com/shopspring/decimal"
+import (
+	"github.com/shopspring/decimal"
+
+	"quantlab/internal/wire"
+)
 
 // OrderEvent is one async order-state transition surfaced by an
 // exchange-driven event stream (e.g. Binance User Data Stream). The
 // Agent translates these into wire.OrderUpdate frames for SaaS.
 //
-// Status values map to the wire.OrderStatus enum (see
+// Status is the wire-level enum directly (see
 // docs/saas-ws-protocol-v1.md §5.10):
 //
-//   - "partial_filled" — a new Fill is included; cumulative still
-//     below ordered quantity.
-//   - "filled"         — terminal; cumulative >= ordered quantity.
-//   - "cancelled"      — order removed without (further) fills.
-//   - "rejected"       — exchange rejected post-acceptance (rare;
-//                         most rejections surface synchronously via
-//                         Exchange.Submit).
+//   - OrderStatusPartialFilled — a new Fill is included; cumulative
+//                                below ordered quantity.
+//   - OrderStatusFilled        — terminal; cumulative >= ordered.
+//   - OrderStatusCancelled     — order removed without (further) fills.
+//   - OrderStatusRejected      — exchange rejected post-acceptance
+//                                (rare; most surface synchronously).
 //
 // Fill is non-nil only when Status is partial_filled or filled AND
 // a new execution is carried by this event. A NEW→CANCELED transition
@@ -34,7 +37,7 @@ import "github.com/shopspring/decimal"
 type OrderEvent struct {
 	ClientOrderID   string
 	ExchangeOrderID string
-	Status          string
+	Status          wire.OrderStatus
 	Side            string        // "buy" | "sell"; lowercased
 	Fill            *ExchangeFill // optional; one execution carried by this event
 

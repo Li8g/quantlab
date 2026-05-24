@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"quantlab/internal/agent"
+	"quantlab/internal/wire"
 )
 
 // ===== decoder unit tests =====
@@ -47,7 +48,7 @@ func TestDecodeExecutionReport_TRADE_PartialFilled(t *testing.T) {
 	if ev.ExchangeOrderID != "424242" {
 		t.Errorf("ExchangeOrderID = %q, want 424242", ev.ExchangeOrderID)
 	}
-	if ev.Status != "partial_filled" {
+	if ev.Status != wire.OrderStatusPartialFilled {
 		t.Errorf("Status = %q, want partial_filled", ev.Status)
 	}
 	if ev.Side != "buy" {
@@ -82,7 +83,7 @@ func TestDecodeExecutionReport_TRADE_Filled(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("err=%v ok=%v", err, ok)
 	}
-	if ev.Status != "filled" {
+	if ev.Status != wire.OrderStatusFilled {
 		t.Errorf("Status = %q, want filled", ev.Status)
 	}
 	if ev.Side != "sell" {
@@ -96,7 +97,7 @@ func TestDecodeExecutionReport_CANCELED(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("err=%v ok=%v", err, ok)
 	}
-	if ev.Status != "cancelled" {
+	if ev.Status != wire.OrderStatusCancelled {
 		t.Errorf("Status = %q, want cancelled", ev.Status)
 	}
 	if ev.Fill != nil {
@@ -110,7 +111,7 @@ func TestDecodeExecutionReport_REJECTED(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("err=%v ok=%v", err, ok)
 	}
-	if ev.Status != "rejected" {
+	if ev.Status != wire.OrderStatusRejected {
 		t.Errorf("Status = %q, want rejected", ev.Status)
 	}
 }
@@ -122,7 +123,7 @@ func TestDecodeExecutionReport_EXPIRED_MapsToCancelled(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("err=%v ok=%v", err, ok)
 	}
-	if ev.Status != "cancelled" {
+	if ev.Status != wire.OrderStatusCancelled {
 		t.Errorf("Status = %q, want cancelled", ev.Status)
 	}
 }
@@ -334,7 +335,7 @@ func TestUDS_EndToEnd_ExecutionReportReachesCallback(t *testing.T) {
 		if ev.ClientOrderID != "COID-RT" {
 			t.Errorf("ClientOrderID = %q", ev.ClientOrderID)
 		}
-		if ev.Status != "filled" {
+		if ev.Status != wire.OrderStatusFilled {
 			t.Errorf("Status = %q, want filled", ev.Status)
 		}
 		if ev.ExchangeOrderID != "777" {

@@ -593,7 +593,7 @@ func TestOnOrderEvent_BuildsWireOrderUpdateForFill(t *testing.T) {
 	ex.emit(OrderEvent{
 		ClientOrderID:   "COID-EV-1",
 		ExchangeOrderID: "X-1",
-		Status:          "filled",
+		Status:          wire.OrderStatusFilled,
 		Side:            "buy",
 		Fill: &ExchangeFill{
 			FillQuantity:       decimal.RequireFromString("0.001"),
@@ -642,7 +642,7 @@ func TestOnOrderEvent_DropsWhenUnknownClientOrderID(t *testing.T) {
 
 	ex.emit(OrderEvent{
 		ClientOrderID: "COID-UNKNOWN",
-		Status:        "filled",
+		Status:        wire.OrderStatusFilled,
 		Side:          "buy",
 		Fill:          &ExchangeFill{FillQuantity: decimal.NewFromInt(1), FillPrice: decimal.NewFromInt(1)},
 	})
@@ -671,7 +671,7 @@ func TestOnOrderEvent_DropsWhenNoActiveConn(t *testing.T) {
 
 	ex.emit(OrderEvent{
 		ClientOrderID: "COID-OFFLINE",
-		Status:        "filled",
+		Status:        wire.OrderStatusFilled,
 		Side:          "buy",
 		Fill: &ExchangeFill{
 			FillQuantity: decimal.NewFromInt(1),
@@ -694,7 +694,7 @@ func TestOnOrderEvent_PartialFilledDoesNotChangeIdemStatus(t *testing.T) {
 	})
 	ex.emit(OrderEvent{
 		ClientOrderID:          "COID-PART",
-		Status:                 "partial_filled",
+		Status:                 wire.OrderStatusPartialFilled,
 		Side:                   "buy",
 		Fill:                   &ExchangeFill{FillQuantity: decimal.RequireFromString("0.0005"), FillPrice: decimal.NewFromInt(50000)},
 		CumulativeFillQuantity: decimal.RequireFromString("0.0005"),
@@ -718,7 +718,7 @@ func TestOnOrderEvent_CancelledHasNoFills(t *testing.T) {
 		Status:        IdempotencyStatusAccepted,
 		MarketRef:     decimal.NewFromInt(50000),
 	})
-	ex.emit(OrderEvent{ClientOrderID: "COID-CANCEL", Status: "cancelled"})
+	ex.emit(OrderEvent{ClientOrderID: "COID-CANCEL", Status: wire.OrderStatusCancelled})
 
 	env := pc.hubReadEnv(t)
 	ou, _ := wire.DecodePayload[wire.OrderUpdate](env)
@@ -743,7 +743,7 @@ func TestOnOrderEvent_FallsBackToFillQtyWhenCumulativeZero(t *testing.T) {
 	})
 	ex.emit(OrderEvent{
 		ClientOrderID: "COID-NOCUM",
-		Status:        "filled",
+		Status:        wire.OrderStatusFilled,
 		Side:          "buy",
 		Fill: &ExchangeFill{
 			FillQuantity: decimal.RequireFromString("0.002"),

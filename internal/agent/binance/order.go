@@ -101,26 +101,7 @@ func (c *Client) SubmitMarket(ctx context.Context, order agent.ExchangeOrder) (*
 
 	body, err := c.signed(ctx, http.MethodPost, "/api/v3/order", params)
 	if err != nil {
-		// Check RateLimitError BEFORE APIError — RateLimitError also
-		// satisfies errors.As(*APIError) via Unwrap, so the order is
-		// important. The order never reached the matching engine
-		// (Binance throttles before evaluation) so we surface it as a
-		// rejection with a stable reason, preserving retry hints in
-		// the message for ops/diagnostic.
-		var rlErr *RateLimitError
-		if errors.As(err, &rlErr) {
-			reason := "rate_limited"
-			if rlErr.Banned {
-				reason = "ip_banned"
-			}
-			return nil, fmt.Errorf("%w: %s retry_after=%s",
-				agent.ErrExchangeRejected, reason, rlErr.RetryAfter)
-		}
-		var apiErr *APIError
-		if errors.As(err, &apiErr) {
-			return nil, fmt.Errorf("%w: %s", agent.ErrExchangeRejected, apiErr.Error())
-		}
-		return nil, fmt.Errorf("binance.SubmitMarket: %w", err)
+		return nil, wrapSubmitErr("binance.SubmitMarket", err)
 	}
 
 	var raw rawOrderResponse
@@ -131,27 +112,9 @@ func (c *Client) SubmitMarket(ctx context.Context, order agent.ExchangeOrder) (*
 		return nil, fmt.Errorf("binance.SubmitMarket: response missing orderId: %s", string(body))
 	}
 
-	fills := make([]agent.ExchangeFill, 0, len(raw.Fills))
-	for i, f := range raw.Fills {
-		fillQty, err := decimal.NewFromString(f.Qty)
-		if err != nil {
-			return nil, fmt.Errorf("binance.SubmitMarket: fill[%d].qty %q: %w", i, f.Qty, err)
-		}
-		fillPrice, err := decimal.NewFromString(f.Price)
-		if err != nil {
-			return nil, fmt.Errorf("binance.SubmitMarket: fill[%d].price %q: %w", i, f.Price, err)
-		}
-		fillFee, err := decimal.NewFromString(f.Commission)
-		if err != nil {
-			return nil, fmt.Errorf("binance.SubmitMarket: fill[%d].commission %q: %w", i, f.Commission, err)
-		}
-		fills = append(fills, agent.ExchangeFill{
-			FillQuantity:       fillQty,
-			FillPrice:          fillPrice,
-			FillFeeAsset:       f.CommissionAsset,
-			FillFeeAmount:      fillFee,
-			FilledAtExchangeMs: raw.TransactTime,
-		})
+	fills, err := decodeFills("binance.SubmitMarket", raw.Fills, raw.TransactTime)
+	if err != nil {
+		return nil, err
 	}
 
 	return &agent.ExchangeSubmitResult{
@@ -160,6 +123,58 @@ func (c *Client) SubmitMarket(ctx context.Context, order agent.ExchangeOrder) (*
 		MarketRef:       marketRef,
 		Fills:           fills,
 	}, nil
+}
+
+// wrapSubmitErr translates POST /api/v3/order failures into the
+// agent-level taxonomy. RateLimitError must be checked before
+// APIError because it unwraps to one. The order never reached the
+// matching engine in either case, so callers see a stable
+// agent.ErrExchangeRejected with a reason suffix.
+func wrapSubmitErr(prefix string, err error) error {
+	var rlErr *RateLimitError
+	if errors.As(err, &rlErr) {
+		reason := "rate_limited"
+		if rlErr.Banned {
+			reason = "ip_banned"
+		}
+		return fmt.Errorf("%w: %s retry_after=%s",
+			agent.ErrExchangeRejected, reason, rlErr.RetryAfter)
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Errorf("%w: %s", agent.ErrExchangeRejected, apiErr.Error())
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
+}
+
+// decodeFills converts a rawOrderResponse.Fills slice into the
+// agent-level shape. All three decimal fields must parse; a partial
+// parse means the response is corrupt and the order outcome is
+// unknown to the caller.
+func decodeFills(prefix string, raw []rawFill, transactTime int64) ([]agent.ExchangeFill, error) {
+	fills := make([]agent.ExchangeFill, 0, len(raw))
+	for i, f := range raw {
+		fillQty, err := decimal.NewFromString(f.Qty)
+		if err != nil {
+			return nil, fmt.Errorf("%s: fill[%d].qty %q: %w", prefix, i, f.Qty, err)
+		}
+		fillPrice, err := decimal.NewFromString(f.Price)
+		if err != nil {
+			return nil, fmt.Errorf("%s: fill[%d].price %q: %w", prefix, i, f.Price, err)
+		}
+		fillFee, err := decimal.NewFromString(f.Commission)
+		if err != nil {
+			return nil, fmt.Errorf("%s: fill[%d].commission %q: %w", prefix, i, f.Commission, err)
+		}
+		fills = append(fills, agent.ExchangeFill{
+			FillQuantity:       fillQty,
+			FillPrice:          fillPrice,
+			FillFeeAsset:       f.CommissionAsset,
+			FillFeeAmount:      fillFee,
+			FilledAtExchangeMs: transactTime,
+		})
+	}
+	return fills, nil
 }
 
 // mapSide normalises agent's "buy" / "sell" to Binance's "BUY" /
@@ -182,15 +197,9 @@ func mapSide(s string) (string, error) {
 //  2. price + timeInForce=GTC are added to the params.
 //  3. Inline fills are usually empty (status=NEW) — the order rests
 //     on the book and asynchronous fills arrive via the User Data
-//     Stream (Phase 7.11). A limit order that immediately crosses the
-//     book returns status=FILLED with inline fills, which we decode
-//     identically to SubmitMarket.
-//
-// Until the User Data Stream wiring lands (7.11), a non-crossing
-// limit order is essentially fire-and-forget — Agent surfaces Ack
-// {status=accepted, exchange_order_id, market_ref=limit_price} and
-// no subsequent OrderUpdate. Acceptable interim state for testnet /
-// paper-trading use.
+//     Stream. A limit order that immediately crosses the book returns
+//     status=FILLED with inline fills, decoded identically to
+//     SubmitMarket.
 func (c *Client) SubmitLimit(ctx context.Context, order agent.ExchangeOrder) (*agent.ExchangeSubmitResult, error) {
 	if order.OrderType != "limit" {
 		return nil, fmt.Errorf("binance.SubmitLimit: order_type=%q, want limit", order.OrderType)
@@ -228,22 +237,7 @@ func (c *Client) SubmitLimit(ctx context.Context, order agent.ExchangeOrder) (*a
 
 	body, err := c.signed(ctx, http.MethodPost, "/api/v3/order", params)
 	if err != nil {
-		// Same error-class layering as SubmitMarket — RateLimitError
-		// must be checked before APIError because it Unwraps to one.
-		var rlErr *RateLimitError
-		if errors.As(err, &rlErr) {
-			reason := "rate_limited"
-			if rlErr.Banned {
-				reason = "ip_banned"
-			}
-			return nil, fmt.Errorf("%w: %s retry_after=%s",
-				agent.ErrExchangeRejected, reason, rlErr.RetryAfter)
-		}
-		var apiErr *APIError
-		if errors.As(err, &apiErr) {
-			return nil, fmt.Errorf("%w: %s", agent.ErrExchangeRejected, apiErr.Error())
-		}
-		return nil, fmt.Errorf("binance.SubmitLimit: %w", err)
+		return nil, wrapSubmitErr("binance.SubmitLimit", err)
 	}
 
 	var raw rawOrderResponse
@@ -254,36 +248,16 @@ func (c *Client) SubmitLimit(ctx context.Context, order agent.ExchangeOrder) (*a
 		return nil, fmt.Errorf("binance.SubmitLimit: response missing orderId: %s", string(body))
 	}
 
-	fills := make([]agent.ExchangeFill, 0, len(raw.Fills))
-	for i, f := range raw.Fills {
-		fillQty, err := decimal.NewFromString(f.Qty)
-		if err != nil {
-			return nil, fmt.Errorf("binance.SubmitLimit: fill[%d].qty %q: %w", i, f.Qty, err)
-		}
-		fillPrice, err := decimal.NewFromString(f.Price)
-		if err != nil {
-			return nil, fmt.Errorf("binance.SubmitLimit: fill[%d].price %q: %w", i, f.Price, err)
-		}
-		fillFee, err := decimal.NewFromString(f.Commission)
-		if err != nil {
-			return nil, fmt.Errorf("binance.SubmitLimit: fill[%d].commission %q: %w", i, f.Commission, err)
-		}
-		fills = append(fills, agent.ExchangeFill{
-			FillQuantity:       fillQty,
-			FillPrice:          fillPrice,
-			FillFeeAsset:       f.CommissionAsset,
-			FillFeeAmount:      fillFee,
-			FilledAtExchangeMs: raw.TransactTime,
-		})
+	fills, err := decodeFills("binance.SubmitLimit", raw.Fills, raw.TransactTime)
+	if err != nil {
+		return nil, err
 	}
 
 	return &agent.ExchangeSubmitResult{
 		ExchangeOrderID: strconv.FormatInt(raw.OrderID, 10),
 		AcceptedAtMs:    raw.TransactTime,
 		// Protocol §5.10: limit-order slippage is computed against
-		// LimitPrice, not best-side book — keep the field populated so
-		// downstream sees a consistent non-zero MarketRef for both
-		// order types.
+		// LimitPrice, not best-side book.
 		MarketRef: order.LimitPrice,
 		Fills:     fills,
 	}, nil

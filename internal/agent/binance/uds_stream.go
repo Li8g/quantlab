@@ -34,6 +34,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"quantlab/internal/agent"
+	"quantlab/internal/wire"
 	"quantlab/internal/wsconn"
 )
 
@@ -57,14 +58,6 @@ const (
 	DefaultUDSKeepaliveInterval = 30 * time.Minute
 	DefaultUDSReconnectMin      = 1 * time.Second
 	DefaultUDSReconnectMax      = 60 * time.Second
-
-	// udsReadDeadline is the per-frame read budget. Binance pushes
-	// frames irregularly; absent keepalive frames within this window
-	// indicate a half-open socket and trigger a session restart.
-	// gorilla's read loop honors the deadline set on the underlying
-	// conn — wsconn.gorillaConn does not expose this directly, so we
-	// rely on the keepalive PUT failing to detect dead streams.
-	udsReadDeadline = 3 * time.Minute
 )
 
 // UDSDialer abstracts the WS dial so tests can substitute a pipe
@@ -493,25 +486,25 @@ func decodeExecutionReport(frame []byte) (agent.OrderEvent, bool, error) {
 		// Per orderStatus distinguish partial vs final fill.
 		switch strings.ToUpper(raw.OrderStatus) {
 		case "FILLED":
-			ev.Status = "filled"
+			ev.Status = wire.OrderStatusFilled
 		case "PARTIALLY_FILLED":
-			ev.Status = "partial_filled"
+			ev.Status = wire.OrderStatusPartialFilled
 		default:
 			// Defensive — Binance shouldn't emit TRADE with NEW status,
 			// but if it does, default to partial.
-			ev.Status = "partial_filled"
+			ev.Status = wire.OrderStatusPartialFilled
 		}
 		return ev, true, nil
 	case "CANCELED":
-		ev.Status = "cancelled"
+		ev.Status = wire.OrderStatusCancelled
 		return ev, true, nil
 	case "REJECTED":
-		ev.Status = "rejected"
+		ev.Status = wire.OrderStatusRejected
 		return ev, true, nil
 	case "EXPIRED":
 		// SaaS doesn't distinguish exchange-side time expiry from cancel;
 		// surface as cancelled to keep the wire enum tight.
-		ev.Status = "cancelled"
+		ev.Status = wire.OrderStatusCancelled
 		return ev, true, nil
 	default:
 		// NEW / REPLACED / others — drop.

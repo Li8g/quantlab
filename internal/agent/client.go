@@ -448,7 +448,7 @@ func (c *Client) onOrderEvent(ev OrderEvent) {
 	ou := wire.OrderUpdate{
 		ClientOrderID:   ev.ClientOrderID,
 		ExchangeOrderID: orFallback(ev.ExchangeOrderID, rec.ExchangeOrderID),
-		Status:          mapEventStatusToWire(ev.Status),
+		Status:          ev.Status,
 		Fills:           []wire.Fill{}, // wire requires non-nil slice
 	}
 
@@ -502,35 +502,18 @@ func (c *Client) onOrderEvent(ev OrderEvent) {
 	}
 }
 
-// mapEventStatusToWire converts the OrderEvent.Status string to the
-// wire.OrderStatus enum. Unknown strings fall back to "rejected" so
-// SaaS sees a terminal state and the lifecycle doesn't dangle.
-func mapEventStatusToWire(s string) wire.OrderStatus {
-	switch s {
-	case "filled":
-		return wire.OrderStatusFilled
-	case "partial_filled":
-		return wire.OrderStatusPartialFilled
-	case "cancelled":
-		return wire.OrderStatusCancelled
-	case "rejected":
-		return wire.OrderStatusRejected
-	}
-	return wire.OrderStatusRejected
-}
-
 // mapEventStatusToIdem updates the IdempotencyStatus based on the
 // event. partial_filled keeps the current status (accepted → accepted)
 // since the record only flips to filled on terminal completion.
-func mapEventStatusToIdem(s string, current IdempotencyStatus) IdempotencyStatus {
+func mapEventStatusToIdem(s wire.OrderStatus, current IdempotencyStatus) IdempotencyStatus {
 	switch s {
-	case "filled":
+	case wire.OrderStatusFilled:
 		return IdempotencyStatusFilled
-	case "cancelled":
+	case wire.OrderStatusCancelled:
 		return IdempotencyStatusCancelled
-	case "rejected":
+	case wire.OrderStatusRejected:
 		return IdempotencyStatusRejected
-	case "partial_filled":
+	case wire.OrderStatusPartialFilled:
 		return current // unchanged — terminal will follow
 	}
 	return current
