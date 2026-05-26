@@ -82,6 +82,21 @@ type EngineConfig struct {
 	// OnProgress is called after the per-generation sort with the
 	// best individual. Optional.
 	OnProgress func(gen int, bestFp string, best resultpkg.ScoreTotal)
+
+	// OnGenerationEvaluated fires once per generation after the pop has
+	// been evaluated and fingerprinted, before the per-generation sort.
+	// Receives the full (pop, scores, raws, fingerprints) slices in
+	// index order so the caller can persist a per-individual audit
+	// trail (see saas/epoch wires this into EvaluationTraceRepo). The
+	// slices reference engine-owned memory; the caller must not mutate.
+	// Optional.
+	OnGenerationEvaluated func(
+		gen int,
+		pop []domain.Gene,
+		scores []resultpkg.ScoreTotal,
+		raws []*resultpkg.RawEvaluateResult,
+		fingerprints []string,
+	)
 }
 
 // DefaultConfig returns Part I §I-5 frozen defaults.
@@ -221,6 +236,10 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		for i := range pop {
 			fingerprints[i] = e.strat.Fingerprint(pop[i])
 		}
+		if e.cfg.OnGenerationEvaluated != nil {
+			e.cfg.OnGenerationEvaluated(gen, pop, scores, raws, fingerprints)
+		}
+
 		order := makeOrder(len(pop))
 		sort.SliceStable(order, func(i, j int) bool {
 			return compareWithFp(

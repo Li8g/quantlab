@@ -196,6 +196,40 @@ type ChampionHistory struct {
 	RetireNote   *string    `gorm:"type:text"        json:"retire_note,omitempty"`
 }
 
+// EvaluationTrace is one (gene, score) sample from inside a GA run —
+// every individual of every generation, not just the eventual winner.
+// Phase 1.5: feeds Optuna-dashboard analytics that need population-scale
+// data to be meaningful (fANOVA, parallel coordinates).
+//
+// Volume: PopSize × MaxGenerations rows per task (typical 200 × 30 ≈
+// 6000). Append-only audit; soft-delete inherited from gorm.Model is
+// kept for cross-cutting cleanup but never used by the engine path.
+// Retention policy is a follow-up — table grows linearly with tasks.
+type EvaluationTrace struct {
+	gorm.Model
+
+	TaskID        string `gorm:"type:varchar(64);index:idx_task_gen,priority:1" json:"task_id"`
+	Generation    int    `gorm:"index:idx_task_gen,priority:2"                  json:"generation"`
+	IndividualIdx int    `json:"individual_idx"`
+
+	GeneJSON []byte `gorm:"type:jsonb" json:"gene_json"`
+
+	// Aggregate score. NULL when Fatal (no aggregate is computed).
+	ScoreTotal         *float64 `json:"score_total,omitempty"`
+	ScoreRaw           *float64 `json:"score_raw,omitempty"`
+	ConsistencyPenalty *float64 `json:"consistency_penalty,omitempty"`
+
+	Fatal       bool    `gorm:"index"            json:"fatal"`
+	FatalReason *string `gorm:"type:text"        json:"fatal_reason,omitempty"`
+
+	// Compact per-window summary: [{"window":"6m","fatal":false,"value":0.31}, ...].
+	// Cheaper than the full CrucibleResult blob — diagnostics/components
+	// stripped. Enough for Optuna's intermediate-values view.
+	WindowScoresJSON []byte `gorm:"type:jsonb" json:"window_scores_json,omitempty"`
+
+	Fingerprint string `gorm:"type:varchar(64);index" json:"fingerprint"`
+}
+
 // ===================================================================
 // Tier 2: live-trading state, frozen per docs/saas-tier2-schema-v1.md
 // ===================================================================
@@ -502,6 +536,7 @@ func AllModels() []interface{} {
 		&KLineGap{},
 		&SharpeBank{},
 		&ChampionHistory{},
+		&EvaluationTrace{},
 		// Tier 2 (frozen 2026-05-20; Group D wire-aligned per
 		// docs/saas-ws-protocol-v1.md §5.8/§5.9/§5.10)
 		&User{},

@@ -78,8 +78,9 @@ func setupE2E(t *testing.T) (server *httptest.Server, db *gorm.DB) {
 	challengerRepo := repository.NewChallengerRepo(db)
 	championRepo := repository.NewChampionRepo(db)
 	sharpeRepo := repository.NewSharpeBankRepo(db)
+	traceRepo := repository.NewEvaluationTraceRepo(db)
 
-	svc := New(db, taskRepo, challengerRepo, sharpeRepo,
+	svc := New(db, taskRepo, challengerRepo, sharpeRepo, traceRepo,
 		DefaultRegistry(),
 		BuildMeta{
 			DataVersion:       "test",

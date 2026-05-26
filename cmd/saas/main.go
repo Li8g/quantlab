@@ -131,6 +131,7 @@ func main() {
 	challengerRepo := repository.NewChallengerRepo(db)
 	championRepo := repository.NewChampionRepo(db)
 	sharpeRepo := repository.NewSharpeBankRepo(db)
+	traceRepo := repository.NewEvaluationTraceRepo(db)
 	instanceRepo := repository.NewInstanceRepo(db)
 	portfolioRepo := repository.NewPortfolioRepo(db)
 	runtimeRepo := repository.NewRuntimeRepo(db)
@@ -142,6 +143,7 @@ func main() {
 		taskRepo,
 		challengerRepo,
 		sharpeRepo,
+		traceRepo,
 		registry,
 		epoch.BuildMeta{
 			DataVersion:       dataVersion,

@@ -33,6 +33,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"runtime"
 	"sync"
@@ -126,6 +127,7 @@ type Service struct {
 	taskRepo       *repository.EvolutionTaskRepo
 	challengerRepo *repository.ChallengerRepo
 	sharpeRepo     *repository.SharpeBankRepo
+	traceRepo      *repository.EvaluationTraceRepo
 	registry       *Registry
 	buildMeta      BuildMeta
 	defaults       Defaults
@@ -134,13 +136,16 @@ type Service struct {
 	locks   map[string]*sync.Mutex
 }
 
-// New wires a Service. All repository args must be non-nil; New does
-// not provision them (cmd/saas does that against a single *gorm.DB).
+// New wires a Service. taskRepo / challengerRepo / sharpeRepo must be
+// non-nil; traceRepo may be nil (callers that don't want per-individual
+// EvaluationTrace persistence — e.g. unit tests — pass nil). New does
+// not provision repos (cmd/saas does that against a single *gorm.DB).
 func New(
 	db *gorm.DB,
 	taskRepo *repository.EvolutionTaskRepo,
 	challengerRepo *repository.ChallengerRepo,
 	sharpeRepo *repository.SharpeBankRepo,
+	traceRepo *repository.EvaluationTraceRepo,
 	registry *Registry,
 	buildMeta BuildMeta,
 	defaults Defaults,
@@ -150,6 +155,7 @@ func New(
 		taskRepo:       taskRepo,
 		challengerRepo: challengerRepo,
 		sharpeRepo:     sharpeRepo,
+		traceRepo:      traceRepo,
 		registry:       registry,
 		buildMeta:      buildMeta,
 		defaults:       defaults,
@@ -290,6 +296,24 @@ func (s *Service) executeEpoch(
 	}
 
 	cfg := s.engineConfigFromRequest(req, epochSeed)
+	if s.traceRepo != nil {
+		cfg.OnGenerationEvaluated = func(
+			gen int,
+			pop []domain.Gene,
+			scores []resultpkg.ScoreTotal,
+			raws []*resultpkg.RawEvaluateResult,
+			fingerprints []string,
+		) {
+			rows, err := repository.BuildRows(taskID, gen, pop, scores, raws, fingerprints)
+			if err != nil {
+				log.Printf("epoch: trace build rows (task=%s gen=%d): %v", taskID, gen, err)
+				return
+			}
+			if err := s.traceRepo.BulkInsert(ctx, rows); err != nil {
+				log.Printf("epoch: trace bulk insert (task=%s gen=%d n=%d): %v", taskID, gen, len(rows), err)
+			}
+		}
+	}
 	eng := engine.New(strat, cfg)
 	result, err := eng.RunEpoch(ctx, plan)
 	if err != nil {
