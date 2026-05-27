@@ -3,12 +3,14 @@ package engine_test
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 
 	"quantlab/internal/domain"
 	"quantlab/internal/engine"
 	"quantlab/internal/fitness"
 	"quantlab/internal/resultpkg"
+	sigmoid "quantlab/internal/strategies/sigmoid_v1"
 	"quantlab/internal/strategies/toy"
 )
 
@@ -305,6 +307,27 @@ func TestRunEpoch_RejectsNilPlan(t *testing.T) {
 	eng := engine.New(toy.New(), engine.DefaultConfig())
 	if _, err := eng.RunEpoch(context.Background(), nil); err == nil {
 		t.Error("expected error for nil plan")
+	}
+}
+
+// TestRunEpoch_RejectsInsufficientBars catches plans whose windows
+// pass the day-span gate in BuildCrucibleWindows but still starve the
+// strategy's internal lookback. Regression for the silent spin
+// observed when 1m × 7d data was fed to sigmoid_v1 (MinEvalBars=43201
+// at 1m, ~8640 bars in the only-fitting window) — RunEpoch must fail
+// fast with a fixable reason instead of grinding through evaluations
+// of meaningless windows.
+func TestRunEpoch_RejectsInsufficientBars(t *testing.T) {
+	// miniPlan has one bar per window. sigmoid_v1 at 1d demands
+	// MinEvalBars = max(30, 300)+1 = 301 bars — well above 1.
+	const barIntervalMs = int64(24) * 60 * 60 * 1000
+	eng := engine.New(sigmoid.New(barIntervalMs), engine.DefaultConfig())
+	_, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err == nil {
+		t.Fatal("expected error for insufficient bars, got nil")
+	}
+	if !strings.Contains(err.Error(), "MinEvalBars") {
+		t.Errorf("error must name MinEvalBars to be actionable, got: %v", err)
 	}
 }
 

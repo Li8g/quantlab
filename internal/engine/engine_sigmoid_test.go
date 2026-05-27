@@ -25,8 +25,11 @@ func sigmoidPlanBullish() *domain.EvaluablePlan {
 	const (
 		barInterval = int64(24) * 60 * 60 * 1000 // 1d
 		warmup      = 50
-		rampLen     = 100
-		flatLen     = 100
+		// Bar counts must exceed sigmoid_v1's MinEvalBars (= max(30,
+		// MaxChromosomePeriod=300)+1 = 301 at 1d). 200 ramp + 200
+		// flat keeps the bullish-then-plateau shape with headroom.
+		rampLen = 200
+		flatLen = 200
 	)
 	totalBars := rampLen + flatLen
 	bars := make([]domain.Bar, totalBars)

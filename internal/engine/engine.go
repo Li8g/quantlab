@@ -183,6 +183,22 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		return nil, fmt.Errorf("engine: MaxGenerations=%d, need >= 1", e.cfg.MaxGenerations)
 	}
 
+	// Crucible windows must each carry at least MinEvalBars rows — the
+	// data-layer plan builder only checks day-span sufficiency, so a
+	// fine-grained interval (e.g. 1m) on a thin bar series can yield a
+	// window that fits in calendar days yet starves the strategy's
+	// internal lookback. Failing fast here turns a silently-spinning
+	// epoch into a clean failure with a fixable reason.
+	minBars := e.strat.MinEvalBars()
+	for _, w := range plan.Windows {
+		if len(w.Bars) < minBars {
+			return nil, fmt.Errorf(
+				"engine: crucible window %q has %d bars, below MinEvalBars=%d for strategy %q",
+				w.Name, len(w.Bars), minBars, e.strat.StrategyID(),
+			)
+		}
+	}
+
 	masterRng := rand.New(rand.NewSource(e.cfg.EpochSeed))
 
 	// sampleRng is independent of the GA loop's masterRng — its only
