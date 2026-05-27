@@ -14,7 +14,6 @@
 package sigmoid_v1
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 
@@ -67,7 +66,24 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	}
 
 	p := strategy.PortfolioSnapshot{USDT: initialUSDT}
-	var rs json.RawMessage // empty = cold start, see decodeRuntimeState
+
+	// Chromosome decode is per-evaluation, not per-bar — the gene is
+	// fixed for the whole window. Avoids re-running the 13-field
+	// rebuild inside the hot loop.
+	c, err := DecodeChromosome(gene)
+	if err != nil {
+		return resultpkg.CrucibleResult{}, nil, fmt.Errorf(
+			"evaluateWindow: window %q decode chromosome: %w", window.Name, err,
+		)
+	}
+
+	// Typed RuntimeState carried across bars in-memory. Live trading's
+	// Step() round-trips this through JSON on every tick because the
+	// state must survive process restarts via DB; the backtest loop
+	// owns the whole evaluation in-process, so we skip the ~22KB
+	// json.Unmarshal+Marshal per bar by calling stepCore directly.
+	// Same compute body either way (铁律 1).
+	rs := freshRuntimeState()
 	var lastProcessedBarTime int64
 
 	// Trailing closes/timestamps. Pre-allocated to the cap and
@@ -151,27 +167,28 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 			Portfolio:            p,
 			Chromosome:           gene,
 			LastProcessedBarTime: lastProcessedBarTime,
-			RuntimeState:         rs,
+			// RuntimeState left zero — the inner path threads typed rs
+			// in/out of stepCore, bypassing the JSON wire shape.
 		}
-		out, err := strat.Step(input)
-		if err != nil {
-			return resultpkg.CrucibleResult{}, nil, fmt.Errorf(
-				"evaluateWindow: window %q bar %d (ts=%d): %w",
-				window.Name, i, bar.OpenTime, err,
-			)
-		}
+		macroOrders, microOrders, releaseIntents, newRS, dbg := stepCore(input, rs, c)
 
 		// Gap bars: discard orders so no fake trades; RuntimeState
-		// still evolves through Step() so peak window etc. stay
+		// still evolves through stepCore so peak window etc. stay
 		// continuous.
 		if bar.IsGap {
-			out.MacroOrders = nil
-			out.MicroOrders = nil
-			out.ReleaseIntents = nil
+			macroOrders = nil
+			microOrders = nil
+			releaseIntents = nil
 		}
 
+		out := strategy.StrategyOutput{
+			MacroOrders:    macroOrders,
+			MicroOrders:    microOrders,
+			ReleaseIntents: releaseIntents,
+			DebugSnapshot:  dbg,
+		}
 		p = applyStrategyOutput(p, out, bar.Close, friction)
-		rs = out.RuntimeState
+		rs = newRS
 		lastProcessedBarTime = bar.OpenTime
 	}
 

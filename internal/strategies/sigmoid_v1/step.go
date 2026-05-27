@@ -71,6 +71,10 @@ const minReserveUSDT = 0.0
 // gene cleanly rather than silently swallowing a malformed
 // chromosome / RuntimeState (which would only happen on a real engine
 // bug — never on data drawn from real Binance bars).
+//
+// Live trading enters here every tick; backtest's per-bar loop calls
+// stepCore directly so the inner ~22KB JSON round-trip stays out of the
+// hot path. Both paths share the same compute body — 铁律 1 holds.
 func (s *Sigmoid) Step(input strategy.StrategyInput) (strategy.StrategyOutput, error) {
 	rs, err := decodeRuntimeState(input.RuntimeState)
 	if err != nil {
@@ -81,6 +85,33 @@ func (s *Sigmoid) Step(input strategy.StrategyInput) (strategy.StrategyOutput, e
 		return strategy.StrategyOutput{}, fmt.Errorf("sigmoid_v1.Step: decode chromosome: %w", err)
 	}
 
+	macro, micro, release, newRS, dbg := stepCore(input, rs, c)
+
+	encoded, err := encodeRuntimeState(newRS)
+	if err != nil {
+		return strategy.StrategyOutput{}, fmt.Errorf("sigmoid_v1.Step: encode runtime state: %w", err)
+	}
+
+	return strategy.StrategyOutput{
+		MacroOrders:    macro,
+		MicroOrders:    micro,
+		ReleaseIntents: release,
+		RuntimeState:   encoded,
+		DebugSnapshot:  dbg,
+	}, nil
+}
+
+// stepCore is the typed-input compute body Step wraps. It is the only
+// place the §7-pseudocode pipeline lives; both the JSON-boundary Step
+// and the backtest inner loop call this with identical semantics.
+//
+// Inputs are by value and treated as immutable; rs is taken by value
+// and returned by value so the function is referentially transparent
+// with respect to the caller's state.
+func stepCore(input strategy.StrategyInput, rs RuntimeState, c Chromosome) (
+	[]strategy.OrderIntent, []strategy.OrderIntent, []strategy.ReleaseIntent,
+	RuntimeState, *strategy.DebugSnapshot,
+) {
 	// §2 market state.
 	marketState, volRatio := ComputeMarketState(
 		input.Closes, c.MAVShortPeriod, c.MAVLongPeriod, c.QuietThreshold,
@@ -119,18 +150,8 @@ func (s *Sigmoid) Step(input strategy.StrategyInput) (strategy.StrategyOutput, e
 	peak := rollNAVPeakWindow(&rs, input.NowMs, nav)
 	releaseIntents, rs := applyReleaseDecision(input, c, &rs, nav, peak)
 
-	encoded, err := encodeRuntimeState(rs)
-	if err != nil {
-		return strategy.StrategyOutput{}, fmt.Errorf("sigmoid_v1.Step: encode runtime state: %w", err)
-	}
-
-	return strategy.StrategyOutput{
-		MacroOrders:    macroOrders,
-		MicroOrders:    microOrders,
-		ReleaseIntents: releaseIntents,
-		RuntimeState:   encoded,
-		DebugSnapshot:  buildDebugSnapshot(signal, micro.TargetWeight, marketState),
-	}, nil
+	return macroOrders, microOrders, releaseIntents, rs,
+		buildDebugSnapshot(signal, micro.TargetWeight, marketState)
 }
 
 // buildMicroOrders applies the §5.5 wedge filter and synthesises at
