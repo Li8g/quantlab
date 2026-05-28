@@ -289,6 +289,7 @@ func (s *Service) executeEpoch(
 		FatalMDD:    req.FatalMDD,
 		InitialUSDT: effDefaults.InitialUSDT,
 		DCA:         effDefaults.DCA,
+		MinEvalBars: strat.MinEvalBars(),
 	}
 	plan, planHash, barsHash, err := data.BuildEvaluablePlan(bars, planOpts)
 	if err != nil {

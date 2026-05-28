@@ -210,3 +210,42 @@ func TestBuildEvaluablePlan_InsufficientBarsReturnsError(t *testing.T) {
 		t.Errorf("error message should explain insufficient span, got: %v", err)
 	}
 }
+
+// MinEvalBars guard mirrors engine.RunEpoch's check (engine.go ~192)
+// at the data layer: windows that fit the day-span check but starve
+// the strategy's internal lookback must be rejected here so the
+// failure surfaces before goroutine spawn. Setting MinEvalBars higher
+// than the smallest window's bar count triggers the guard.
+func TestBuildEvaluablePlan_RejectsWindowsBelowMinEvalBars(t *testing.T) {
+	bars := planBars(4000, 1_700_000_000_000)
+	opts := defaultPlanOpts()
+	// 6m window holds ~183 daily bars (no warmup overlap in this
+	// fixture because WarmupDays=100 < eval 183). Set MinEvalBars to
+	// 10000 — comfortably above any window's bar count.
+	opts.MinEvalBars = 10000
+
+	_, _, _, err := BuildEvaluablePlan(bars, opts)
+	if err == nil {
+		t.Fatal("MinEvalBars=10000 with daily bars: want error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "MinEvalBars=10000") {
+		t.Errorf("error must name the MinEvalBars value, got: %v", err)
+	}
+	if !strings.Contains(msg, "6m") {
+		t.Errorf("error must name the first failing window, got: %v", err)
+	}
+}
+
+func TestBuildEvaluablePlan_MinEvalBarsZeroSkipsGuard(t *testing.T) {
+	// MinEvalBars=0 (zero value) means "no check" so engine-only tests
+	// that don't model a strategy can still call BuildEvaluablePlan.
+	bars := planBars(4000, 1_700_000_000_000)
+	opts := defaultPlanOpts()
+	opts.MinEvalBars = 0
+
+	_, _, _, err := BuildEvaluablePlan(bars, opts)
+	if err != nil {
+		t.Errorf("MinEvalBars=0 should skip guard, got: %v", err)
+	}
+}

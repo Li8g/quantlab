@@ -42,6 +42,15 @@ type PlanOptions struct {
 	FatalMDD    float64
 	InitialUSDT float64
 	DCA         fitness.GhostDCAConfig
+
+	// MinEvalBars is the strategy's MinEvalBars() value. BuildEvaluablePlan
+	// rejects plans whose IS windows fit in calendar days but starve the
+	// strategy's internal lookback — defense in depth ahead of
+	// engine.RunEpoch's identical check (engine.go ~line 192). Zero means
+	// "no check" so engine-only tests that don't model a strategy can
+	// still call BuildEvaluablePlan; production callers always set it
+	// from strat.MinEvalBars().
+	MinEvalBars int
 }
 
 // BuildEvaluablePlan returns the assembled plan plus its plan_hash and
@@ -62,6 +71,23 @@ func BuildEvaluablePlan(bars []domain.Bar, opts PlanOptions) (*domain.EvaluableP
 			"data.BuildEvaluablePlan: no crucible window fits (bar span %.1fd < warmup %dd + smallest eval 183d/6m); load more bars or lower warmup_days",
 			spanDays, opts.WarmupDays,
 		)
+	}
+
+	// MinEvalBars guard. Engine performs the same check in RunEpoch; we
+	// duplicate it here so the synchronous task-creation path surfaces
+	// the failure at plan build time, with a message that names the
+	// strategy's required bar count (operators can act without reading
+	// the engine source). Skipped when MinEvalBars is unset so tests
+	// that don't supply a strategy stay green.
+	if opts.MinEvalBars > 0 {
+		for _, w := range is {
+			if len(w.Bars) < opts.MinEvalBars {
+				return nil, "", "", fmt.Errorf(
+					"data.BuildEvaluablePlan: window %q has %d bars, below MinEvalBars=%d; load more bars, choose a coarser interval, or drop window from cascade",
+					w.Name, len(w.Bars), opts.MinEvalBars,
+				)
+			}
+		}
 	}
 
 	// DCA baselines run on the IS bars only. OOS is for post-GA
