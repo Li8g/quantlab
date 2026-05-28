@@ -18,6 +18,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -53,9 +54,20 @@ func (r *ChampionRepo) Promote(ctx context.Context, challengerID string, req api
 		if err := tx.Where("challenger_id = ?", challengerID).First(&rec).Error; err != nil {
 			return err
 		}
-		updates, history, err := applyPromote(rec, req, time.Now().UTC())
+		now := time.Now().UTC()
+		updates, history, err := applyPromote(rec, req, now)
 		if err != nil {
 			return err
+		}
+		// Rewrite the JSON blob's PromoteLayer so /package GETs reflect
+		// the post-promote state, not the eval-time pending snapshot.
+		// Same `now` as applyPromote so column + blob timestamps match.
+		blob, err := applyPromoteToBlob(rec.FullPackageJSON, req, now)
+		if err != nil {
+			return err
+		}
+		if blob != nil {
+			updates["full_package_json"] = blob
 		}
 		if err := tx.Model(&store.GeneRecord{}).
 			Where("challenger_id = ?", challengerID).
@@ -67,6 +79,29 @@ func (r *ChampionRepo) Promote(ctx context.Context, challengerID string, req api
 		}
 		return nil
 	})
+}
+
+// applyPromoteToBlob re-marshals the challenger's full_package_json with
+// the post-promote PromoteLayer (DecisionStatus=promoted + reviewer +
+// timestamps). Returns nil when the input blob is empty so the caller
+// leaves the column untouched. Pure function: no DB, no I/O.
+func applyPromoteToBlob(blob []byte, req api.PromoteChallengerRequest, now time.Time) ([]byte, error) {
+	if len(blob) == 0 {
+		return nil, nil
+	}
+	var pkg resultpkg.ChallengerResultPackage
+	if err := json.Unmarshal(blob, &pkg); err != nil {
+		return nil, fmt.Errorf("unmarshal full_package_json: %w", err)
+	}
+	ts := now.UnixMilli()
+	rb := req.ReviewedBy
+	pkg.Promote.DecisionStatus = resultpkg.DecisionStatusPromoted
+	pkg.Promote.ReviewedAtTS = &ts
+	pkg.Promote.ReviewedBy = &rb
+	if req.DecisionNote != nil {
+		pkg.Promote.DecisionNote = req.DecisionNote
+	}
+	return json.Marshal(&pkg)
 }
 
 // Retire stamps RetiredAt + RetiredBy on the live ChampionHistory row

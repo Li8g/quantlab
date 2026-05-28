@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -144,5 +145,97 @@ func TestApplyRetire_NilNoteSkipsField(t *testing.T) {
 	}
 	if _, ok := updates["retire_note"]; ok {
 		t.Errorf("nil DecisionNote should not produce retire_note update")
+	}
+}
+
+// pendingBlob marshals a minimal package with PromoteLayer in the
+// eval-time "pending" state so promote-time JSON rewrites have a
+// realistic starting point.
+func pendingBlob(t *testing.T) []byte {
+	t.Helper()
+	pkg := resultpkg.ChallengerResultPackage{
+		Core: resultpkg.ResultCore{
+			StrategyID:         "sigmoid_v1",
+			SchemaVersion:      resultpkg.SchemaVersionV533,
+			FitnessVersion:     resultpkg.FitnessVersionV1RawStd,
+			FingerprintVersion: resultpkg.FingerprintVersionV1,
+		},
+		Promote: resultpkg.PromoteLayer{
+			DecisionStatus: resultpkg.DecisionStatusPending,
+		},
+	}
+	blob, err := json.Marshal(&pkg)
+	if err != nil {
+		t.Fatalf("marshal pendingBlob: %v", err)
+	}
+	return blob
+}
+
+func TestApplyPromoteToBlob_RewritesPromoteLayer(t *testing.T) {
+	blob := pendingBlob(t)
+	note := "approved"
+	req := api.PromoteChallengerRequest{ReviewedBy: "alice", DecisionNote: &note}
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	out, err := applyPromoteToBlob(blob, req, now)
+	if err != nil {
+		t.Fatalf("applyPromoteToBlob: %v", err)
+	}
+	var got resultpkg.ChallengerResultPackage
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal out: %v", err)
+	}
+	if got.Promote.DecisionStatus != resultpkg.DecisionStatusPromoted {
+		t.Errorf("DecisionStatus = %q, want promoted", got.Promote.DecisionStatus)
+	}
+	if got.Promote.ReviewedBy == nil || *got.Promote.ReviewedBy != "alice" {
+		t.Errorf("ReviewedBy = %v, want alice", got.Promote.ReviewedBy)
+	}
+	if got.Promote.ReviewedAtTS == nil || *got.Promote.ReviewedAtTS != now.UnixMilli() {
+		t.Errorf("ReviewedAtTS = %v, want %d", got.Promote.ReviewedAtTS, now.UnixMilli())
+	}
+	if got.Promote.DecisionNote == nil || *got.Promote.DecisionNote != note {
+		t.Errorf("DecisionNote = %v, want %q", got.Promote.DecisionNote, note)
+	}
+	// Non-Promote layers must be untouched — a bug here would corrupt
+	// the audit trail (e.g. resetting reproducibility metadata).
+	if got.Core.StrategyID != "sigmoid_v1" {
+		t.Errorf("Core.StrategyID = %q, want sigmoid_v1 (rewrite must not touch Core)", got.Core.StrategyID)
+	}
+}
+
+func TestApplyPromoteToBlob_EmptyBlobIsNoOp(t *testing.T) {
+	out, err := applyPromoteToBlob(nil, api.PromoteChallengerRequest{ReviewedBy: "alice"}, time.Now())
+	if err != nil {
+		t.Fatalf("nil blob: %v", err)
+	}
+	if out != nil {
+		t.Errorf("nil blob in must produce nil out, got %d bytes", len(out))
+	}
+}
+
+func TestApplyPromoteToBlob_NilNoteLeavesNoteUnset(t *testing.T) {
+	blob := pendingBlob(t)
+	req := api.PromoteChallengerRequest{ReviewedBy: "alice", DecisionNote: nil}
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	out, err := applyPromoteToBlob(blob, req, now)
+	if err != nil {
+		t.Fatalf("applyPromoteToBlob: %v", err)
+	}
+	var got resultpkg.ChallengerResultPackage
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Promote.DecisionNote != nil {
+		t.Errorf("DecisionNote = %v, want nil", got.Promote.DecisionNote)
+	}
+}
+
+func TestApplyPromoteToBlob_RejectsMalformedJSON(t *testing.T) {
+	req := api.PromoteChallengerRequest{ReviewedBy: "alice"}
+	_, err := applyPromoteToBlob([]byte("not-json"), req, time.Now())
+	if err == nil {
+		t.Error("malformed JSON must return error, not silently produce a blob")
 	}
 }
