@@ -183,6 +183,12 @@ type Handlers struct {
 	// Same nil-skip behaviour as AuthRequired.
 	RequireOperator gin.HandlerFunc
 
+	// RequireAdmin gates Promote/Retire to admin only. Operators are
+	// explicitly excluded per docs/saas-tier2-schema-v1.md §3.2
+	// ("operator: 不能 Promote"). Same nil-skip behaviour as
+	// AuthRequired — tests that bypass auth leave it nil.
+	RequireAdmin gin.HandlerFunc
+
 	// Login collaborators. Both must be non-nil for /auth/login to be
 	// registered — tests that don't exercise login leave them nil.
 	Users  UserAuthenticator
@@ -198,8 +204,20 @@ func (h *Handlers) Register(r gin.IRouter) {
 	g.GET("/evolution/tasks/:task_id", h.GetTaskStatus)
 	g.GET("/challengers/:challenger_id", h.GetChallenger)
 	g.GET("/challengers/:challenger_id/package", h.GetChallengerPackage)
-	g.POST("/challengers/:challenger_id/promote", h.PromoteChallenger)
-	g.POST("/champions/:champion_id/retire", h.RetireChampion)
+
+	// Promote / Retire are admin-only per saas-tier2-schema-v1.md
+	// §3.2. Both AuthRequired (claims setter) and RequireAdmin (role
+	// check) must be non-nil to enable the gate; either nil falls back
+	// to the un-gated form so existing handler tests don't have to
+	// wire middleware. cmd/saas wires both together; production tests
+	// that need to exercise the gate wire both explicitly.
+	if h.AuthRequired != nil && h.RequireAdmin != nil {
+		g.POST("/challengers/:challenger_id/promote", h.AuthRequired, h.RequireAdmin, h.PromoteChallenger)
+		g.POST("/champions/:champion_id/retire", h.AuthRequired, h.RequireAdmin, h.RetireChampion)
+	} else {
+		g.POST("/challengers/:challenger_id/promote", h.PromoteChallenger)
+		g.POST("/champions/:champion_id/retire", h.RetireChampion)
+	}
 
 	// Phase 9 batch 1: read-only diagnostics + listings. Each route
 	// requires its collaborator non-nil — tests that don't wire the

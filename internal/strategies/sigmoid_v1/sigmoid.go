@@ -327,6 +327,15 @@ func (s *Sigmoid) EncodeResult(
 			FingerprintVersion:      repro.FingerprintVersion,
 		},
 		Promote: resultpkg.PromoteLayer{DecisionStatus: resultpkg.DecisionStatusPending},
+		// VerificationLayer default: explicit NotRun on OOSResult so a
+		// nil verif doesn't leave Status as the empty string (which
+		// fails resultpkg.Validate's VerificationStatus enum check).
+		// In production BuildChallengerPackage supplies a non-nil verif
+		// with the same default; this branch keeps tests that pass nil
+		// honest about the contract.
+		Verification: resultpkg.VerificationLayer{
+			OOSResult: resultpkg.OOSResult{Status: resultpkg.VerificationStatusNotRun},
+		},
 	}
 	if eval != nil {
 		pkg.Evaluation = *eval

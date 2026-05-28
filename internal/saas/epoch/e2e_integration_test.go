@@ -332,6 +332,104 @@ func TestE2E_SufficientBarsCompletesAndPromoteRejectsTestMode(t *testing.T) {
 	}
 }
 
+// TestE2E_OOSAnchoredHoldoutWrites covers Phase 5D: an oos_days=180
+// task on the sufficient-bars symbol must succeed and the persisted
+// package's verification.oos_result must satisfy:
+//   - status="ok"
+//   - oos_alpha_monthly + oos_alpha_weekly non-nil
+//   - decision_color set (green/yellow/red — not gray; not_run is impossible)
+//
+// Regression target: bug_oos_phase5d_unimplemented memory — oos_days
+// flowed through GAConfigSnapshot/OosWindow but no code consumed it,
+// so oos_result.status stayed empty. This test pins the "status is
+// not_run" before-state vs the "status is ok" after-state.
+//
+// test_mode is intentionally left false so the Promote-rejection path
+// from the sibling test doesn't shadow this one; this test only
+// verifies the verification.oos_result content, not Promote.
+func TestE2E_OOSAnchoredHoldoutWrites(t *testing.T) {
+	server, _ := setupE2E(t)
+	body := map[string]interface{}{
+		"strategy_id":     "sigmoid_v1",
+		"pair":            testSymbolOK,
+		"interval":        testInterval,
+		"pop_size":        4,
+		"max_generations": 2,
+		"elite_ratio":     0.25,
+		"fatal_mdd":       0.5,
+		"taker_fee_bps":   5,
+		"slippage_bps":    2,
+		"spawn_mode":      string(resultpkg.SpawnModeRandomOnce),
+		"test_mode":       false,
+		"oos_days":        180,
+	}
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(server.URL+"/api/v1/evolution/tasks",
+		"application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("POST tasks: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST tasks: status=%d body=%s", resp.StatusCode, b)
+	}
+	var created api.CreateEvolutionTaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	status := pollUntilTerminal(t, server, created.TaskID)
+	if status.Status != resultpkg.TaskStatusSucceeded {
+		var reason string
+		if status.FailureReason != nil {
+			reason = *status.FailureReason
+		}
+		t.Fatalf("status=%q, want succeeded; reason=%q", status.Status, reason)
+	}
+	if status.ChallengerID == nil {
+		t.Fatal("ChallengerID nil on succeeded task")
+	}
+	chID := *status.ChallengerID
+
+	pkgBlob := fetchRaw(t, server, "/api/v1/challengers/"+chID+"/package")
+	var pkg struct {
+		Verification struct {
+			OOSResult struct {
+				Status          string   `json:"status"`
+				OOSAlphaMonthly *float64 `json:"oos_alpha_monthly,omitempty"`
+				OOSAlphaWeekly  *float64 `json:"oos_alpha_weekly,omitempty"`
+				DecisionColor   *string  `json:"decision_color,omitempty"`
+				Notes           *string  `json:"notes,omitempty"`
+			} `json:"oos_result"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal(pkgBlob, &pkg); err != nil {
+		t.Fatalf("unmarshal package: %v", err)
+	}
+	got := pkg.Verification.OOSResult
+
+	if got.Status != string(resultpkg.VerificationStatusOK) {
+		t.Errorf("oos_result.status = %q, want %q; notes=%v",
+			got.Status, resultpkg.VerificationStatusOK, got.Notes)
+	}
+	if got.OOSAlphaMonthly == nil {
+		t.Error("oos_alpha_monthly is nil; want a numeric annualized excess return")
+	}
+	if got.OOSAlphaWeekly == nil {
+		t.Error("oos_alpha_weekly is nil; want a numeric annualized excess return")
+	}
+	if got.DecisionColor == nil {
+		t.Error("decision_color is nil; want green/yellow/red when status=ok")
+	} else {
+		switch resultpkg.DecisionColor(*got.DecisionColor) {
+		case resultpkg.DecisionColorGreen, resultpkg.DecisionColorYellow, resultpkg.DecisionColorRed:
+			// ok
+		default:
+			t.Errorf("decision_color = %q, want one of green/yellow/red", *got.DecisionColor)
+		}
+	}
+}
+
 // fetchJSON GETs path and decodes the response body into T. Fatals on
 // non-200 or decode failure. Generic helper so each test reads cleanly.
 func fetchJSON[T any](t *testing.T, server *httptest.Server, path string) T {

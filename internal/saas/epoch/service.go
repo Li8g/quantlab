@@ -371,6 +371,21 @@ func (s *Service) executeEpoch(
 		}
 	}
 
+	// Phase 5D OOS Anchored Holdout. RunOOS handles the
+	// no-OosWindow / span<90d / Fatal cases internally and never
+	// fails the task — it returns a populated *OOSResult that we
+	// marshal verbatim. A non-nil Go error here means an Adapter or
+	// strategy implementation bug (NewAdapter/Reset/Evaluate failed
+	// in a way the contract doesn't permit) and DOES fail the task.
+	oosResult, err := verification.RunOOS(ctx, strat, plan, result.BestGene, effDefaults.DCA)
+	if err != nil {
+		return fmt.Errorf("oos verification: %w", err)
+	}
+	oosPayload, err := verification.MarshalOOSPayload(oosResult)
+	if err != nil {
+		return fmt.Errorf("marshal oos payload: %w", err)
+	}
+
 	bc := engine.BuildContext{
 		ChallengerID:         challengerID,
 		Pair:                 req.Pair,
@@ -386,6 +401,7 @@ func (s *Service) executeEpoch(
 		PlanHash:             planHash,
 		BarsHash:             barsHash,
 		DSRSummary:           dsrBlob,
+		OOSPayload:           oosPayload,
 		FatalAuditSamples:    result.FatalAuditSamples,
 	}
 	pkg, err := engine.BuildChallengerPackage(

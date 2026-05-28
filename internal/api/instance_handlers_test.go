@@ -260,6 +260,55 @@ func TestDeployChampion_SetsActiveChampID(t *testing.T) {
 	}
 }
 
+// TestPromoteRetire_AdminGated covers the RequireAdmin gate added in
+// Phase 5D. Per docs/saas-tier2-schema-v1.md §3.2 only admin role can
+// Promote a Challenger or Retire a Champion — operator + viewer must
+// both 403. Mirrors TestInstanceWriteEndpoints_RoleGated.
+func TestPromoteRetire_AdminGated(t *testing.T) {
+	authSvc := testAuthService(t)
+	h := &Handlers{
+		Champions: &fakeChampions{},
+		AuthRequired: middleware.AuthRequired(authSvc),
+		RequireAdmin: middleware.RequireRole(store.UserRoleAdmin),
+	}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h.Register(r)
+
+	promoteBody := []byte(`{"reviewed_by":"alice"}`)
+	retireBody := []byte(`{"reviewed_by":"bob"}`)
+
+	cases := []struct {
+		name     string
+		role     store.UserRole
+		userID   uint
+		method   string
+		path     string
+		body     []byte
+		wantCode int
+	}{
+		{"viewer promote → 403", store.UserRoleViewer, 1, http.MethodPost, "/api/v1/challengers/ch-x/promote", promoteBody, http.StatusForbidden},
+		{"operator promote → 403", store.UserRoleOperator, 2, http.MethodPost, "/api/v1/challengers/ch-x/promote", promoteBody, http.StatusForbidden},
+		{"admin promote → 200", store.UserRoleAdmin, 3, http.MethodPost, "/api/v1/challengers/ch-x/promote", promoteBody, http.StatusOK},
+		{"viewer retire → 403", store.UserRoleViewer, 1, http.MethodPost, "/api/v1/champions/ch-x/retire", retireBody, http.StatusForbidden},
+		{"operator retire → 403", store.UserRoleOperator, 2, http.MethodPost, "/api/v1/champions/ch-x/retire", retireBody, http.StatusForbidden},
+		{"admin retire → 200", store.UserRoleAdmin, 3, http.MethodPost, "/api/v1/champions/ch-x/retire", retireBody, http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			token, _ := authSvc.SignToken(c.userID, string(c.role))
+			rec := httptest.NewRecorder()
+			req, _ := http.NewRequest(c.method, c.path, bytesReader(c.body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(rec, req)
+			if rec.Code != c.wantCode {
+				t.Errorf("code = %d, want %d; body=%s", rec.Code, c.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestInstanceWriteEndpoints_RoleGated verifies the operator+ gate
 // when a real RequireOperator middleware is wired. Viewer is rejected
 // with 403; operator passes.

@@ -64,6 +64,15 @@ type BuildContext struct {
 	// here. Empty ⇒ Verification.DSRSummary stays unset.
 	DSRSummary json.RawMessage
 
+	// OOSPayload is the optional pre-marshalled OOSResult from the
+	// Phase 5D Anchored Holdout runner (verification.RunOOS). The
+	// SaaS Epoch service marshals verification.RunOOS's *OOSResult
+	// via verification.MarshalOOSPayload after RunEpoch returns and
+	// passes the bytes here. Empty ⇒ Verification.OOSResult stays
+	// at the engine default {Status: not_run}. Non-empty overrides
+	// the default; malformed JSON surfaces as an EncodeResult error.
+	OOSPayload json.RawMessage
+
 	// FatalAuditSamples is the §I-3.12 fatal-audit pick collected by
 	// RunEpoch. The caller plumbs EpochResult.FatalAuditSamples
 	// verbatim; BuildChallengerPackage writes it onto
@@ -104,12 +113,19 @@ func BuildChallengerPackage(
 		FrictionActual: bestRaw.FrictionActual,
 	}
 	verif := &resultpkg.VerificationLayer{
-		// OOSResult defaults to NotRun — the Anchored Holdout runner is
-		// a Phase 5D deliverable that hasn't shipped yet, so the engine
-		// always emits "not_run" here. Leaving Status as the zero value
-		// would write an empty string and violate the VerificationStatus
-		// enum (caught by ChallengerResultPackage.Validate).
+		// OOSResult defaults to NotRun. When the SaaS Epoch service
+		// supplies OOSPayload (Phase 5D Anchored Holdout output), it
+		// overrides this default; otherwise NotRun is the honest
+		// "OOS verification was not attempted" state and keeps the
+		// VerificationStatus enum validated.
 		OOSResult: resultpkg.OOSResult{Status: resultpkg.VerificationStatusNotRun},
+	}
+	if len(bc.OOSPayload) > 0 {
+		var oos resultpkg.OOSResult
+		if err := json.Unmarshal(bc.OOSPayload, &oos); err != nil {
+			return resultpkg.ChallengerResultPackage{}, err
+		}
+		verif.OOSResult = oos
 	}
 	if len(bc.DSRSummary) > 0 {
 		verif.DSRSummary = bc.DSRSummary

@@ -240,6 +240,7 @@ func main() {
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,
 		),
+		RequireAdmin: middleware.RequireRole(store.UserRoleAdmin),
 		// Sudo-style login: viewer-default JWTs with the long TTL,
 		// admin JWTs auto-expire on JWT.AdminTTL (cfg default 10min).
 		Users:  userRepo,
