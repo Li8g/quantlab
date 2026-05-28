@@ -106,7 +106,14 @@ func RunBlobMigration(
 				result.Touched++
 				continue
 			}
-			if err := tx.Model(&store.GeneRecord{}).
+			// Unscoped on the UPDATE so a Filter that opted into
+			// soft-deleted rows (via q.Unscoped()) doesn't silently
+			// drop those rows at write time — GORM's default
+			// deleted_at IS NULL WHERE clause runs on every Update
+			// otherwise, leading to scanned≠persisted divergence.
+			// Promote_blob filters non-soft-deleted promoted rows
+			// only, so this change is transparent to it.
+			if err := tx.Unscoped().Model(&store.GeneRecord{}).
 				Where("challenger_id = ?", rec.ChallengerID).
 				Update("full_package_json", newBlob).Error; err != nil {
 				return fmt.Errorf("update challenger_id=%s: %w", rec.ChallengerID, err)

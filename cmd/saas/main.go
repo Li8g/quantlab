@@ -100,6 +100,7 @@ func main() {
 	seedEmail := flag.String("seed-user-email", "", "if set, seed one User row with this email and exit (use with --seed-user-password)")
 	seedPassword := flag.String("seed-user-password", "", "password for --seed-user-email; bcrypt-hashed at cost 12, then discarded")
 	backfillPromoteBlob := flag.Bool("backfill-promote-blob", false, "scan gene_records and rewrite full_package_json's PromoteLayer from canonical columns, then exit; pair with --dry-run for preview")
+	backfillOOSBlob := flag.Bool("backfill-oos-blob", false, "scan gene_records and stamp full_package_json.verification.oos_result.status=not_run on pre-Phase-5D rows whose status is empty, then exit; pair with --dry-run for preview")
 	dryRun := flag.Bool("dry-run", false, "preview migrations without writing (no effect outside migration flags)")
 	flag.Parse()
 
@@ -140,6 +141,16 @@ func main() {
 			log.Fatalf("saas: backfill-promote-blob: %v", err)
 		}
 		log.Printf("saas: backfill-promote-blob done dry_run=%v scanned=%d touched=%d skipped=%d",
+			*dryRun, res.Scanned, res.Touched, res.Skipped)
+		return
+	}
+
+	if *backfillOOSBlob {
+		res, err := migrate.RunBlobMigration(ctx, db, migrate.NewOOSBlobMigration(*dryRun))
+		if err != nil {
+			log.Fatalf("saas: backfill-oos-blob: %v", err)
+		}
+		log.Printf("saas: backfill-oos-blob done dry_run=%v scanned=%d touched=%d skipped=%d",
 			*dryRun, res.Scanned, res.Touched, res.Skipped)
 		return
 	}
