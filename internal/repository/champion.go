@@ -54,8 +54,18 @@ func (r *ChampionRepo) Promote(ctx context.Context, challengerID string, req api
 		if err := tx.Where("challenger_id = ?", challengerID).First(&rec).Error; err != nil {
 			return err
 		}
+		// Count other-challenger active rows for this (strategy, pair).
+		// "<>" filter is defensive — applyPromote also rejects self via
+		// DecisionStatusPromoted, so a self-collision can't reach here.
+		var activeOther int64
+		if err := tx.Model(&store.ChampionHistory{}).
+			Where("strategy_id = ? AND pair = ? AND retired_at IS NULL AND challenger_id <> ?",
+				rec.StrategyID, rec.Pair, rec.ChallengerID).
+			Count(&activeOther).Error; err != nil {
+			return fmt.Errorf("count active champion_history: %w", err)
+		}
 		now := time.Now().UTC()
-		updates, history, err := applyPromote(rec, req, now)
+		updates, history, err := applyPromote(rec, req, now, int(activeOther))
 		if err != nil {
 			return err
 		}
@@ -186,10 +196,16 @@ func (r *ChampionRepo) GetActive(ctx context.Context, strategyID, pair string) (
 // field-update map for gene_records and the new champion_history row.
 // All preconditions are checked here so a unit test can drive every
 // reject path without a DB.
+//
+// activeOtherCount is the number of champion_history rows for the same
+// (strategy_id, pair) that are still live (RetiredAt IS NULL) and
+// belong to a different challenger. The caller queries this from the
+// DB before calling — passing it in keeps the kernel pure-testable.
 func applyPromote(
 	rec store.GeneRecord,
 	req api.PromoteChallengerRequest,
 	now time.Time,
+	activeOtherCount int,
 ) (map[string]interface{}, store.ChampionHistory, error) {
 	if rec.TestMode {
 		return nil, store.ChampionHistory{}, api.ErrCannotPromoteTestMode
@@ -199,6 +215,9 @@ func applyPromote(
 	}
 	if rec.DecisionStatus == resultpkg.DecisionStatusRejected {
 		return nil, store.ChampionHistory{}, api.ErrAlreadyRejected
+	}
+	if activeOtherCount > 0 {
+		return nil, store.ChampionHistory{}, api.ErrActiveChampionExists
 	}
 	ts := now.UnixMilli()
 	updates := map[string]interface{}{

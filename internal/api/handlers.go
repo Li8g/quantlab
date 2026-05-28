@@ -55,6 +55,12 @@ var (
 	ErrAlreadyPromoted       = errors.New("challenger already promoted")
 	ErrAlreadyRejected       = errors.New("challenger already rejected")
 	ErrAlreadyRetired        = errors.New("champion already retired")
+
+	// ErrActiveChampionExists: a Promote would create a second active
+	// champion for the same (strategy_id, pair). The framework
+	// enforces "at most one active per (strategy, pair)"; reviewers
+	// must Retire the incumbent before promoting a successor.
+	ErrActiveChampionExists = errors.New("active champion already exists for this (strategy_id, pair); retire it first")
 )
 
 // EpochCreator triggers a new evolution task. The HTTP layer holds
@@ -418,7 +424,8 @@ func mapTransitionErr(err error) int {
 	case errors.Is(err, ErrCannotPromoteTestMode),
 		errors.Is(err, ErrAlreadyPromoted),
 		errors.Is(err, ErrAlreadyRejected),
-		errors.Is(err, ErrAlreadyRetired):
+		errors.Is(err, ErrAlreadyRetired),
+		errors.Is(err, ErrActiveChampionExists):
 		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError

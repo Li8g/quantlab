@@ -26,7 +26,7 @@ func TestApplyPromote_HappyPath(t *testing.T) {
 	req := api.PromoteChallengerRequest{ReviewedBy: "alice", DecisionNote: &note}
 	now := time.Unix(1_700_000_000, 0).UTC()
 
-	updates, history, err := applyPromote(rec, req, now)
+	updates, history, err := applyPromote(rec, req, now, 0)
 	if err != nil {
 		t.Fatalf("applyPromote: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestApplyPromote_RejectsTestMode(t *testing.T) {
 	rec.TestMode = true
 	req := api.PromoteChallengerRequest{ReviewedBy: "alice"}
 
-	_, _, err := applyPromote(rec, req, time.Now().UTC())
+	_, _, err := applyPromote(rec, req, time.Now().UTC(), 0)
 	if err == nil {
 		t.Error("TestMode=true must reject Promote")
 	}
@@ -66,7 +66,7 @@ func TestApplyPromote_RejectsAlreadyPromoted(t *testing.T) {
 	rec.DecisionStatus = resultpkg.DecisionStatusPromoted
 	req := api.PromoteChallengerRequest{ReviewedBy: "alice"}
 
-	_, _, err := applyPromote(rec, req, time.Now().UTC())
+	_, _, err := applyPromote(rec, req, time.Now().UTC(), 0)
 	if err == nil {
 		t.Error("already-promoted challenger must reject double-Promote")
 	}
@@ -77,9 +77,31 @@ func TestApplyPromote_RejectsAlreadyRejected(t *testing.T) {
 	rec.DecisionStatus = resultpkg.DecisionStatusRejected
 	req := api.PromoteChallengerRequest{ReviewedBy: "alice"}
 
-	_, _, err := applyPromote(rec, req, time.Now().UTC())
+	_, _, err := applyPromote(rec, req, time.Now().UTC(), 0)
 	if err == nil {
 		t.Error("rejected challenger must refuse Promote (DecisionStatus is terminal)")
+	}
+}
+
+func TestApplyPromote_RejectsWhenActiveChampionExists(t *testing.T) {
+	rec := okGeneRecord()
+	req := api.PromoteChallengerRequest{ReviewedBy: "alice"}
+
+	_, _, err := applyPromote(rec, req, time.Now().UTC(), 1)
+	if err == nil {
+		t.Error("activeOtherCount=1 must reject Promote (would create double-active)")
+	}
+}
+
+func TestApplyPromote_AllowsWhenActiveCountIsZero(t *testing.T) {
+	// Mirrors the happy path with explicit activeOtherCount=0 to make
+	// the "zero means clear-to-promote" contract visible to readers.
+	rec := okGeneRecord()
+	req := api.PromoteChallengerRequest{ReviewedBy: "alice"}
+
+	_, _, err := applyPromote(rec, req, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("activeOtherCount=0 should succeed: %v", err)
 	}
 }
 
@@ -87,7 +109,7 @@ func TestApplyPromote_NilNoteSkipsField(t *testing.T) {
 	rec := okGeneRecord()
 	req := api.PromoteChallengerRequest{ReviewedBy: "alice", DecisionNote: nil}
 
-	updates, _, err := applyPromote(rec, req, time.Now().UTC())
+	updates, _, err := applyPromote(rec, req, time.Now().UTC(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
