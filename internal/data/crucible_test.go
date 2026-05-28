@@ -78,7 +78,8 @@ func TestBuildCrucible_PartialFit(t *testing.T) {
 func TestBuildCrucible_OOSAnchoredHoldout(t *testing.T) {
 	bars := makeDailyBars(4000, 1_700_000_000_000)
 	oosDays := 60
-	is, oos, err := BuildCrucibleWindows(bars, 1200, &oosDays)
+	warmupDays := 1200
+	is, oos, err := BuildCrucibleWindows(bars, warmupDays, &oosDays)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -88,18 +89,48 @@ func TestBuildCrucible_OOSAnchoredHoldout(t *testing.T) {
 	if oos.Name != resultpkg.WindowOOS {
 		t.Errorf("oos.Name = %s, want %s", oos.Name, resultpkg.WindowOOS)
 	}
-	// OOS bars must be the trailing oosDays.
+	// StartTS is the eval-start (post-warmup), still the trailing oosDays anchor.
 	wantOosStart := bars[len(bars)-1].OpenTime - int64(oosDays)*DayMs
 	if oos.StartTS < wantOosStart {
 		t.Errorf("oos.StartTS = %d < want >= %d", oos.StartTS, wantOosStart)
 	}
-	// All IS windows must end before OOS starts.
+	// All IS windows must end before OOS evaluation starts.
 	for _, w := range is {
 		if w.EndTS >= oos.StartTS {
 			t.Errorf("future-leakage: IS %s EndTS=%d >= OOS StartTS=%d",
 				w.Name, w.EndTS, oos.StartTS)
 		}
 	}
+	// WarmupLen ≈ warmupDays (give or take one bar for sort.Search alignment).
+	// On strict daily bars the count should land exactly at warmupDays.
+	if oos.WarmupLen < warmupDays-1 || oos.WarmupLen > warmupDays+1 {
+		t.Errorf("oos.WarmupLen = %d, want ≈%d (warmupDays prefix)",
+			oos.WarmupLen, warmupDays)
+	}
+	// The first EVAL bar must align with StartTS.
+	if oos.Bars[oos.WarmupLen].OpenTime != oos.StartTS {
+		t.Errorf("oos.Bars[WarmupLen].OpenTime = %d, want StartTS=%d",
+			oos.Bars[oos.WarmupLen].OpenTime, oos.StartTS)
+	}
+}
+
+func TestBuildCrucible_OOSDroppedWhenWarmupTruncated(t *testing.T) {
+	// 200 bars total, warmupDays=180, oosDays=60. Pre-OOS bars ≈ 140,
+	// less than warmup → drop OOS (oos = nil) per the "strict" rule.
+	// IS gets the entire series since OOS wasn't constructed.
+	bars := makeDailyBars(200, 1_700_000_000_000)
+	oosDays := 60
+	is, oos, err := BuildCrucibleWindows(bars, 180, &oosDays)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if oos != nil {
+		t.Errorf("oos = %+v, want nil (pre-OOS history too short for warmup)", oos)
+	}
+	// Sanity: IS still tries to construct what it can from the full
+	// series. No window may fit either — both is and oos being empty
+	// is acceptable here; we only assert oos was dropped.
+	_ = is
 }
 
 func TestBuildCrucible_WarmupPrecedesEval(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"quantlab/internal/domain"
@@ -318,6 +319,63 @@ func TestRunOOS_AdapterDiscipline_ResetCalled(t *testing.T) {
 	}
 	if stub.resetCalls != 1 {
 		t.Errorf("Reset called %d times, want 1 (§5.6 isolation contract)", stub.resetCalls)
+	}
+}
+
+func TestRunOOS_WithWarmupPrefix_ScoresFromEvalStart(t *testing.T) {
+	// 280 daily bars: first 100 are "warmup", last 180 are eval.
+	// The stub strategy returns a fixed score regardless, but RunOOS
+	// must (a) measure span from EVAL bars only — 180-day span passes
+	// the 90-day floor; (b) run DCA on EVAL bars only — confirmed by
+	// alpha sign matching a 1y annualization of the score.
+	allBars := flatBars(280, 0)
+	plan := &domain.EvaluablePlan{
+		Pair:        "BTCUSDT",
+		LotStep:     0.00001,
+		LotMin:      0.00001,
+		FatalMDD:    0.5,
+		InitialUSDT: 10_000,
+		OosWindow: &domain.CrucibleWindow{
+			Name:      resultpkg.WindowOOS,
+			StartTS:   allBars[100].OpenTime,
+			EndTS:     allBars[len(allBars)-1].OpenTime,
+			WarmupLen: 100,
+			Bars:      allBars,
+		},
+		Friction: domain.FrictionParams{},
+	}
+	stub := &stubOOSStrategy{score: math.Log(1.10)} // +10% over eval period
+	got, err := RunOOS(context.Background(), stub, plan, domain.Gene{0}, defaultDCA())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.Status != resultpkg.VerificationStatusOK {
+		t.Fatalf("Status=%q, want ok; notes=%v", got.Status, got.Notes)
+	}
+	// 180 eval days ≈ 0.493 years; (1+0.10)^(1/0.493)-1 ≈ 0.21.
+	if got.OOSAlphaMonthly == nil || math.Abs(*got.OOSAlphaMonthly-0.21) > 0.02 {
+		t.Errorf("alpha_monthly_ann = %v, want ≈0.21 (180-day +10%% annualized)",
+			got.OOSAlphaMonthly)
+	}
+	// Notes must report the warmup_len, not "warmup_len=0".
+	if got.Notes == nil || !strings.Contains(*got.Notes, "warmup_len=100") {
+		t.Errorf("Notes does not mention warmup_len=100; got %v", got.Notes)
+	}
+}
+
+func TestRunOOS_InvalidWarmupLen(t *testing.T) {
+	// WarmupLen ≥ len(Bars) → invariant violation, returns Go error.
+	bars := flatBars(100, 0)
+	plan := &domain.EvaluablePlan{
+		OosWindow: &domain.CrucibleWindow{
+			Name:      resultpkg.WindowOOS,
+			WarmupLen: 100, // == len(Bars), no eval bars left
+			Bars:      bars,
+		},
+	}
+	_, err := RunOOS(context.Background(), &stubOOSStrategy{}, plan, domain.Gene{0}, defaultDCA())
+	if err == nil {
+		t.Fatal("expected error for WarmupLen >= len(Bars), got nil")
 	}
 }
 

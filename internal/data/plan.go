@@ -67,13 +67,16 @@ func BuildEvaluablePlan(bars []domain.Bar, opts PlanOptions) (*domain.EvaluableP
 	// DCA baselines run on the IS bars only. OOS is for post-GA
 	// fairness verification — it must not influence in-generation
 	// scoring, so the baselines it produces would mislead alpha
-	// comparisons. Slice via the first OOS bar's OpenTime so a
-	// pre-validated, strictly-ascending series stays consistent.
+	// comparisons. Slice via OosWindow.StartTS (the eval-start TS,
+	// post-warmup). OosWindow.Bars[0] is the warmup-start now that
+	// crucible.BuildCrucibleWindows attaches a warmup prefix, so
+	// using oos.Bars[0].OpenTime would over-truncate IS into the
+	// warmup region — which is still IS time, just borrowed for
+	// strategy indicator convergence on OOS.
 	isBars := bars
-	if oos != nil && len(oos.Bars) > 0 {
-		oosStartTS := oos.Bars[0].OpenTime
+	if oos != nil {
 		for i, b := range bars {
-			if b.OpenTime >= oosStartTS {
+			if b.OpenTime >= oos.StartTS {
 				isBars = bars[:i]
 				break
 			}

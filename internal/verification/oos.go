@@ -31,14 +31,15 @@
 // reviewer notices). Symmetric ±X would attention-tax reviewers on
 // noise. See conversation 2026-05-28 for the noise-band analysis.
 //
-// Known limitation (not in 5D scope, flagged in Notes when status=ok):
-// plan.OosWindow.WarmupLen=0 — the strategy's indicators (EMAs etc.)
-// start cold on OOS bars and the score is artificially depressed
-// compared to IS windows that get a 365-day warmup. The 90-day floor
-// gives partial implicit warmup but not enough for the longest
-// indicator (sigmoid_v1's max EMA ≈ 300 bars). Follow-up: extend
-// data.BuildCrucibleWindows to attach a warmup prefix to OosWindow
-// and bump WarmupLen accordingly.
+// OOS warmup: data.BuildCrucibleWindows attaches a warmupDays prefix
+// to OosWindow.Bars so the strategy's indicators (EMAs etc.) converge
+// before scoring begins, mirroring the IS pattern. When the pre-OOS
+// history can't accommodate full warmup, BuildCrucibleWindows drops
+// OOS (oos = nil) and this function reports status=insufficient_data.
+// The strategy's log-return score (log(navFinal/navAtWarmupStart)) is
+// already post-warmup by construction; we slice OosWindow.Bars by
+// WarmupLen for the span check and the DCA baseline so the comparison
+// is apples-to-apples.
 package verification
 
 import (
@@ -94,17 +95,28 @@ func RunOOS(
 	res := &resultpkg.OOSResult{}
 
 	if plan == nil || plan.OosWindow == nil || len(plan.OosWindow.Bars) == 0 {
-		notes := "no oos window in plan (oos_days not requested or 0 bars)"
+		notes := "no oos window in plan (oos_days not requested, or pre-OOS history too short for full warmup)"
 		res.Status = resultpkg.VerificationStatusInsufficientData
 		res.Notes = &notes
 		return res, nil
 	}
 
-	oosBars := plan.OosWindow.Bars
-	spanMs := oosBars[len(oosBars)-1].OpenTime - oosBars[0].OpenTime
+	// Span / DCA range are EVAL-only — the warmup prefix is for
+	// indicator convergence, not for scoring. evalBars excludes the
+	// warmup; the strategy already ignores warmup in its score
+	// (evaluate_window.go log return is post-warmup), so this keeps
+	// the strategy-vs-DCA comparison apples-to-apples.
+	warmupLen := plan.OosWindow.WarmupLen
+	if warmupLen < 0 || warmupLen >= len(plan.OosWindow.Bars) {
+		return nil, fmt.Errorf("verification.RunOOS: invalid WarmupLen=%d for %d bars",
+			warmupLen, len(plan.OosWindow.Bars))
+	}
+	evalBars := plan.OosWindow.Bars[warmupLen:]
+	spanMs := evalBars[len(evalBars)-1].OpenTime - evalBars[0].OpenTime
 	spanDays := float64(spanMs) / float64(dayMs)
 	if spanDays < float64(MinOOSDays) {
-		notes := fmt.Sprintf("oos span %.1f days < %d minimum", spanDays, MinOOSDays)
+		notes := fmt.Sprintf("oos eval span %.1f days < %d minimum (warmup_len=%d)",
+			spanDays, MinOOSDays, warmupLen)
 		res.Status = resultpkg.VerificationStatusInsufficientData
 		res.Notes = &notes
 		return res, nil
@@ -179,10 +191,11 @@ func RunOOS(
 	stratLog := *sw.Score.Value
 	stratAnn := math.Exp(stratLog/years) - 1
 
-	// DCA recompute on OOS bars (decision #2). Use the same GhostDCAConfig
-	// and Friction the GA used so the comparison is apples-to-apples.
-	dcaMonthly := fitness.SimulateGhostDCAMonthly(dcaCfg, oosBars, plan.Friction)
-	dcaWeekly := fitness.SimulateGhostDCAWeekly(dcaCfg, oosBars, plan.Friction)
+	// DCA recompute on OOS EVAL bars only (decision #2). Running DCA
+	// over the warmup prefix would let it accumulate position before
+	// the strategy starts scoring → unfair head-start.
+	dcaMonthly := fitness.SimulateGhostDCAMonthly(dcaCfg, evalBars, plan.Friction)
+	dcaWeekly := fitness.SimulateGhostDCAWeekly(dcaCfg, evalBars, plan.Friction)
 	monthlyAnn := annualizeROI(dcaMonthly.ROI, years)
 	weeklyAnn := annualizeROI(dcaWeekly.ROI, years)
 
@@ -191,8 +204,8 @@ func RunOOS(
 	color := classifyOOSColor(alphaMonthly, alphaWeekly)
 
 	notes := fmt.Sprintf(
-		"oos span %.1fd, strat_ann=%.4f, dca_monthly_ann=%.4f, dca_weekly_ann=%.4f; warmup_len=0 (indicators cold-started — see oos.go header)",
-		spanDays, stratAnn, monthlyAnn, weeklyAnn,
+		"oos eval span %.1fd (warmup_len=%d bars), strat_ann=%.4f, dca_monthly_ann=%.4f, dca_weekly_ann=%.4f",
+		spanDays, warmupLen, stratAnn, monthlyAnn, weeklyAnn,
 	)
 	res.Status = resultpkg.VerificationStatusOK
 	res.OOSAlphaMonthly = &alphaMonthly

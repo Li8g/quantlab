@@ -105,15 +105,32 @@ func BuildCrucibleWindows(
 		if oosStartIdx == 0 {
 			return nil, nil, errors.New("crucible: oos request consumes entire history")
 		}
-		oosBars := bars[oosStartIdx:]
-		oos = &domain.CrucibleWindow{
-			Name:      resultpkg.WindowOOS,
-			StartTS:   oosBars[0].OpenTime,
-			EndTS:     oosBars[len(oosBars)-1].OpenTime,
-			WarmupLen: 0,
-			Bars:      oosBars,
+
+		// Anchor a warmupDays prefix immediately before OOS evaluation
+		// starts so the strategy's indicators (EMAs etc.) converge
+		// before scoring begins — mirrors the IS window pattern. When
+		// the pre-OOS history can't accommodate full warmup we drop OOS
+		// entirely (same semantics as IS "skip if evalDays+warmupDays >
+		// isSpanMs"): partial warmup would produce an "ok" status with
+		// silently degraded scores. verification.RunOOS surfaces this
+		// as status=insufficient_data with explanatory Notes.
+		oosWarmupStartTS := oosStartTS - int64(warmupDays)*DayMs
+		if oosWarmupStartTS >= bars[0].OpenTime {
+			oosWarmupStartIdx := sort.Search(len(bars), func(i int) bool {
+				return bars[i].OpenTime >= oosWarmupStartTS
+			})
+			oos = &domain.CrucibleWindow{
+				Name:      resultpkg.WindowOOS,
+				StartTS:   bars[oosStartIdx].OpenTime, // eval-start (post-warmup)
+				EndTS:     bars[len(bars)-1].OpenTime,
+				WarmupLen: oosStartIdx - oosWarmupStartIdx,
+				Bars:      bars[oosWarmupStartIdx:],
+			}
+			isEndIdx = oosStartIdx
 		}
-		isEndIdx = oosStartIdx
+		// else: oos stays nil; IS gets the full series (isEndIdx already
+		// = len(bars)). The user requested OOS but the data couldn't
+		// support it without sacrificing warmup fidelity.
 	}
 
 	isBars := bars[:isEndIdx]
