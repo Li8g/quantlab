@@ -1,0 +1,9 @@
+@import 'tailwindcss';
+
+/* QuantLab native UI — Tailwind v4. Base resets only; components style
+   themselves with utility classes. */
+html,
+body,
+#root {
+  height: 100%;
+}
