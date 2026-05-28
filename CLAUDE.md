@@ -156,7 +156,7 @@ Evaluation runs in fixed order: `6m → 2y → 5y → 10y`. On Fatal (`MDD >= Fa
 ChallengerResultPackage
 ├── core         (ResultCore: champion_gene, spawn_point, reproducibility_metadata, ga_config)
 ├── evaluation   (EvaluationLayer: window_scores, score_total [engine-filled], friction_actual)
-├── verification (VerificationLayer: oos_result, review_summary)
+├── verification (VerificationLayer: oos_result [status ∈ ok|insufficient_data|failed|not_run], dsr_summary, review_summary)
 ├── diagnostics  (DiagnosticsLayer: mutation_ramp_log, fatal_audit_samples, ...)
 └── promote      (PromoteLayer: decision_status ∈ {pending, promoted, rejected})
 ```
@@ -182,6 +182,8 @@ Challengers with different `fitness_version` must **not** be compared by score.
 - `Adapter.Evaluate` must not launch goroutines internally. All float accumulations must be serial (no concurrent reduce).
 - All sorting must use `sort.SliceStable`, not `sort.Slice`.
 - Evaluation window order is fixed (`6m→2y→5y→10y`); violating it breaks `SkippedBy` enum semantics.
+- OOS Anchored Holdout (`verification.RunOOS`) runs **after** `RunEpoch` returns — Fatal on the OOS bars never touches the IS `ScoreTotal` already written. Alpha is annualized excess return (`strat_ann - dca_ann`), DCA baseline re-simulated on the OOS bars (not reused from IS). Span < 90 days → `status=insufficient_data`, task NOT rejected. DecisionColor thresholds are asymmetric: green ≥ +5%/yr monthly AND weekly ≥ 0; red ≤ -3%/yr monthly OR Fatal; yellow otherwise.
+- Promote (`/challengers/:id/promote`) and Retire (`/champions/:id/retire`) are **admin-only**. Operator role is explicitly excluded (`docs/saas-tier2-schema-v1.md` §3.2). Both routes go through `AuthRequired + RequireAdmin`; nil-bypass only for handler tests.
 
 ## Priority Tests (Must Ship First — §10.1)
 
@@ -205,8 +207,8 @@ POST /api/v1/evolution/tasks
 GET  /api/v1/evolution/tasks/:task_id
 GET  /api/v1/challengers/:challenger_id
 GET  /api/v1/challengers/:challenger_id/package
-POST /api/v1/challengers/:challenger_id/promote
-POST /api/v1/champions/:champion_id/retire
+POST /api/v1/challengers/:challenger_id/promote   (admin only)
+POST /api/v1/champions/:champion_id/retire        (admin only)
 ```
 
 ## Database Tables (Prototype)
