@@ -69,6 +69,29 @@ func (a sharpeBankAdapter) Stats(ctx context.Context, strategyID, pair string) (
 	}, nil
 }
 
+// klineCoverageAdapter bridges repository.KLineRepo to the api layer's
+// DataCoverageLister — translates repository.CoverageRow to
+// api.DataCoverageRow without coupling the two packages.
+type klineCoverageAdapter struct{ repo *repository.KLineRepo }
+
+func (a klineCoverageAdapter) Coverage(ctx context.Context, symbol, interval string) ([]api.DataCoverageRow, error) {
+	rows, err := a.repo.Coverage(ctx, symbol, interval)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.DataCoverageRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, api.DataCoverageRow{
+			Symbol:    r.Symbol,
+			Interval:  r.Interval,
+			MinOpenMs: r.MinOpenMs,
+			MaxOpenMs: r.MaxOpenMs,
+			BarCount:  r.BarCount,
+		})
+	}
+	return out, nil
+}
+
 // ulidIssuer satisfies api.IDIssuer using the package-shared ULID
 // generator (store.NewULID, MonotonicEntropy mode).
 type ulidIssuer struct{}
@@ -231,6 +254,7 @@ func main() {
 	scheduler := cron.New(instanceRepo, tickManager, cron.Config{})
 
 	gapRepo := repository.NewKLineGapRepo(db)
+	klineRepo := repository.NewKLineRepo(db)
 	userRepo := repository.NewUserRepo(db)
 
 	h := &api.Handlers{
@@ -245,6 +269,7 @@ func main() {
 		TaskLister:      taskRepo,
 		ChampionHistory: championRepo,
 		Gaps:            gapRepo,
+		Klines:          klineCoverageAdapter{repo: klineRepo},
 		Trades:          tradeRepo,
 		SharpeBank:      sharpeBankAdapter{repo: sharpeRepo},
 		AuthRequired:    middleware.AuthRequired(authSvc),

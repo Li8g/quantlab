@@ -107,6 +107,28 @@ type KLineGapLister interface {
 	List(ctx context.Context, symbol, interval string, limit int) ([]store.KLineGap, error)
 }
 
+// DataCoverageLister reports per-(symbol, interval) kline coverage.
+// repository.KLineRepo (via a cmd/saas adapter, like SharpeBank)
+// satisfies this. With symbol and interval both non-empty it returns
+// at most one row (the matching pair); with both empty it returns one
+// row per pair present in the klines table. The handler rejects
+// passing exactly one of the two.
+type DataCoverageLister interface {
+	Coverage(ctx context.Context, symbol, interval string) ([]DataCoverageRow, error)
+}
+
+// DataCoverageRow is one (symbol, interval) coverage summary: the
+// open_time (ms) of the earliest and latest stored bar plus the bar
+// count. A pair with no bars yields no row — callers see an empty
+// slice, never a zero-count row.
+type DataCoverageRow struct {
+	Symbol    string
+	Interval  string
+	MinOpenMs int64
+	MaxOpenMs int64
+	BarCount  int64
+}
+
 // EvolutionTaskLister returns recently-created tasks for the index
 // view (newest first).
 type EvolutionTaskLister interface {
@@ -172,6 +194,7 @@ type Handlers struct {
 	TaskLister      EvolutionTaskLister
 	ChampionHistory ChampionHistoryReader
 	Gaps            KLineGapLister
+	Klines          DataCoverageLister
 	Trades          TradeLister
 	SharpeBank      SharpeBankStatter
 
@@ -232,6 +255,9 @@ func (h *Handlers) Register(r gin.IRouter) {
 	}
 	if h.Gaps != nil {
 		g.GET("/data/gaps", h.ListGaps)
+	}
+	if h.Klines != nil {
+		g.GET("/data/coverage", h.GetCoverage)
 	}
 	if h.SharpeBank != nil {
 		g.GET("/ga/sharpebank/stats", h.GetSharpeBankStats)

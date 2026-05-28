@@ -191,6 +191,42 @@ func (h *Handlers) ListGaps(c *gin.Context) {
 	c.JSON(http.StatusOK, ListGapsResponse{Items: items, Count: len(items)})
 }
 
+// ===== /api/v1/data/coverage =====
+
+// GetCoverage: GET /api/v1/data/coverage?symbol=&interval=. Hybrid
+// shape — with both params it returns the single matching pair's
+// coverage (empty items if that pair has no bars); with neither it
+// returns one row per (symbol, interval) in the klines table, the
+// data-inventory view the frontend symbol picker reads. Passing
+// exactly one of the two is a 400: a lone symbol/interval is almost
+// always a client bug, and silently widening to "all pairs" would
+// mask it. No ?limit — row count is bounded by the number of pairs.
+func (h *Handlers) GetCoverage(c *gin.Context) {
+	symbol := c.Query("symbol")
+	interval := c.Query("interval")
+	if (symbol == "") != (interval == "") {
+		writeError(c, http.StatusBadRequest,
+			errors.New("symbol and interval must be provided together or both omitted"))
+		return
+	}
+	rows, err := h.Klines.Coverage(c.Request.Context(), symbol, interval)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, err)
+		return
+	}
+	items := make([]DataCoverageEntry, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, DataCoverageEntry{
+			Symbol:    r.Symbol,
+			Interval:  r.Interval,
+			MinOpenMs: r.MinOpenMs,
+			MaxOpenMs: r.MaxOpenMs,
+			BarCount:  r.BarCount,
+		})
+	}
+	c.JSON(http.StatusOK, ListCoverageResponse{Items: items, Count: len(items)})
+}
+
 // ===== /api/v1/instances/:instance_id/trades =====
 
 // ListInstanceTrades: GET /api/v1/instances/:instance_id/trades?limit=N.

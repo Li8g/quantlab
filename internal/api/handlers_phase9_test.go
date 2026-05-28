@@ -388,6 +388,82 @@ func TestListGaps_LimitClamped(t *testing.T) {
 	}
 }
 
+// ===== /data/coverage =====
+
+type fakeCoverage struct {
+	rows []DataCoverageRow
+	err  error
+	got  struct {
+		symbol, interval string
+	}
+}
+
+func (f *fakeCoverage) Coverage(_ context.Context, symbol, interval string) ([]DataCoverageRow, error) {
+	f.got.symbol = symbol
+	f.got.interval = interval
+	return f.rows, f.err
+}
+
+func TestGetCoverage_SinglePair(t *testing.T) {
+	f := &fakeCoverage{rows: []DataCoverageRow{
+		{Symbol: "BTCUSDT", Interval: "1h", MinOpenMs: 100, MaxOpenMs: 900, BarCount: 9},
+	}}
+	h := &Handlers{Klines: f}
+	w := doJSON(newRouter(h), http.MethodGet,
+		"/api/v1/data/coverage?symbol=BTCUSDT&interval=1h", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Code = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp ListCoverageResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 1 || resp.Items[0].BarCount != 9 {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if f.got.symbol != "BTCUSDT" || f.got.interval != "1h" {
+		t.Errorf("repo args = %+v, both should pass through as filter", f.got)
+	}
+}
+
+func TestGetCoverage_ListAll_NoParams(t *testing.T) {
+	f := &fakeCoverage{rows: []DataCoverageRow{
+		{Symbol: "BTCUSDT", Interval: "1h", MinOpenMs: 1, MaxOpenMs: 2, BarCount: 2},
+		{Symbol: "ETHUSDT", Interval: "1d", MinOpenMs: 3, MaxOpenMs: 4, BarCount: 5},
+	}}
+	h := &Handlers{Klines: f}
+	w := doJSON(newRouter(h), http.MethodGet, "/api/v1/data/coverage", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Code = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp ListCoverageResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 2 {
+		t.Fatalf("count=%d, want 2 (inventory listing)", resp.Count)
+	}
+	if f.got.symbol != "" || f.got.interval != "" {
+		t.Errorf("repo args = %+v, want empty (list-all path)", f.got)
+	}
+}
+
+func TestGetCoverage_LoneParamReturns400(t *testing.T) {
+	h := &Handlers{Klines: &fakeCoverage{}}
+	// symbol without interval
+	w := doJSON(newRouter(h), http.MethodGet,
+		"/api/v1/data/coverage?symbol=BTCUSDT", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Code = %d, want 400 (lone symbol)", w.Code)
+	}
+	// interval without symbol
+	w = doJSON(newRouter(h), http.MethodGet,
+		"/api/v1/data/coverage?interval=1h", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Code = %d, want 400 (lone interval)", w.Code)
+	}
+}
+
 // ===== /instances/:id/trades =====
 
 func TestListInstanceTrades_HappyPath_NoAuth(t *testing.T) {

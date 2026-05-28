@@ -176,6 +176,26 @@ type ListGapsResponse struct {
 	Count int                `json:"count"`
 }
 
+// DataCoverageEntry is one row of GET /api/v1/data/coverage — the
+// stored-bar span and count for a (symbol, interval). min/max are the
+// open_time of the earliest/latest bar in milliseconds.
+type DataCoverageEntry struct {
+	Symbol    string `json:"symbol"`
+	Interval  string `json:"interval"`
+	MinOpenMs int64  `json:"min_open_ms"`
+	MaxOpenMs int64  `json:"max_open_ms"`
+	BarCount  int64  `json:"bar_count"`
+}
+
+// ListCoverageResponse is the body of GET /api/v1/data/coverage. One
+// item per matching (symbol, interval); count == len(items). Unlike
+// /data/gaps there is no limit — the row count is bounded by the
+// number of distinct pairs, not by history length.
+type ListCoverageResponse struct {
+	Items []DataCoverageEntry `json:"items"`
+	Count int                 `json:"count"`
+}
+
 // EvolutionTaskSummary is one row of GET /api/v1/evolution/tasks.
 // A subset of EvolutionTaskStatusResponse — list views don't carry
 // challenger_id or failure_reason (clients drill into the per-task
