@@ -428,6 +428,17 @@ func TestE2E_OOSAnchoredHoldoutWrites(t *testing.T) {
 			t.Errorf("decision_color = %q, want one of green/yellow/red", *got.DecisionColor)
 		}
 	}
+
+	// Notes must reflect the warmup prefix from data.BuildCrucibleWindows.
+	// Server defaults (DefaultDefaults) set WarmupDays=365 and the request
+	// doesn't override it, so RunOOS reports "warmup_len=365 bars" verbatim.
+	// Pinning the value (not just non-zero) catches regressions where the
+	// warmup wiring silently reverts to 0 (the original Phase 5D defect).
+	if got.Notes == nil {
+		t.Error("oos_result.notes is nil; want warmup_len + alpha breakdown")
+	} else if !strings.Contains(*got.Notes, "warmup_len=365 bars") {
+		t.Errorf("oos_result.notes missing 'warmup_len=365 bars'; got %q", *got.Notes)
+	}
 }
 
 // fetchJSON GETs path and decodes the response body into T. Fatals on
