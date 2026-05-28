@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -220,6 +221,122 @@ func TestGetChallenger_HappyPath(t *testing.T) {
 	}
 	if resp.ScoreTotal == nil || *resp.ScoreTotal != 2.1 {
 		t.Errorf("ScoreTotal mismatch: %v", resp.ScoreTotal)
+	}
+}
+
+func TestGetChallenger_PromotedActiveLiftsPromotedAtMs(t *testing.T) {
+	rec := &store.GeneRecord{
+		ChallengerID:   "ch-002",
+		StrategyID:     "sigmoid_v1",
+		Pair:           "BTCUSDT",
+		DecisionStatus: resultpkg.DecisionStatusPromoted,
+	}
+	promotedAt := time.UnixMilli(1_700_000_000_000).UTC()
+	champFake := &fakeChampionHistory{byIDRow: &store.ChampionHistory{
+		ChallengerID: "ch-002",
+		PromotedAt:   promotedAt,
+		RetiredAt:    nil,
+	}}
+	h := &Handlers{
+		Challengers:     &fakeChallengers{rec: rec},
+		ChampionHistory: champFake,
+	}
+	w := doJSON(newRouter(h), http.MethodGet, "/api/v1/challengers/ch-002", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ChallengerSummaryResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PromotedAtMs == nil || *resp.PromotedAtMs != promotedAt.UnixMilli() {
+		t.Errorf("PromotedAtMs = %v, want %d", resp.PromotedAtMs, promotedAt.UnixMilli())
+	}
+	if resp.RetiredAtMs != nil {
+		t.Errorf("RetiredAtMs = %v, want nil (active champion)", *resp.RetiredAtMs)
+	}
+	if champFake.gotByID != "ch-002" {
+		t.Errorf("ChampionHistory lookup got challengerID=%q, want ch-002", champFake.gotByID)
+	}
+}
+
+func TestGetChallenger_RetiredLiftsRetiredAtMs(t *testing.T) {
+	rec := &store.GeneRecord{
+		ChallengerID:   "ch-003",
+		StrategyID:     "sigmoid_v1",
+		Pair:           "BTCUSDT",
+		DecisionStatus: resultpkg.DecisionStatusPromoted,
+	}
+	promotedAt := time.UnixMilli(1_700_000_000_000).UTC()
+	retiredAt := time.UnixMilli(1_700_900_000_000).UTC()
+	h := &Handlers{
+		Challengers: &fakeChallengers{rec: rec},
+		ChampionHistory: &fakeChampionHistory{byIDRow: &store.ChampionHistory{
+			ChallengerID: "ch-003",
+			PromotedAt:   promotedAt,
+			RetiredAt:    &retiredAt,
+		}},
+	}
+	w := doJSON(newRouter(h), http.MethodGet, "/api/v1/challengers/ch-003", nil)
+	var resp ChallengerSummaryResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.PromotedAtMs == nil || *resp.PromotedAtMs != promotedAt.UnixMilli() {
+		t.Errorf("PromotedAtMs = %v, want %d", resp.PromotedAtMs, promotedAt.UnixMilli())
+	}
+	if resp.RetiredAtMs == nil || *resp.RetiredAtMs != retiredAt.UnixMilli() {
+		t.Errorf("RetiredAtMs = %v, want %d", resp.RetiredAtMs, retiredAt.UnixMilli())
+	}
+	// Spec-locked invariant: DecisionStatus enum must NOT have a
+	// "retired" value — retirement is conveyed via retired_at_ms only.
+	if resp.DecisionStatus != resultpkg.DecisionStatusPromoted {
+		t.Errorf("DecisionStatus = %q, want promoted (retirement lives on retired_at_ms only)", resp.DecisionStatus)
+	}
+}
+
+func TestGetChallenger_PendingHasNoChampionHistoryLookup(t *testing.T) {
+	rec := &store.GeneRecord{
+		ChallengerID:   "ch-004",
+		StrategyID:     "sigmoid_v1",
+		Pair:           "BTCUSDT",
+		DecisionStatus: resultpkg.DecisionStatusPending,
+	}
+	champFake := &fakeChampionHistory{}
+	h := &Handlers{
+		Challengers:     &fakeChallengers{rec: rec},
+		ChampionHistory: champFake,
+	}
+	w := doJSON(newRouter(h), http.MethodGet, "/api/v1/challengers/ch-004", nil)
+	var resp ChallengerSummaryResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.PromotedAtMs != nil || resp.RetiredAtMs != nil {
+		t.Errorf("pending challenger must have nil PromotedAtMs and RetiredAtMs, got %+v / %+v",
+			resp.PromotedAtMs, resp.RetiredAtMs)
+	}
+	if champFake.gotByID != "" {
+		t.Errorf("pending challenger must skip ChampionHistory lookup, got challengerID=%q", champFake.gotByID)
+	}
+}
+
+func TestGetChallenger_NoChampionHistoryReaderIsTolerated(t *testing.T) {
+	// Older test wirings (or stripped-down handlers) leave
+	// h.ChampionHistory nil — that path must still return the summary,
+	// just without lifting promoted/retired timestamps.
+	rec := &store.GeneRecord{
+		ChallengerID:   "ch-005",
+		StrategyID:     "sigmoid_v1",
+		Pair:           "BTCUSDT",
+		DecisionStatus: resultpkg.DecisionStatusPromoted,
+	}
+	h := &Handlers{Challengers: &fakeChallengers{rec: rec}}
+	w := doJSON(newRouter(h), http.MethodGet, "/api/v1/challengers/ch-005", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ChallengerSummaryResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.PromotedAtMs != nil || resp.RetiredAtMs != nil {
+		t.Errorf("nil ChampionHistory: timestamps must stay nil, got %+v / %+v",
+			resp.PromotedAtMs, resp.RetiredAtMs)
 	}
 }
 

@@ -192,6 +192,24 @@ func (r *ChampionRepo) GetActive(ctx context.Context, strategyID, pair string) (
 	return &row, nil
 }
 
+// GetByChallengerID returns the champion_history row tied to this
+// challenger, regardless of retirement state. Promote creates exactly
+// one row per challenger, so the lookup is unambiguous. Returns
+// gorm.ErrRecordNotFound when the challenger was never promoted —
+// callers treat that as "not a champion" rather than a hard error.
+func (r *ChampionRepo) GetByChallengerID(ctx context.Context, challengerID string) (*store.ChampionHistory, error) {
+	if challengerID == "" {
+		return nil, errors.New("repository.ChampionRepo.GetByChallengerID: empty challengerID")
+	}
+	var row store.ChampionHistory
+	if err := r.db.WithContext(ctx).
+		Where("challenger_id = ?", challengerID).
+		First(&row).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
 // applyPromote is the pure decision kernel for Promote. Returns the
 // field-update map for gene_records and the new champion_history row.
 // All preconditions are checked here so a unit test can drive every

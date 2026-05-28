@@ -84,6 +84,11 @@ type CreateEvolutionTaskResponse struct {
 //
 // score_total / score_raw / consistency_penalty / max_drawdown are nil
 // for Fatal aggregate results (SliceScore three-state semantics).
+//
+// retired_at_ms is lifted from champion_histories (NOT decision_status —
+// the enum is locked to pending/promoted/rejected per spec). A
+// challenger is currently the active champion iff
+// decision_status="promoted" AND retired_at_ms is nil.
 type ChallengerSummaryResponse struct {
 	ChallengerID       string                   `json:"challenger_id"`
 	StrategyID         string                   `json:"strategy_id"`
@@ -96,6 +101,8 @@ type ChallengerSummaryResponse struct {
 	BarsHash           string                   `json:"bars_hash"`
 	TestMode           bool                     `json:"test_mode"`
 	DSR                *float64                 `json:"dsr,omitempty"`
+	PromotedAtMs       *int64                   `json:"promoted_at_ms,omitempty"`
+	RetiredAtMs        *int64                   `json:"retired_at_ms,omitempty"`
 }
 
 // PromoteChallengerRequest is the body of

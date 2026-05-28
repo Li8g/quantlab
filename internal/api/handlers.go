@@ -113,12 +113,16 @@ type EvolutionTaskLister interface {
 	List(ctx context.Context, limit int) ([]store.EvolutionTask, error)
 }
 
-// ChampionHistoryReader powers /champions/history + /genome/champion.
-// strategyID + pair can both be empty for history listing (no filter);
-// GetActive REQUIRES both to be non-empty.
+// ChampionHistoryReader powers /champions/history + /genome/champion +
+// retired_at lift on /challengers/:id. strategyID + pair can both be
+// empty for history listing (no filter); GetActive REQUIRES both to be
+// non-empty. GetByChallengerID returns gorm.ErrRecordNotFound for a
+// never-promoted challenger — callers treat that as "no retirement
+// state to surface" rather than a hard error.
 type ChampionHistoryReader interface {
 	List(ctx context.Context, strategyID, pair string, limit int) ([]store.ChampionHistory, error)
 	GetActive(ctx context.Context, strategyID, pair string) (*store.ChampionHistory, error)
+	GetByChallengerID(ctx context.Context, challengerID string) (*store.ChampionHistory, error)
 }
 
 // TradeLister returns TradeRecord rows for one instance, newest first.
@@ -305,7 +309,7 @@ func (h *Handlers) GetChallenger(c *gin.Context) {
 		writeError(c, mapReadErr(err), err)
 		return
 	}
-	c.JSON(http.StatusOK, ChallengerSummaryResponse{
+	resp := ChallengerSummaryResponse{
 		ChallengerID:       rec.ChallengerID,
 		StrategyID:         rec.StrategyID,
 		Pair:               rec.Pair,
@@ -317,7 +321,25 @@ func (h *Handlers) GetChallenger(c *gin.Context) {
 		BarsHash:           rec.BarsHash,
 		TestMode:           rec.TestMode,
 		DSR:                rec.DSR,
-	})
+	}
+	// Lift retirement state from champion_histories. The enum stays
+	// pending/promoted/rejected (per spec), so retirement is exposed
+	// via the separate retired_at_ms field. Only worth looking up for
+	// promoted challengers; pending/rejected can never have history.
+	if h.ChampionHistory != nil && rec.DecisionStatus == resultpkg.DecisionStatusPromoted {
+		hist, err := h.ChampionHistory.GetByChallengerID(c.Request.Context(), id)
+		if err == nil && hist != nil {
+			pat := hist.PromotedAt.UnixMilli()
+			resp.PromotedAtMs = &pat
+			if hist.RetiredAt != nil {
+				rat := hist.RetiredAt.UnixMilli()
+				resp.RetiredAtMs = &rat
+			}
+		}
+		// gorm.ErrRecordNotFound is treated as "no retirement state to
+		// surface" — the summary still returns the rec fields.
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // GetChallengerPackage: GET /api/v1/challengers/:challenger_id/package.

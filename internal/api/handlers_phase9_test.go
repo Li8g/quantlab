@@ -32,13 +32,16 @@ func (f *fakeTaskLister) List(_ context.Context, limit int) ([]store.EvolutionTa
 }
 
 type fakeChampionHistory struct {
-	listRows   []store.ChampionHistory
-	listErr    error
-	gotStrat   string
-	gotPair    string
-	gotLimit   int
-	activeRow  *store.ChampionHistory
-	activeErr  error
+	listRows  []store.ChampionHistory
+	listErr   error
+	gotStrat  string
+	gotPair   string
+	gotLimit  int
+	activeRow *store.ChampionHistory
+	activeErr error
+	byIDRow   *store.ChampionHistory
+	byIDErr   error
+	gotByID   string
 }
 
 func (f *fakeChampionHistory) List(_ context.Context, strategyID, pair string, limit int) ([]store.ChampionHistory, error) {
@@ -52,6 +55,11 @@ func (f *fakeChampionHistory) GetActive(_ context.Context, strategyID, pair stri
 	f.gotStrat = strategyID
 	f.gotPair = pair
 	return f.activeRow, f.activeErr
+}
+
+func (f *fakeChampionHistory) GetByChallengerID(_ context.Context, challengerID string) (*store.ChampionHistory, error) {
+	f.gotByID = challengerID
+	return f.byIDRow, f.byIDErr
 }
 
 type fakeGaps struct {
