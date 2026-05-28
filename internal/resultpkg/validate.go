@@ -111,5 +111,9 @@ func (p *ChallengerResultPackage) Validate() error {
 		return errors.New("ChallengerResultPackage: Promote.DecisionStatus is not pending/promoted/rejected")
 	}
 
+	if !p.Verification.OOSResult.Status.IsValid() {
+		return errors.New("ChallengerResultPackage: Verification.OOSResult.Status is not one of not_run/ok/failed/insufficient_data")
+	}
+
 	return nil
 }

@@ -128,6 +128,16 @@ func (w WindowName) IsValid() bool {
 	return false
 }
 
+// IsValid reports whether s is one of the four verification statuses.
+func (s VerificationStatus) IsValid() bool {
+	switch s {
+	case VerificationStatusNotRun, VerificationStatusOK,
+		VerificationStatusFailed, VerificationStatusInsufficientData:
+		return true
+	}
+	return false
+}
+
 // IsValid reports whether s is one of the three cascade-skip causes.
 func (s SkippedBy) IsValid() bool {
 	switch s {

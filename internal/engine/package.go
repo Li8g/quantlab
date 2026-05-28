@@ -103,7 +103,14 @@ func BuildChallengerPackage(
 		ScoreTotal:     bestScore,
 		FrictionActual: bestRaw.FrictionActual,
 	}
-	verif := &resultpkg.VerificationLayer{}
+	verif := &resultpkg.VerificationLayer{
+		// OOSResult defaults to NotRun — the Anchored Holdout runner is
+		// a Phase 5D deliverable that hasn't shipped yet, so the engine
+		// always emits "not_run" here. Leaving Status as the zero value
+		// would write an empty string and violate the VerificationStatus
+		// enum (caught by ChallengerResultPackage.Validate).
+		OOSResult: resultpkg.OOSResult{Status: resultpkg.VerificationStatusNotRun},
+	}
 	if len(bc.DSRSummary) > 0 {
 		verif.DSRSummary = bc.DSRSummary
 	}
