@@ -29,6 +29,7 @@ import (
 
 	"quantlab/internal/api"
 	"quantlab/internal/api/middleware"
+	"quantlab/internal/migrate"
 	"quantlab/internal/repository"
 	"quantlab/internal/saas/agentauth"
 	"quantlab/internal/saas/agentstatus"
@@ -98,6 +99,8 @@ func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: $CONFIG_PATH or ./config.yaml)")
 	seedEmail := flag.String("seed-user-email", "", "if set, seed one User row with this email and exit (use with --seed-user-password)")
 	seedPassword := flag.String("seed-user-password", "", "password for --seed-user-email; bcrypt-hashed at cost 12, then discarded")
+	backfillPromoteBlob := flag.Bool("backfill-promote-blob", false, "scan gene_records and rewrite full_package_json's PromoteLayer from canonical columns, then exit; pair with --dry-run for preview")
+	dryRun := flag.Bool("dry-run", false, "preview migrations without writing (no effect outside migration flags)")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -124,6 +127,20 @@ func main() {
 			log.Fatalf("saas: seed user: %v", err)
 		}
 		log.Printf("saas: seeded user email=%s role=admin; exiting", *seedEmail)
+		return
+	}
+
+	// Migration mode: rewrite stored package blobs, then exit. The
+	// harness owns the transaction + audit log; each --backfill-* flag
+	// plugs a transform. Pair with --dry-run for a preview that
+	// reports counts without writing.
+	if *backfillPromoteBlob {
+		res, err := migrate.RunBlobMigration(ctx, db, migrate.NewPromoteBlobMigration(*dryRun))
+		if err != nil {
+			log.Fatalf("saas: backfill-promote-blob: %v", err)
+		}
+		log.Printf("saas: backfill-promote-blob done dry_run=%v scanned=%d touched=%d skipped=%d",
+			*dryRun, res.Scanned, res.Touched, res.Skipped)
 		return
 	}
 
