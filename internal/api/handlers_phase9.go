@@ -304,7 +304,9 @@ func canViewInstance(c *gin.Context, inst *store.StrategyInstance) bool {
 	if !ok {
 		return true
 	}
-	if store.UserRole(claims.Role) == store.UserRoleAdmin {
+	// Admin role (step-up token) or admin-capable standing session both
+	// see every instance; everyone else is scoped to their own.
+	if store.UserRole(claims.Role) == store.UserRoleAdmin || claims.AdminCapable {
 		return true
 	}
 	return claims.UserID == inst.OwnerUserID

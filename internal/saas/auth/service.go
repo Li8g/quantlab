@@ -21,9 +21,16 @@ type Service struct {
 }
 
 // Claims is QuantLab's JWT body.
+//
+// AdminCapable records that the user's DB role is admin, independent of
+// the (possibly capped-down) Role this token was issued with. It lets an
+// admin's standing viewer session read admin-scoped views (e.g. the full
+// live-instance fleet) without holding a short-lived admin token, while
+// privileged writes still gate on Role via RequireRole.
 type Claims struct {
-	UserID uint   `json:"user_id"`
-	Role   string `json:"role"`
+	UserID       uint   `json:"user_id"`
+	Role         string `json:"role"`
+	AdminCapable bool   `json:"admin_capable,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -55,7 +62,7 @@ func NewService(cfg config.JWTConfig) (*Service, error) {
 // Note: time.Now() is allowed here — this is HTTP-handler-adjacent code,
 // not 策略 Step() / engine Evaluate. See 铁律 2 exception list in
 // docs/系统总体拓扑结构.md §8.3.
-func (s *Service) IssueToken(userID uint, role string) (string, time.Time, error) {
+func (s *Service) IssueToken(userID uint, role string, adminCapable bool) (string, time.Time, error) {
 	ttl := s.ttl
 	if role == "admin" {
 		ttl = s.adminTTL
@@ -63,8 +70,9 @@ func (s *Service) IssueToken(userID uint, role string) (string, time.Time, error
 	now := time.Now()
 	expiresAt := now.Add(ttl)
 	claims := Claims{
-		UserID: userID,
-		Role:   role,
+		UserID:       userID,
+		Role:         role,
+		AdminCapable: adminCapable,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
@@ -79,9 +87,11 @@ func (s *Service) IssueToken(userID uint, role string) (string, time.Time, error
 }
 
 // SignToken is the original signature kept for existing test callers
-// that only need the token string.
+// that only need the token string. AdminCapable is derived from the
+// role (admin → true); tests needing an admin-capable non-admin token
+// call IssueToken directly.
 func (s *Service) SignToken(userID uint, role string) (string, error) {
-	tok, _, err := s.IssueToken(userID, role)
+	tok, _, err := s.IssueToken(userID, role, role == "admin")
 	return tok, err
 }
 

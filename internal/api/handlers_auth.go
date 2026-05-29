@@ -34,7 +34,7 @@ type UserAuthenticator interface {
 // TokenIssuer signs a JWT for (userID, role) and returns the token plus
 // its expiry. auth.Service satisfies this via IssueToken.
 type TokenIssuer interface {
-	IssueToken(userID uint, role string) (string, time.Time, error)
+	IssueToken(userID uint, role string, adminCapable bool) (string, time.Time, error)
 }
 
 // LoginRequest is the POST /auth/login body. Email + Password are
@@ -109,7 +109,12 @@ func (h *Handlers) Login(c *gin.Context) {
 		return
 	}
 
-	token, expiresAt, err := h.Tokens.IssueToken(u.ID, string(requestedRole))
+	// AdminCapable tracks the DB role, not the issued role: an admin who
+	// logs in with the default viewer role still gets a 24h session that
+	// can read admin-scoped views (e.g. the full instance fleet), while
+	// privileged writes still require an admin-role step-up token.
+	adminCapable := u.Role == store.UserRoleAdmin
+	token, expiresAt, err := h.Tokens.IssueToken(u.ID, string(requestedRole), adminCapable)
 	if err != nil {
 		writeError(c, http.StatusInternalServerError, err)
 		return
