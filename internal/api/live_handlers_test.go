@@ -48,6 +48,15 @@ func (f *fakeExecutionLister) ListExecutionsForOrders(_ context.Context, ids []s
 	return f.rows, f.err
 }
 
+type fakePriceReader struct {
+	k   *store.KLine
+	err error
+}
+
+func (f *fakePriceReader) LatestClose(_ context.Context, _, _ string) (*store.KLine, error) {
+	return f.k, f.err
+}
+
 func liveJSON(t *testing.T, body []byte) InstanceLiveResponse {
 	t.Helper()
 	var out InstanceLiveResponse
@@ -152,6 +161,7 @@ func TestGetInstanceLive(t *testing.T) {
 		trades     []store.TradeRecord
 		tradesErr  error
 		executions *fakeExecutionLister // nil → collaborator not wired
+		prices     *fakePriceReader     // nil → collaborator not wired
 		wantCode   int
 		check      func(t *testing.T, resp InstanceLiveResponse, trades *fakeTradeLister)
 	}{
@@ -271,6 +281,58 @@ func TestGetInstanceLive(t *testing.T) {
 			executions: &fakeExecutionLister{err: gorm.ErrInvalidDB},
 			wantCode:   http.StatusInternalServerError,
 		},
+		{
+			name: "equity marked to market (Cold excluded)", role: store.UserRoleAdmin, userID: 1,
+			seed: true,
+			portfolio: &store.PortfolioState{
+				DeadBTC: 0.3, FloatBTC: 0.2, ColdSealedBTC: 1.0, USDT: 100, NowMs: 5,
+			},
+			prices:   &fakePriceReader{k: &store.KLine{Close: 60000, OpenTime: 999}},
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp InstanceLiveResponse, _ *fakeTradeLister) {
+				// (0.3+0.2)*60000 + 100 = 30100; the 1.0 ColdSealedBTC
+				// must NOT be counted (would push it to 90100).
+				if resp.Portfolio == nil || resp.Portfolio.Equity == nil {
+					t.Fatalf("equity missing: %+v", resp.Portfolio)
+				}
+				if *resp.Portfolio.Equity != 30100 {
+					t.Errorf("equity = %v, want 30100 (Cold excluded)", *resp.Portfolio.Equity)
+				}
+				if resp.Portfolio.MarkPrice == nil || *resp.Portfolio.MarkPrice != 60000 {
+					t.Errorf("mark_price = %v, want 60000", resp.Portfolio.MarkPrice)
+				}
+				if resp.Portfolio.MarkPriceMs != 999 {
+					t.Errorf("mark_price_ms = %d, want 999", resp.Portfolio.MarkPriceMs)
+				}
+			},
+		},
+		{
+			name: "no bar: equity omitted", role: store.UserRoleAdmin, userID: 1,
+			seed: true, portfolio: samplePortfolio,
+			prices:   &fakePriceReader{k: nil},
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp InstanceLiveResponse, _ *fakeTradeLister) {
+				if resp.Portfolio == nil || resp.Portfolio.Equity != nil {
+					t.Errorf("equity = %v, want nil (no bar)", resp.Portfolio.Equity)
+				}
+			},
+		},
+		{
+			name: "no PriceReader: equity omitted", role: store.UserRoleAdmin, userID: 1,
+			seed: true, portfolio: samplePortfolio, prices: nil,
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp InstanceLiveResponse, _ *fakeTradeLister) {
+				if resp.Portfolio == nil || resp.Portfolio.Equity != nil {
+					t.Errorf("equity = %v, want nil (collaborator unwired)", resp.Portfolio.Equity)
+				}
+			},
+		},
+		{
+			name: "price read error → 500", role: store.UserRoleAdmin, userID: 1,
+			seed: true, portfolio: samplePortfolio,
+			prices:   &fakePriceReader{err: gorm.ErrInvalidDB},
+			wantCode: http.StatusInternalServerError,
+		},
 	}
 
 	for _, c := range cases {
@@ -294,6 +356,9 @@ func TestGetInstanceLive(t *testing.T) {
 			}
 			if c.executions != nil {
 				h.Executions = c.executions
+			}
+			if c.prices != nil {
+				h.Prices = c.prices
 			}
 			r := withClaimsHandlers(h, &auth.Claims{UserID: c.userID, Role: string(c.role)})
 

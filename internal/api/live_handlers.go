@@ -64,6 +64,19 @@ type ExecutionLister interface {
 	ListExecutionsForOrders(ctx context.Context, clientOrderIDs []string) ([]store.SpotExecution, error)
 }
 
+// PriceReader fetches the latest stored bar for marking holdings to
+// market. Backed by KLineRepo.LatestClose. Nil-skippable: when nil (or
+// no bar found, or no portfolio) /live omits the equity fields.
+type PriceReader interface {
+	LatestClose(ctx context.Context, symbol, interval string) (*store.KLine, error)
+}
+
+// liveMarkInterval is the kline interval used to mark live holdings to
+// market. Hardcoded 1m to match the live tick interval (see
+// instance/strategy_resolver.go barIntervalMs — the strategy only ever
+// sees 1m bars). Multi-interval is Phase 9+ work.
+const liveMarkInterval = "1m"
+
 // ListInstances: GET /api/v1/instances. Returns every live instance the
 // caller may view (own instances for viewer/operator; all for admin).
 func (h *Handlers) ListInstances(c *gin.Context) {
@@ -122,6 +135,23 @@ func (h *Handlers) GetInstanceLive(c *gin.Context) {
 				USDT:                 ps.USDT,
 				NowMs:                ps.NowMs,
 				LastProcessedBarTime: ps.LastProcessedBarTime,
+			}
+			// Mark holdings to market (Tier M). Equity excludes
+			// ColdSealedBTC, matching the strategy NAV formula
+			// (sigmoid_v1 step.go: (DeadBTC+FloatBTC)*price + USDT).
+			// Omitted when no price is available.
+			if h.Prices != nil {
+				k, err := h.Prices.LatestClose(c.Request.Context(), inst.Pair, liveMarkInterval)
+				if err != nil {
+					writeError(c, http.StatusInternalServerError, err)
+					return
+				}
+				if k != nil {
+					equity := (ps.DeadBTC+ps.FloatBTC)*k.Close + ps.USDT
+					resp.Portfolio.Equity = &equity
+					resp.Portfolio.MarkPrice = &k.Close
+					resp.Portfolio.MarkPriceMs = k.OpenTime
+				}
 			}
 		}
 	}
@@ -213,6 +243,9 @@ type InstanceListResponse struct {
 }
 
 // PortfolioSnapshotView is the latest persisted portfolio_states row.
+// Equity/MarkPrice are populated only when a mark price is available
+// (Tier M); equity = (DeadBTC+FloatBTC)*MarkPrice + USDT, ColdSealedBTC
+// excluded per the strategy NAV formula.
 type PortfolioSnapshotView struct {
 	DeadBTC              float64 `json:"dead_btc"`
 	FloatBTC             float64 `json:"float_btc"`
@@ -220,6 +253,10 @@ type PortfolioSnapshotView struct {
 	USDT                 float64 `json:"usdt"`
 	NowMs                int64   `json:"now_ms"`
 	LastProcessedBarTime int64   `json:"last_processed_bar_time"`
+
+	Equity      *float64 `json:"equity,omitempty"`
+	MarkPrice   *float64 `json:"mark_price,omitempty"`
+	MarkPriceMs int64    `json:"mark_price_ms,omitempty"`
 }
 
 // ConnectionHealth is the Agent's live WS presence as seen by the Hub.

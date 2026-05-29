@@ -208,6 +208,9 @@ type Handlers struct {
 	// Executions folds SpotExecution fill detail into /live's trade
 	// tail. Nil-skippable: when nil, recent_trades omit `fills`.
 	Executions ExecutionLister
+	// Prices marks /live holdings to market (equity). Nil-skippable:
+	// when nil (or no bar), the equity fields are omitted.
+	Prices PriceReader
 
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests

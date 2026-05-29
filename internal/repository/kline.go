@@ -7,6 +7,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"gorm.io/gorm"
 
@@ -58,4 +59,24 @@ func (r *KLineRepo) Coverage(ctx context.Context, symbol, interval string) ([]Co
 		return nil, err
 	}
 	return rows, nil
+}
+
+// LatestClose returns the most-recent stored bar for (symbol, interval),
+// used by the live-monitor /live snapshot to mark holdings to market.
+// Returns (nil, nil) when no bar exists — the caller then omits equity
+// rather than treating absence as an error.
+func (r *KLineRepo) LatestClose(ctx context.Context, symbol, interval string) (*store.KLine, error) {
+	var k store.KLine
+	err := r.db.WithContext(ctx).
+		Where("symbol = ? AND interval = ?", symbol, interval).
+		Order("open_time DESC").
+		Limit(1).
+		First(&k).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &k, nil
 }
