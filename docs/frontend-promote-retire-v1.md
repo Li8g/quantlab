@@ -135,7 +135,7 @@ AppShell                 nav + AuthContext + token 过期处理
 
 ## 9. 不在本计划
 
-- **Live Monitor(场景②)** —— 独立战役;已知拖出 3 个后端前置:缺 `GET /instances` list 端点、无浏览器实时推送通道(`/ws/agent` 是 SaaS↔Agent 非 SaaS↔浏览器)、Ack/OrderUpdate 未持久化(`connection.go:280` 仅 log)。单独规划。
+- **Live Monitor(场景②)** —— 独立战役,单独规划。[更正 2026-05-29] 后端前置比初判小得多:仅缺 `GET /instances` list 端点(repo `ListLive` 已有);浏览器实时推送可用轮询 MVP 绕开(cron tick 本就 1min 粒度)。Ack/OrderUpdate **早已持久化**(`cmd/saas/agentmsg.go`,`connection.go:280` 仅 log+触发 hook,hook 真写库)—— 初判"未持久化"有误。
 - **分析场景原生化** —— 永久留给 Optuna,只外链。
 - **`/data/import` UI** —— 见 [[phase9-data-import-v1]],绑定更后期。
 - **图表自建 / 替换 QuantStats** —— 短期 iframe。
