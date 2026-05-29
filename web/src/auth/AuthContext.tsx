@@ -58,6 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await apiFetch<LoginResponse>('/auth/login', {
         method: 'POST',
         body: { email, password, role },
+        skipUnauthorizedHandler: true,
       })
       const next: AuthState = {
         token: res.token,

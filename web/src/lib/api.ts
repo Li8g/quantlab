@@ -25,6 +25,10 @@ export interface ApiOpts {
   method?: string
   body?: unknown
   token?: string | null
+  // Credential-check calls (login, sudo step-up) get a 401 on a wrong
+  // password — that's not an expired session, so they opt out of the
+  // global logout handler and surface the error to the caller instead.
+  skipUnauthorizedHandler?: boolean
 }
 
 export async function apiFetch<T>(path: string, opts: ApiOpts = {}): Promise<T> {
@@ -38,7 +42,7 @@ export async function apiFetch<T>(path: string, opts: ApiOpts = {}): Promise<T> 
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   })
 
-  if (res.status === 401) onUnauthorized?.()
+  if (res.status === 401 && !opts.skipUnauthorizedHandler) onUnauthorized?.()
 
   if (!res.ok) {
     let msg = `HTTP ${res.status}`

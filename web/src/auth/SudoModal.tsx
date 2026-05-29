@@ -2,20 +2,23 @@ import { useState, type FormEvent } from 'react'
 import { apiFetch, ApiError } from '../lib/api'
 import type { LoginResponse } from '../lib/types'
 
-// Sudo-style step-up (docs/frontend-promote-retire-v1.md §3): promote and
-// retire are admin-only. Rather than hold a long-lived admin token, we
-// re-authenticate for a short-TTL admin token right before the action,
-// pass it to onConfirm, and let it fall out of scope immediately after.
-// The standing viewer session in AuthContext is untouched.
+// Sudo-style step-up (docs/frontend-promote-retire-v1.md §3): privileged
+// actions don't ride the standing viewer session. Rather than hold a
+// long-lived elevated token, we re-authenticate for a fresh token at the
+// requested role right before the action, pass it to onConfirm, and let
+// it fall out of scope immediately after. role defaults to admin
+// (promote/retire); live-monitor interventions pass "operator".
 export function SudoModal({
   action,
   email,
+  role = 'admin',
   onConfirm,
   onClose,
 }: {
   action: string
   email: string
-  onConfirm: (adminToken: string, note: string) => Promise<void>
+  role?: 'operator' | 'admin'
+  onConfirm: (token: string, note: string) => Promise<void>
   onClose: () => void
 }) {
   const [password, setPassword] = useState('')
@@ -28,16 +31,18 @@ export function SudoModal({
     setError(null)
     setBusy(true)
     try {
-      // Step up to a short-TTL admin token, then run the action with it.
+      // Step up to a fresh token at the requested role, then run the
+      // action with it.
       const res = await apiFetch<LoginResponse>('/auth/login', {
         method: 'POST',
-        body: { email, password, role: 'admin' },
+        body: { email, password, role },
+        skipUnauthorizedHandler: true,
       })
       await onConfirm(res.token, note.trim())
       onClose()
     } catch (err) {
       if (err instanceof ApiError && err.status === 400)
-        setError('Your account lacks admin permission.')
+        setError(`Your account lacks ${role} permission.`)
       else if (err instanceof ApiError && err.status === 401)
         setError('Wrong password.')
       else setError(err instanceof Error ? err.message : 'action failed')
@@ -54,7 +59,7 @@ export function SudoModal({
       >
         <div>
           <h2 className="text-base font-semibold text-slate-800">
-            Admin confirmation
+            {role === 'admin' ? 'Admin' : 'Operator'} confirmation
           </h2>
           <p className="mt-1 text-sm text-slate-500">{action}</p>
         </div>

@@ -1,7 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { useAuth } from '../auth/AuthContext'
+import { SudoModal } from '../auth/SudoModal'
 import { apiFetch, ApiError } from '../lib/api'
 import { formatAge, formatBtc, formatMs, formatNum, formatUsd } from '../lib/format'
 import {
@@ -10,9 +12,14 @@ import {
 } from '../components/StatusBadge'
 import type {
   InstanceLiveResponse,
+  InstanceStatus,
   PortfolioSnapshotView,
   TradeRecordSummary,
 } from '../lib/types'
+
+// The three intervention verbs (場景② F2.3). All require operator+, so
+// each routes through a SudoModal step-up before hitting the endpoint.
+type ActionVerb = 'start' | 'stop' | 'deploy'
 
 // F2.2: per-instance live snapshot. Polled every 3s — the detail view is
 // the one place a tighter cadence pays off; the underlying tick is 1m so
@@ -20,6 +27,12 @@ import type {
 export default function InstanceLivePage() {
   const { instanceId = '' } = useParams()
   const { auth } = useAuth()
+  const queryClient = useQueryClient()
+
+  // Pending intervention (null = no modal). desc is the human-readable
+  // action line shown in the step-up modal.
+  const [pending, setPending] = useState<{ verb: ActionVerb; desc: string } | null>(null)
+  const [deployId, setDeployId] = useState('')
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['instance-live', instanceId],
@@ -46,6 +59,17 @@ export default function InstanceLivePage() {
 
   const { instance, portfolio, connection, recent_trades } = data
 
+  function requestAction(verb: ActionVerb) {
+    const tag = `${instance.strategy_id} · ${instance.pair}`
+    const desc =
+      verb === 'start'
+        ? `Start live trading on ${tag}.`
+        : verb === 'stop'
+          ? `Pause ${tag}.`
+          : `Deploy champion ${deployId.trim()} to ${tag}.`
+    setPending({ verb, desc })
+  }
+
   return (
     <div>
       <BackLink />
@@ -65,13 +89,120 @@ export default function InstanceLivePage() {
         </span>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <ControlsCard
+        status={instance.status}
+        activeChampionId={instance.active_champion_id}
+        deployId={deployId}
+        setDeployId={setDeployId}
+        onAct={requestAction}
+      />
+
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
         <EquityCard portfolio={portfolio} />
         <HoldingsCard portfolio={portfolio} />
       </div>
 
       <TradesCard trades={recent_trades} />
+
+      {pending && auth && (
+        <SudoModal
+          role="operator"
+          action={pending.desc}
+          email={auth.email}
+          onClose={() => setPending(null)}
+          onConfirm={async (token) => {
+            const base = `/instances/${instanceId}`
+            if (pending.verb === 'start') {
+              await apiFetch(`${base}/start`, { method: 'POST', token })
+            } else if (pending.verb === 'stop') {
+              await apiFetch(`${base}/stop`, { method: 'POST', token })
+            } else {
+              await apiFetch(`${base}/deploy-champion`, {
+                method: 'POST',
+                token,
+                body: { challenger_id: deployId.trim() },
+              })
+              setDeployId('')
+            }
+            await queryClient.invalidateQueries({
+              queryKey: ['instance-live', instanceId],
+            })
+            await queryClient.invalidateQueries({ queryKey: ['instances'] })
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+// Controls (F2.3): Start (go live) / Pause / Deploy champion. Buttons are
+// status-aware — a retired instance refuses every transition (backend
+// 422), and start/pause toggle on the live state. Visible to all; the
+// operator step-up at click time is the real gate.
+function ControlsCard({
+  status,
+  activeChampionId,
+  deployId,
+  setDeployId,
+  onAct,
+}: {
+  status: InstanceStatus
+  activeChampionId?: string
+  deployId: string
+  setDeployId: (v: string) => void
+  onAct: (verb: ActionVerb) => void
+}) {
+  const btn =
+    'rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent'
+  return (
+    <Card title="Controls">
+      {status === 'retired' ? (
+        <p className="text-sm text-slate-400">
+          Instance retired — no actions available.
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            className={btn}
+            disabled={status === 'live'}
+            onClick={() => onAct('start')}
+          >
+            Start
+          </button>
+          <button
+            type="button"
+            className={btn}
+            disabled={status !== 'live'}
+            onClick={() => onAct('stop')}
+          >
+            Pause
+          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <input
+              value={deployId}
+              onChange={(e) => setDeployId(e.target.value)}
+              placeholder="challenger_id"
+              className="w-64 rounded-md border border-slate-300 px-2 py-1.5 font-mono text-xs focus:border-slate-500 focus:outline-none"
+            />
+            <button
+              type="button"
+              className={btn}
+              disabled={!deployId.trim()}
+              onClick={() => onAct('deploy')}
+            >
+              Deploy champion
+            </button>
+          </div>
+        </div>
+      )}
+      {activeChampionId && (
+        <p className="mt-3 text-xs text-slate-400">
+          active champion:{' '}
+          <span className="font-mono text-slate-500">{activeChampionId}</span>
+        </p>
+      )}
+    </Card>
   )
 }
 
