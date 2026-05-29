@@ -7,8 +7,8 @@ import (
 
 	"quantlab/internal/domain"
 	"quantlab/internal/resultpkg"
-	"quantlab/internal/strategy"
 	"quantlab/internal/strategies/sigmoid_v1"
+	"quantlab/internal/strategy"
 )
 
 // stubStrategy is the smallest EvolvableStrategy that satisfies the
@@ -16,15 +16,15 @@ import (
 // just stores the value and reads StrategyID back.
 type stubStrategy struct{ id string }
 
-func (s *stubStrategy) StrategyID() string             { return s.id }
-func (s *stubStrategy) Segments() []domain.SegmentInfo { return nil }
-func (s *stubStrategy) Sample(*rand.Rand) domain.Gene  { return nil }
-func (s *stubStrategy) Clamp(g domain.Gene) domain.Gene { return g }
-func (s *stubStrategy) Validate(domain.Gene) error     { return nil }
-func (s *stubStrategy) Fingerprint(domain.Gene) string { return "stub" }
-func (s *stubStrategy) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene { return p1 }
+func (s *stubStrategy) StrategyID() string                                           { return s.id }
+func (s *stubStrategy) Segments() []domain.SegmentInfo                               { return nil }
+func (s *stubStrategy) Sample(*rand.Rand) domain.Gene                                { return nil }
+func (s *stubStrategy) Clamp(g domain.Gene) domain.Gene                              { return g }
+func (s *stubStrategy) Validate(domain.Gene) error                                   { return nil }
+func (s *stubStrategy) Fingerprint(domain.Gene) string                               { return "stub" }
+func (s *stubStrategy) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene        { return p1 }
 func (s *stubStrategy) Mutate(g domain.Gene, _, _ float64, _ *rand.Rand) domain.Gene { return g }
-func (s *stubStrategy) MinEvalBars() int { return 1 }
+func (s *stubStrategy) MinEvalBars() int                                             { return 1 }
 func (s *stubStrategy) NewAdapter(*domain.EvaluablePlan) (strategy.Adapter, error) {
 	return nil, nil
 }

@@ -247,8 +247,8 @@ func TestHandshake_AuthTimeout(t *testing.T) {
 	hub := New(svc, Config{
 		Clock:        newFakeClock(time.Unix(1700000000, 0)),
 		PingInterval: 50 * time.Millisecond, PongTimeout: 50 * time.Millisecond,
-		PingMisses: 3,
-		AuthTimeout: 100 * time.Millisecond, // very short
+		PingMisses:       3,
+		AuthTimeout:      100 * time.Millisecond, // very short
 		StateSyncTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second,
 		MsgIDFn: stableMsgID(),
 		NowFn:   func() time.Time { return time.Unix(1700000000, 0) },

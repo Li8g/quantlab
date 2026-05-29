@@ -3,19 +3,19 @@
 //
 // Phase 4 is split across four commits matching the spec:
 //
-//   4a  this file + chromosome.go: GA-contract verbs (Segments, Sample,
-//       Clamp, Validate, Crossover, Mutate, Fingerprint, MinEvalBars,
-//       StrategyID). The remaining five verbs (Evaluate, ReviewBacktest,
-//       EncodeResult, DecodeElite, NewAdapter) are stubbed and return
-//       errPhase4Pending so callers learn loudly which milestone is
-//       gating them.
+//	4a  this file + chromosome.go: GA-contract verbs (Segments, Sample,
+//	    Clamp, Validate, Crossover, Mutate, Fingerprint, MinEvalBars,
+//	    StrategyID). The remaining five verbs (Evaluate, ReviewBacktest,
+//	    EncodeResult, DecodeElite, NewAdapter) are stubbed and return
+//	    errPhase4Pending so callers learn loudly which milestone is
+//	    gating them.
 //
-//   4b  pure-function math: market state, signal synthesis, sigmoid, macro
-//       engine, deadBTC release.
+//	4b  pure-function math: market state, signal synthesis, sigmoid, macro
+//	    engine, deadBTC release.
 //
-//   4c  Step() integration + the four remaining encoding verbs.
+//	4c  Step() integration + the four remaining encoding verbs.
 //
-//   4d  Adapter (Reset/Evaluate/Close) + asset-accounting simulator.
+//	4d  Adapter (Reset/Evaluate/Close) + asset-accounting simulator.
 //
 // CLAUDE.md "two-layer hard boundary": engine code only sees the verbs
 // declared in internal/strategy.EvolvableStrategy. The Chromosome type
@@ -112,9 +112,9 @@ func (s *Sigmoid) Sample(rng *rand.Rand) domain.Gene {
 
 // Clamp implements spec §4.3 three-step repair:
 //
-//	1. Bound-clip every dimension to [lo, hi].
-//	2. feature_periods: round to int, then enforce short < long.
-//	3. No cross-segment constraints in v1.
+//  1. Bound-clip every dimension to [lo, hi].
+//  2. feature_periods: round to int, then enforce short < long.
+//  3. No cross-segment constraints in v1.
 //
 // Result is guaranteed to pass Validate (the engine relies on
 // Validate(Clamp(g)) == nil).

@@ -1,9 +1,9 @@
 // queries.go — read-only Binance Spot REST endpoints used by the
 // agent.Exchange implementation. Step 2 of the adapter build:
 //
-//   Ping        — unsigned /api/v3/ping        (Reachable health probe)
-//   BookTicker  — unsigned /api/v3/ticker/bookTicker  (best bid/ask for MarketRef)
-//   Account     — signed   /api/v3/account     (balances → []agent.Position)
+//	Ping        — unsigned /api/v3/ping        (Reachable health probe)
+//	BookTicker  — unsigned /api/v3/ticker/bookTicker  (best bid/ask for MarketRef)
+//	Account     — signed   /api/v3/account     (balances → []agent.Position)
 //
 // Order placement (POST /api/v3/order) lives in order.go (Step 3).
 package binance

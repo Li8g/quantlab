@@ -36,9 +36,9 @@ func TestIntervalMs(t *testing.T) {
 
 func TestMonthRange(t *testing.T) {
 	cases := []struct {
-		name             string
-		start, end       time.Time
-		want             []yearMonth
+		name       string
+		start, end time.Time
+		want       []yearMonth
 	}{
 		{
 			"single month",

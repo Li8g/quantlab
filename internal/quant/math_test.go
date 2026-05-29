@@ -158,9 +158,9 @@ func TestRoundToUSDT(t *testing.T) {
 	// integer boundary or a clear half — avoids float64-literal precision
 	// noise (e.g. 1.123456785 stores as 1.1234567849999...).
 	cases := []struct{ in, want float64 }{
-		{1.12345678, 1.12345678},      // already at precision
-		{1.123456784, 1.12345678},     // rounds down
-		{1.123456786, 1.12345679},     // rounds up
+		{1.12345678, 1.12345678},  // already at precision
+		{1.123456784, 1.12345678}, // rounds down
+		{1.123456786, 1.12345679}, // rounds up
 		{0, 0},
 		{-1.123456784, -1.12345678},
 		{-1.123456786, -1.12345679},

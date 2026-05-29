@@ -5,14 +5,14 @@
 // Goroutine model: one persistent goroutine driven by Exchange.Start.
 // Lifecycle per session:
 //
-//	1. Client.CreateListenKey()  (REST)
-//	2. wsconn.Dial(streamBaseURL + "/ws/" + listenKey)
-//	3. spawn keepalive ticker — Client.KeepaliveListenKey() every
-//	   UDSKeepaliveInterval (default 30min)
-//	4. read frames; decode `e` field; dispatch executionReport →
-//	   callback registered via Subscribe
-//	5. on disconnect / listenKeyExpired event / decode error → close
-//	   conn + sleep with exponential backoff + go to step 1
+//  1. Client.CreateListenKey()  (REST)
+//  2. wsconn.Dial(streamBaseURL + "/ws/" + listenKey)
+//  3. spawn keepalive ticker — Client.KeepaliveListenKey() every
+//     UDSKeepaliveInterval (default 30min)
+//  4. read frames; decode `e` field; dispatch executionReport →
+//     callback registered via Subscribe
+//  5. on disconnect / listenKeyExpired event / decode error → close
+//     conn + sleep with exponential backoff + go to step 1
 //
 // REFACTOR HOOK — when adding outboundAccountPosition or balanceUpdate
 // streams, decode them in the same `switch eventType` block. Surface

@@ -131,7 +131,7 @@ func TestListTasks_HappyPath(t *testing.T) {
 	created := time.UnixMilli(1700000000000)
 	f := &fakeTaskLister{rows: []store.EvolutionTask{
 		{
-			Model: gorm.Model{CreatedAt: created},
+			Model:  gorm.Model{CreatedAt: created},
 			TaskID: "t-1", StrategyID: "sigmoid_v1", Pair: "BTCUSDT",
 			Interval: "1h", Status: resultpkg.TaskStatusSucceeded,
 		},
@@ -204,13 +204,13 @@ func TestListChampionHistory_HappyPath(t *testing.T) {
 	retiredBy := "admin@example"
 	f := &fakeChampionHistory{listRows: []store.ChampionHistory{
 		{
-			Model: gorm.Model{ID: 1},
+			Model:      gorm.Model{ID: 1},
 			StrategyID: "sigmoid_v1", Pair: "BTCUSDT",
 			ChallengerID: "c-001", PromotedAt: promoted,
 			RetiredAt: &retired, RetiredBy: &retiredBy,
 		},
 		{
-			Model: gorm.Model{ID: 2},
+			Model:      gorm.Model{ID: 2},
 			StrategyID: "sigmoid_v1", Pair: "BTCUSDT",
 			ChallengerID: "c-002", PromotedAt: retired,
 		},

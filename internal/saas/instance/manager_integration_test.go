@@ -240,10 +240,10 @@ func (s *itStrategy) MinEvalBars() int   { return 5 }
 func (s *itStrategy) DecodeElite(_ resultpkg.ChampionGenePayload) (domain.Gene, error) {
 	return domain.Gene{0.1, 0.2}, nil
 }
-func (s *itStrategy) Segments() []domain.SegmentInfo                    { panic("not used") }
-func (s *itStrategy) Sample(_ *rand.Rand) domain.Gene                   { panic("not used") }
-func (s *itStrategy) Clamp(g domain.Gene) domain.Gene                   { return g }
-func (s *itStrategy) Validate(_ domain.Gene) error                      { return nil }
+func (s *itStrategy) Segments() []domain.SegmentInfo                        { panic("not used") }
+func (s *itStrategy) Sample(_ *rand.Rand) domain.Gene                       { panic("not used") }
+func (s *itStrategy) Clamp(g domain.Gene) domain.Gene                       { return g }
+func (s *itStrategy) Validate(_ domain.Gene) error                          { return nil }
 func (s *itStrategy) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene { return p1 }
 func (s *itStrategy) Mutate(g domain.Gene, _, _ float64, _ *rand.Rand) domain.Gene {
 	return g

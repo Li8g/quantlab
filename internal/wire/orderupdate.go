@@ -22,12 +22,12 @@ const (
 //
 // For sells the sign convention flips: positive bps = worse than reference.
 type Fill struct {
-	FillQuantityDecimal   string  `json:"fill_quantity_decimal"`
-	FillPriceDecimal      string  `json:"fill_price_decimal"`
-	FillFeeAsset          string  `json:"fill_fee_asset"`
-	FillFeeAmountDecimal  string  `json:"fill_fee_amount_decimal"`
-	FilledAtExchangeMs    int64   `json:"filled_at_exchange_ms"`
-	ActualSlippageBps     float64 `json:"actual_slippage_bps"`
+	FillQuantityDecimal  string  `json:"fill_quantity_decimal"`
+	FillPriceDecimal     string  `json:"fill_price_decimal"`
+	FillFeeAsset         string  `json:"fill_fee_asset"`
+	FillFeeAmountDecimal string  `json:"fill_fee_amount_decimal"`
+	FilledAtExchangeMs   int64   `json:"filled_at_exchange_ms"`
+	ActualSlippageBps    float64 `json:"actual_slippage_bps"`
 
 	// ClientOrderID/ExchangeOrderID are only populated in delta_report
 	// since_last_fills, where individual fills need to be associated
@@ -41,9 +41,9 @@ type Fill struct {
 // At least one Fill on partial_filled / filled; zero Fills on cancelled /
 // rejected.
 type OrderUpdate struct {
-	ClientOrderID                    string      `json:"client_order_id"`
-	ExchangeOrderID                  string      `json:"exchange_order_id"`
-	Status                           OrderStatus `json:"status"`
-	Fills                            []Fill      `json:"fills"`
-	CumulativeFilledQuantityDecimal  string      `json:"cumulative_filled_quantity_decimal"`
+	ClientOrderID                   string      `json:"client_order_id"`
+	ExchangeOrderID                 string      `json:"exchange_order_id"`
+	Status                          OrderStatus `json:"status"`
+	Fills                           []Fill      `json:"fills"`
+	CumulativeFilledQuantityDecimal string      `json:"cumulative_filled_quantity_decimal"`
 }

@@ -8,8 +8,10 @@ import (
 
 func f64(v float64) *float64 { return &v }
 
-func scoreVal(v float64) resultpkg.ScoreTotal { return resultpkg.ScoreTotal{Fatal: false, Value: f64(v)} }
-func scoreFatal() resultpkg.ScoreTotal        { return resultpkg.ScoreTotal{Fatal: true, Value: nil} }
+func scoreVal(v float64) resultpkg.ScoreTotal {
+	return resultpkg.ScoreTotal{Fatal: false, Value: f64(v)}
+}
+func scoreFatal() resultpkg.ScoreTotal { return resultpkg.ScoreTotal{Fatal: true, Value: nil} }
 
 // TestCompareFitnessNilSafe is priority test #11.
 // Verifies CompareFitness handles all Fatal/Normal combinations without

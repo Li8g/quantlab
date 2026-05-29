@@ -232,8 +232,8 @@ func TestStep_MicroDustForcedThroughOnWedgeBreak(t *testing.T) {
 	c.EMAShortPeriod = 5
 	c.MAVLongPeriod = 8
 	c.MAVShortPeriod = 4
-	c.QuietThreshold = 0.5 // ensure active
-	c.Beta = 5             // strong sigmoid response so a small negative
+	c.QuietThreshold = 0.5         // ensure active
+	c.Beta = 5                     // strong sigmoid response so a small negative
 	c.A1, c.A2, c.A3 = -0.05, 0, 0 // small negative signal → push BTC weight up
 	gene := EncodeChromosome(c)
 

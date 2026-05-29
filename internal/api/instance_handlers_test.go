@@ -267,7 +267,7 @@ func TestDeployChampion_SetsActiveChampID(t *testing.T) {
 func TestPromoteRetire_AdminGated(t *testing.T) {
 	authSvc := testAuthService(t)
 	h := &Handlers{
-		Champions: &fakeChampions{},
+		Champions:    &fakeChampions{},
 		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireAdmin: middleware.RequireRole(store.UserRoleAdmin),
 	}

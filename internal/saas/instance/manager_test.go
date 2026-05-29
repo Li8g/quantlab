@@ -34,11 +34,11 @@ func (f *fakeInstanceStore) SetLastTickWallTime(_ context.Context, id string, t 
 }
 
 type fakePortfolioStore struct {
-	latest   *store.PortfolioState
-	appended []*store.PortfolioState
+	latest    *store.PortfolioState
+	appended  []*store.PortfolioState
 	latestErr error
 	appendErr error
-	mu       sync.Mutex
+	mu        sync.Mutex
 }
 
 func (f *fakePortfolioStore) Latest(_ context.Context, _ string) (*store.PortfolioState, error) {
@@ -114,7 +114,9 @@ func (s *fakeStrategy) MinEvalBars() int   { return 5 }
 func (s *fakeStrategy) DecodeElite(_ resultpkg.ChampionGenePayload) (domain.Gene, error) {
 	return domain.Gene{0.1, 0.2}, nil
 }
-func (s *fakeStrategy) Segments() []domain.SegmentInfo { panic("fakeStrategy.Segments not used in Tick tests") }
+func (s *fakeStrategy) Segments() []domain.SegmentInfo {
+	panic("fakeStrategy.Segments not used in Tick tests")
+}
 func (s *fakeStrategy) Sample(_ *rand.Rand) domain.Gene { panic("fakeStrategy.Sample") }
 func (s *fakeStrategy) Clamp(g domain.Gene) domain.Gene { return g }
 func (s *fakeStrategy) Validate(_ domain.Gene) error    { return nil }
@@ -137,10 +139,10 @@ func (s *fakeStrategy) NewAdapter(_ *domain.EvaluablePlan) (strategy.Adapter, er
 }
 
 type fakeResolver struct {
-	strat   *fakeStrategy
-	estrat  strategy.EvolvableStrategy
-	rstrat  strategy.RuntimeStrategy
-	err     error
+	strat  *fakeStrategy
+	estrat strategy.EvolvableStrategy
+	rstrat strategy.RuntimeStrategy
+	err    error
 }
 
 func (r *fakeResolver) Resolve(_ string) (strategy.EvolvableStrategy, strategy.RuntimeStrategy, error) {

@@ -14,11 +14,11 @@ import (
 // docs/saas-ws-protocol-v1.md §5.10):
 //
 //   - OrderStatusPartialFilled — a new Fill is included; cumulative
-//                                below ordered quantity.
+//     below ordered quantity.
 //   - OrderStatusFilled        — terminal; cumulative >= ordered.
 //   - OrderStatusCancelled     — order removed without (further) fills.
 //   - OrderStatusRejected      — exchange rejected post-acceptance
-//                                (rare; most surface synchronously).
+//     (rare; most surface synchronously).
 //
 // Fill is non-nil only when Status is partial_filled or filled AND
 // a new execution is carried by this event. A NEW→CANCELED transition

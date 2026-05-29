@@ -323,7 +323,7 @@ func TestParseKlinesJSON_RejectsCorrupt(t *testing.T) {
 	cases := []string{
 		`not json`,
 		`{}`,
-		`[[1,2,3]]`,         // too few cols
+		`[[1,2,3]]`, // too few cols
 		`[["NOT_A_NUMBER","x","y","z","w","v",1,"q",1,"a","b","0"]]`, // bad number
 	}
 	for i, body := range cases {

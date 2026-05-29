@@ -32,9 +32,9 @@ type SharpeStats = resultpkg.SharpeStats
 // Degenerate inputs:
 //   - len(returns) < 2  → ObservedSharpe = 0 (StdDev returns 0)
 //   - constant series   → StdDev = 0 → ObservedSharpe defaults to 0
-//                         (avoids 0/0 NaN propagation into DSR)
+//     (avoids 0/0 NaN propagation into DSR)
 //   - all-NaN inputs    → caller responsibility; this function
-//                         doesn't sanitise
+//     doesn't sanitise
 //
 // Skew + ExcessKurt use quant.Skewness / quant.ExcessKurtosis which
 // are biased moment estimators (g1 / g2 in standard notation).

@@ -29,12 +29,12 @@ import (
 // Config mirrors config.agent.yaml. Field tags match
 // docs/saas-ws-protocol-v1.md §8.1.
 type Config struct {
-	AgentID    string         `yaml:"agent_id"`
-	AccountID  string         `yaml:"account_id"`
-	SaaSURL    string         `yaml:"saas_url"`
-	SaaSToken  string         `yaml:"saas_token"`
-	Exchange   ExchangeConfig `yaml:"exchange"`
-	Log        LogConfig      `yaml:"log"`
+	AgentID     string            `yaml:"agent_id"`
+	AccountID   string            `yaml:"account_id"`
+	SaaSURL     string            `yaml:"saas_url"`
+	SaaSToken   string            `yaml:"saas_token"`
+	Exchange    ExchangeConfig    `yaml:"exchange"`
+	Log         LogConfig         `yaml:"log"`
 	Idempotency IdempotencyConfig `yaml:"idempotency"`
 }
 
@@ -53,8 +53,8 @@ type LogConfig struct {
 }
 
 type IdempotencyConfig struct {
-	DBPath         string `yaml:"db_path"`
-	RetentionDays  int    `yaml:"retention_days"`
+	DBPath        string `yaml:"db_path"`
+	RetentionDays int    `yaml:"retention_days"`
 }
 
 // LoadConfig reads and validates the YAML at path. Missing required

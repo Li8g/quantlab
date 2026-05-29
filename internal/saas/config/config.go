@@ -52,7 +52,7 @@ type DatabaseConfig struct {
 	User         string `yaml:"user"`
 	Password     string `yaml:"password"`
 	Database     string `yaml:"database"`
-	SSLMode      string `yaml:"ssl_mode"`       // disable / require / verify-full
+	SSLMode      string `yaml:"ssl_mode"` // disable / require / verify-full
 	MaxOpenConns int    `yaml:"max_open_conns"`
 	MaxIdleConns int    `yaml:"max_idle_conns"`
 }
@@ -87,9 +87,9 @@ type JWTConfig struct {
 }
 
 type ServerConfig struct {
-	HTTPListen      string `yaml:"http_listen"`       // ":8080"
-	WSListen        string `yaml:"ws_listen"`         // ":8081"
-	MetricsListen   string `yaml:"metrics_listen"`    // ":9090"
+	HTTPListen      string        `yaml:"http_listen"`    // ":8080"
+	WSListen        string        `yaml:"ws_listen"`      // ":8081"
+	MetricsListen   string        `yaml:"metrics_listen"` // ":9090"
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 }
 

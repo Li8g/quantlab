@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func f64(v float64) *float64 { return &v }
-func sp(s string) *string    { return &s }
+func f64(v float64) *float64      { return &v }
+func sp(s string) *string         { return &s }
 func skip(v SkippedBy) *SkippedBy { return &v }
 
 // TestCrucibleResultValidate_ThreeStateMutex covers the three SliceScore
@@ -207,7 +207,7 @@ func buildValidPackage() ChallengerResultPackage {
 			WindowScores: []CrucibleResult{
 				{Window: Window6M, Score: SliceScore{Fatal: false, Value: f64(1.0)}, BarsEvaluated: 1000},
 			},
-			ScoreTotal: ScoreTotal{Fatal: false, Value: f64(1.0)},
+			ScoreTotal:     ScoreTotal{Fatal: false, Value: f64(1.0)},
 			FrictionActual: FrictionActual{TakerFeeBPS: 10, SlippageBPS: 5},
 		},
 		Verification: VerificationLayer{

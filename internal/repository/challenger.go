@@ -92,7 +92,7 @@ func (r *ChallengerRepo) GetPackageBlob(ctx context.Context, challengerID string
 //
 // Field-by-field rationale:
 //   - Identity (ChallengerID, StrategyID, Pair) comes from the caller
-//     + pkg.Core.
+//   - pkg.Core.
 //   - Score fields lift from pkg.Evaluation.ScoreTotal; Fatal scores
 //     leave ScoreTotal.Value nil and the corresponding *float64
 //     columns nil too.

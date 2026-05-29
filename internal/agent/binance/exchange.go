@@ -1,11 +1,11 @@
 // exchange.go — Step 4 of the Binance adapter build. Wraps Client and
 // satisfies agent.Exchange:
 //
-//   Submit     — limit orders are rejected (v1 scope); market orders
-//                delegate to SubmitMarket.
-//   Positions  — delegates to Account.
-//   Reachable  — backed by an atomic.Bool that a background ping loop
-//                updates every PingInterval (default 30s).
+//	Submit     — limit orders are rejected (v1 scope); market orders
+//	             delegate to SubmitMarket.
+//	Positions  — delegates to Account.
+//	Reachable  — backed by an atomic.Bool that a background ping loop
+//	             updates every PingInterval (default 30s).
 //
 // Start(ctx) launches the ping goroutine; Close() (or cancelling the
 // ctx passed to Start) stops it. Both are idempotent.
@@ -109,9 +109,9 @@ type Exchange struct {
 	// uds is the User Data Stream runtime. nil when UDSDisabled. Even
 	// when nil, Subscribe is safe (records the callback for the
 	// hypothetical future Enable; ignored otherwise).
-	uds            *uds
-	pendingSubMu   sync.Mutex
-	pendingSubFn   func(agent.OrderEvent)
+	uds          *uds
+	pendingSubMu sync.Mutex
+	pendingSubFn func(agent.OrderEvent)
 
 	startOnce sync.Once
 	closeOnce sync.Once

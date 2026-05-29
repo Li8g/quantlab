@@ -30,14 +30,14 @@ import (
 // for a "show me the recent state" UX; caps bound payload size on
 // instances with long histories.
 const (
-	defaultTaskListLimit    = 50
-	maxTaskListLimit        = 200
-	defaultChampionHistory  = 50
-	maxChampionHistory      = 500
-	defaultGapsLimit        = 100
-	maxGapsLimit            = 1000
-	defaultInstanceTrades   = 100
-	maxInstanceTrades       = 1000
+	defaultTaskListLimit   = 50
+	maxTaskListLimit       = 200
+	defaultChampionHistory = 50
+	maxChampionHistory     = 500
+	defaultGapsLimit       = 100
+	maxGapsLimit           = 1000
+	defaultInstanceTrades  = 100
+	maxInstanceTrades      = 1000
 )
 
 // parseLimit reads ?limit=N. Empty / non-numeric falls back to def;

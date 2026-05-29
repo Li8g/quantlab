@@ -3,14 +3,14 @@
 // + §II-3.2 (five-layer package) + §I-3.13 (reproducibility metadata).
 //
 // Engine-side responsibility (per §M14):
-//   1. Build EvaluationLayer from the strategy's RawEvaluateResult +
-//      the engine's ScoreTotal.
-//   2. Compose ReproducibilityMetadata + GAConfigSnapshot from
-//      EngineConfig + a per-Epoch BuildContext (TaskID, audit-trail
-//      strings, plan/bars hashes).
-//   3. Hand all of the above to strategy.EncodeResult, which stamps
-//      core.StrategyID + ChampionGene + Promote.DecisionStatus =
-//      pending.
+//  1. Build EvaluationLayer from the strategy's RawEvaluateResult +
+//     the engine's ScoreTotal.
+//  2. Compose ReproducibilityMetadata + GAConfigSnapshot from
+//     EngineConfig + a per-Epoch BuildContext (TaskID, audit-trail
+//     strings, plan/bars hashes).
+//  3. Hand all of the above to strategy.EncodeResult, which stamps
+//     core.StrategyID + ChampionGene + Promote.DecisionStatus =
+//     pending.
 //
 // Verification + Diagnostics are emitted empty here. Each lights up
 // in later commits (5B-sharpe writes Verification.DSRSummary;

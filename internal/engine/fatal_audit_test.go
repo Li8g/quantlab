@@ -10,8 +10,8 @@ import (
 	"quantlab/internal/domain"
 	"quantlab/internal/engine"
 	"quantlab/internal/resultpkg"
-	"quantlab/internal/strategy"
 	"quantlab/internal/strategies/toy"
+	"quantlab/internal/strategy"
 )
 
 // fatalToy wraps toy.Toy but forces every Evaluate to return a Fatal
@@ -241,4 +241,3 @@ func TestFatalAudit_BuildContextPropagatesToDiagnostics(t *testing.T) {
 			len(pkg2.Diagnostics.FatalAuditSamples))
 	}
 }
-

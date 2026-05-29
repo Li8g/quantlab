@@ -23,8 +23,8 @@ type ExchangeOrder struct {
 
 // ExchangeSubmitResult is the outcome of one Submit call.
 type ExchangeSubmitResult struct {
-	ExchangeOrderID    string
-	AcceptedAtMs       int64
+	ExchangeOrderID string
+	AcceptedAtMs    int64
 
 	// MarketRef is the best bid/ask the exchange returned at submit
 	// time, used downstream to compute ActualSlippageBps. Zero for
@@ -49,9 +49,9 @@ type ExchangeFill struct {
 // Position is one row of the Exchange.Positions() snapshot — input to
 // wire.StateSyncResponse.Positions.
 type Position struct {
-	Symbol  string
-	Free    decimal.Decimal
-	Locked  decimal.Decimal
+	Symbol string
+	Free   decimal.Decimal
+	Locked decimal.Decimal
 }
 
 // Exchange is the v1 abstraction the Agent uses to talk to a real or

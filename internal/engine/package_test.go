@@ -20,11 +20,11 @@ type fakeEncodeStrategy struct {
 	id string
 }
 
-func (f *fakeEncodeStrategy) StrategyID() string                 { return f.id }
-func (f *fakeEncodeStrategy) Segments() []domain.SegmentInfo     { return nil }
-func (f *fakeEncodeStrategy) Sample(_ *rand.Rand) domain.Gene    { return nil }
-func (f *fakeEncodeStrategy) Clamp(g domain.Gene) domain.Gene    { return g }
-func (f *fakeEncodeStrategy) Validate(_ domain.Gene) error       { return nil }
+func (f *fakeEncodeStrategy) StrategyID() string              { return f.id }
+func (f *fakeEncodeStrategy) Segments() []domain.SegmentInfo  { return nil }
+func (f *fakeEncodeStrategy) Sample(_ *rand.Rand) domain.Gene { return nil }
+func (f *fakeEncodeStrategy) Clamp(g domain.Gene) domain.Gene { return g }
+func (f *fakeEncodeStrategy) Validate(_ domain.Gene) error    { return nil }
 func (f *fakeEncodeStrategy) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene {
 	return p1
 }

@@ -7,7 +7,7 @@ import (
 	"quantlab/internal/resultpkg"
 )
 
-func intPtr(i int) *int       { return &i }
+func intPtr(i int) *int         { return &i }
 func f64Ptr(f float64) *float64 { return &f }
 
 func TestCreateEvolutionTaskRequest_Validate(t *testing.T) {

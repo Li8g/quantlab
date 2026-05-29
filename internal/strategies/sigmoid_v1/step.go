@@ -4,13 +4,18 @@
 // docs/策略数学引擎.md §1.1.
 //
 // 铁律 1 (Step 同构): no `if isBacktest`, no os.Getenv — the same
-//   function runs in backtest, dry-run, and live.
+//
+//	function runs in backtest, dry-run, and live.
+//
 // 铁律 2 (NowMs 唯一时间源): every time comparison flows from
-//   input.NowMs and timestamps already carried on input. No
-//   time.Now(), no time.Since().
+//
+//	input.NowMs and timestamps already carried on input. No
+//	time.Now(), no time.Since().
+//
 // 铁律 摩擦: Step() emits THEORETICAL USD quantities. Taker fee and
-//   slippage are applied later — by the backtest adapter or by the
-//   Agent fill report (§5.8 upstream).
+//
+//	slippage are applied later — by the backtest adapter or by the
+//	Agent fill report (§5.8 upstream).
 package sigmoid_v1
 
 import (

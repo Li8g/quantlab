@@ -95,7 +95,7 @@ func (c *Client) sendStateSyncResponse(ctx context.Context, conn wsconn.Conn) er
 		ReportedAtMs:   c.nowMs(),
 		Positions:      wirePositions,
 		OpenOrders:     []wire.OpenOrder{}, // v1: mock has no open orders
-		SinceLastFills: []wire.Fill{},       // v1: see comment above
+		SinceLastFills: []wire.Fill{},      // v1: see comment above
 	})
 }
 

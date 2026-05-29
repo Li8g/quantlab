@@ -184,17 +184,17 @@ var ErrTickInFlight = errors.New("tick already in flight for this instance")
 // Tick runs one decision cycle for instance `inst`. The 10 steps map
 // to the Phase 6 prompt:
 //
-//	1.  dedup (per-instance TryLock)
-//	2.  read PortfolioState + RuntimeState
-//	3.  load champion gene (via DecodeElite)
-//	4.  read NowMs (only allowed time.Now() in Tick)
-//	5.  build StrategyInput
-//	6.  Step()
-//	7.  upsert RuntimeState
-//	8.  apply ReleaseIntents (DeadBTC → FloatBTC, internal ledger)
-//	9.  dispatch OrderIntents (TradeCommandDispatcher)
-//	10. write new PortfolioState row carrying updated portfolio +
-//	    LastProcessedBarTime
+//  1. dedup (per-instance TryLock)
+//  2. read PortfolioState + RuntimeState
+//  3. load champion gene (via DecodeElite)
+//  4. read NowMs (only allowed time.Now() in Tick)
+//  5. build StrategyInput
+//  6. Step()
+//  7. upsert RuntimeState
+//  8. apply ReleaseIntents (DeadBTC → FloatBTC, internal ledger)
+//  9. dispatch OrderIntents (TradeCommandDispatcher)
+//  10. write new PortfolioState row carrying updated portfolio +
+//     LastProcessedBarTime
 //
 // Step 8 and 10 are bundled into the single PortfolioState INSERT
 // since they both write portfolio state. Order of writes:

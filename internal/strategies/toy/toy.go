@@ -20,11 +20,13 @@
 // └──────────────────────────────────────────────────────────────────────┘
 //
 // Gene semantics (deliberately trivial):
-//   gene[0] ∈ [0, 1],  target = 0.42  (segment "alpha", IsCritical=true)
-//   gene[1] ∈ [-1, 1], target = -0.3  (segment "beta",  IsCritical=false)
+//
+//	gene[0] ∈ [0, 1],  target = 0.42  (segment "alpha", IsCritical=true)
+//	gene[1] ∈ [-1, 1], target = -0.3  (segment "beta",  IsCritical=false)
 //
 // Fitness landscape:
-//   score = -(|gene[0] - 0.42| + |gene[1] - (-0.3)|)  ∈ (-∞, 0]
+//
+//	score = -(|gene[0] - 0.42| + |gene[1] - (-0.3)|)  ∈ (-∞, 0]
 //
 // The toy is plan-independent: it ignores EvaluablePlan.Windows[*].Bars
 // and returns the same SliceScore for every window. This is acceptable

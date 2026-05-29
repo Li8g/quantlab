@@ -11,12 +11,12 @@
 //
 // Conservation invariants every helper guarantees:
 //
-//	- USDT ≥ 0   (insufficient cash → skip the buy entirely)
-//	- DeadBTC, FloatBTC ≥ 0  (insufficient holdings → skip the sell)
-//	- applyRelease preserves DeadBTC + FloatBTC exactly
-//	- Friction (fee + slippage) is consumed from USDT and FloatBTC
-//	  only; it never reaches DeadBTC (the DeadBTC quantity is the
-//	  post-fee asset received at macro buy time)
+//   - USDT ≥ 0   (insufficient cash → skip the buy entirely)
+//   - DeadBTC, FloatBTC ≥ 0  (insufficient holdings → skip the sell)
+//   - applyRelease preserves DeadBTC + FloatBTC exactly
+//   - Friction (fee + slippage) is consumed from USDT and FloatBTC
+//     only; it never reaches DeadBTC (the DeadBTC quantity is the
+//     post-fee asset received at macro buy time)
 //
 // Location: this file is strategy-private for the prototype phase.
 // Upstream §3.4 says "具体记账由 internal/adapters/backtest/" — when
@@ -133,11 +133,11 @@ func applyRelease(p strategy.PortfolioSnapshot, intent strategy.ReleaseIntent) (
 // applyStrategyOutput is the per-bar wrapper Adapter.Evaluate will
 // call. Processes intents in the order:
 //
-//	1. Releases (cheap, free, no friction) — front-load to make
-//	   freshly-floated BTC available for any same-bar micro orders.
-//	   The order is documented; tests pin it.
-//	2. Macro orders
-//	3. Micro orders
+//  1. Releases (cheap, free, no friction) — front-load to make
+//     freshly-floated BTC available for any same-bar micro orders.
+//     The order is documented; tests pin it.
+//  2. Macro orders
+//  3. Micro orders
 //
 // All intents are best-effort; a skip returns the unchanged
 // portfolio for that intent and the wrapper continues. Returns the

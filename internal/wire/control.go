@@ -5,9 +5,9 @@ package wire
 type KillSwitchReason string
 
 const (
-	KillSwitchManualAdminAction  KillSwitchReason = "manual_admin_action"
+	KillSwitchManualAdminAction   KillSwitchReason = "manual_admin_action"
 	KillSwitchDiscrepancyDetected KillSwitchReason = "discrepancy_detected"
-	KillSwitchComplianceFreeze   KillSwitchReason = "compliance_freeze"
+	KillSwitchComplianceFreeze    KillSwitchReason = "compliance_freeze"
 )
 
 // KillSwitchScope is "all" or "symbol"; v1 only emits "all". The struct
@@ -34,8 +34,8 @@ type KillSwitch struct {
 type GracefulShutdownReason string
 
 const (
-	GracefulShutdownSaaSRestart      GracefulShutdownReason = "saas_restart"
-	GracefulShutdownSaaSMaintenance  GracefulShutdownReason = "saas_maintenance"
+	GracefulShutdownSaaSRestart     GracefulShutdownReason = "saas_restart"
+	GracefulShutdownSaaSMaintenance GracefulShutdownReason = "saas_maintenance"
 )
 
 // GracefulShutdown is broadcast to every connected Agent before SaaS exits.

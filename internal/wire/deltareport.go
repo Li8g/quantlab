@@ -14,8 +14,8 @@ type AgentError struct {
 // DeltaReport. Fills here are the same shape as OrderUpdate.Fills; SaaS
 // dedupes by (client_order_id, filled_at_exchange_ms).
 type DeltaReportSince struct {
-	Fills  []Fill        `json:"fills"`
-	Errors []AgentError  `json:"errors"`
+	Fills  []Fill       `json:"fills"`
+	Errors []AgentError `json:"errors"`
 }
 
 // DeltaReport is the low-frequency (~60s) account-level snapshot used as

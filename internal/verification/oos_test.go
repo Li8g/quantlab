@@ -21,24 +21,24 @@ import (
 // Evaluate call. The score / Fatal / err knobs let each test exercise
 // one RunOOS branch in isolation.
 type stubOOSStrategy struct {
-	score       float64 // log-return for the single OOS window
-	fatal       bool
-	fatalReason string
-	evalErr     error
+	score         float64 // log-return for the single OOS window
+	fatal         bool
+	fatalReason   string
+	evalErr       error
 	newAdapterErr error
-	resetErr    error
-	resetCalls  int
+	resetErr      error
+	resetCalls    int
 }
 
-func (s *stubOOSStrategy) StrategyID() string             { return "stub_oos" }
-func (s *stubOOSStrategy) Segments() []domain.SegmentInfo { return nil }
-func (s *stubOOSStrategy) Sample(*rand.Rand) domain.Gene  { return domain.Gene{0} }
-func (s *stubOOSStrategy) Clamp(g domain.Gene) domain.Gene { return g }
-func (s *stubOOSStrategy) Validate(domain.Gene) error     { return nil }
-func (s *stubOOSStrategy) Fingerprint(domain.Gene) string { return "stub" }
-func (s *stubOOSStrategy) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene { return p1 }
+func (s *stubOOSStrategy) StrategyID() string                                           { return "stub_oos" }
+func (s *stubOOSStrategy) Segments() []domain.SegmentInfo                               { return nil }
+func (s *stubOOSStrategy) Sample(*rand.Rand) domain.Gene                                { return domain.Gene{0} }
+func (s *stubOOSStrategy) Clamp(g domain.Gene) domain.Gene                              { return g }
+func (s *stubOOSStrategy) Validate(domain.Gene) error                                   { return nil }
+func (s *stubOOSStrategy) Fingerprint(domain.Gene) string                               { return "stub" }
+func (s *stubOOSStrategy) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene        { return p1 }
 func (s *stubOOSStrategy) Mutate(g domain.Gene, _, _ float64, _ *rand.Rand) domain.Gene { return g }
-func (s *stubOOSStrategy) MinEvalBars() int { return 1 }
+func (s *stubOOSStrategy) MinEvalBars() int                                             { return 1 }
 func (s *stubOOSStrategy) Evaluate(_ context.Context, _ domain.Gene, _ *domain.EvaluablePlan) (*resultpkg.RawEvaluateResult, error) {
 	return nil, errors.New("stubOOSStrategy.Evaluate not used by RunOOS path")
 }
@@ -261,10 +261,10 @@ func TestRunOOS_Yellow_DefaultPool(t *testing.T) {
 
 func TestClassifyOOSColor_BoundaryConditions(t *testing.T) {
 	cases := []struct {
-		name             string
-		alphaMonth       float64
-		alphaWeek        float64
-		want             resultpkg.DecisionColor
+		name       string
+		alphaMonth float64
+		alphaWeek  float64
+		want       resultpkg.DecisionColor
 	}{
 		// Green requires BOTH conditions.
 		{"green: just above both", +0.05, 0.0, resultpkg.DecisionColorGreen},
@@ -295,11 +295,11 @@ func TestAnnualizeROI(t *testing.T) {
 		want  float64
 	}{
 		{0, 1, 0},
-		{0.20, 1, 0.20},               // 1y +20% total ⇒ +20% ann
-		{1.0, 2, math.Sqrt(2) - 1},    // 100% over 2y ⇒ (1+1)^(1/2)-1 ≈ 0.414
-		{0.10, 0.5, 0.21},             // 6 months +10% ⇒ ann ≈ 21%
-		{-0.99, 1, -0.99},             // near-total loss in 1y
-		{-1.5, 1, -1},                 // 1+roi ≤ 0 guard ⇒ clamps to -1
+		{0.20, 1, 0.20},            // 1y +20% total ⇒ +20% ann
+		{1.0, 2, math.Sqrt(2) - 1}, // 100% over 2y ⇒ (1+1)^(1/2)-1 ≈ 0.414
+		{0.10, 0.5, 0.21},          // 6 months +10% ⇒ ann ≈ 21%
+		{-0.99, 1, -0.99},          // near-total loss in 1y
+		{-1.5, 1, -1},              // 1+roi ≤ 0 guard ⇒ clamps to -1
 	}
 	for _, c := range cases {
 		got := annualizeROI(c.roi, c.years)

@@ -70,15 +70,15 @@ func (f *fakeTokenStore) TouchLastSeen(_ context.Context, id string, now time.Ti
 // real TCP/WebSocket loopback.
 //
 // Flow:
-//   1. Spin up agentauth.Service backed by fakeTokenStore; mint a token.
-//   2. Spin up wshub.Hub with OnAgentMessage capturing Ack/OrderUpdate.
-//   3. Spin up httptest.Server exposing /api/v1/ws/agent → hub.ServeWS.
-//   4. Spin up agent.Client dialing ws://<httptest>/api/v1/ws/agent
-//      with a MockExchange (+2bps buy slippage).
-//   5. Wait for the agent to reach Ready (hub.Registry has the conn).
-//   6. Call hub.Dispatch with one market buy → expect Ack(accepted)
-//      and OrderUpdate(filled) to flow back through the captured hook.
-//   7. Assert ActualSlippageBps ≈ 2.0 (the exchange's configured slippage).
+//  1. Spin up agentauth.Service backed by fakeTokenStore; mint a token.
+//  2. Spin up wshub.Hub with OnAgentMessage capturing Ack/OrderUpdate.
+//  3. Spin up httptest.Server exposing /api/v1/ws/agent → hub.ServeWS.
+//  4. Spin up agent.Client dialing ws://<httptest>/api/v1/ws/agent
+//     with a MockExchange (+2bps buy slippage).
+//  5. Wait for the agent to reach Ready (hub.Registry has the conn).
+//  6. Call hub.Dispatch with one market buy → expect Ack(accepted)
+//     and OrderUpdate(filled) to flow back through the captured hook.
+//  7. Assert ActualSlippageBps ≈ 2.0 (the exchange's configured slippage).
 func TestE2E_TradeCommandRoundTrip(t *testing.T) {
 	ctx := context.Background()
 

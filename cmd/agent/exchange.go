@@ -1,12 +1,12 @@
 // exchange.go — selects the agent.Exchange implementation per
 // config.agent.yaml. Switches on cfg.Exchange.Name:
 //
-//   "mock"          — in-process MockExchange seeded with reasonable
-//                     prices; used for dev / smoke tests.
-//   "binance_spot"  — binance.Exchange against the URL from
-//                     cfg.Exchange.BaseURL (defaults to mainnet inside
-//                     the binance package; set base_url:
-//                     https://testnet.binance.vision for sandbox).
+//	"mock"          — in-process MockExchange seeded with reasonable
+//	                  prices; used for dev / smoke tests.
+//	"binance_spot"  — binance.Exchange against the URL from
+//	                  cfg.Exchange.BaseURL (defaults to mainnet inside
+//	                  the binance package; set base_url:
+//	                  https://testnet.binance.vision for sandbox).
 //
 // Returned cleanup is non-nil only when the chosen exchange owns
 // background state (e.g. binance's ping goroutine); main defers it.

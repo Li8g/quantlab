@@ -464,8 +464,8 @@ func HardwareSignature() string {
 // newTaskID + newChallengerID are 128-bit random hex strings. Their
 // uniqueness is enforced by the DB unique indexes; collisions are
 // astronomically improbable (~2^-64 birthday at billions of rows).
-func newTaskID() (string, error)        { return randHex16() }
-func newChallengerID() (string, error)  { return randHex16() }
+func newTaskID() (string, error)       { return randHex16() }
+func newChallengerID() (string, error) { return randHex16() }
 
 func randHex16() (string, error) {
 	var b [16]byte

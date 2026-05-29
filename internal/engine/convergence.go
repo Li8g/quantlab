@@ -35,7 +35,7 @@ type convergenceState struct {
 	// Fatal" case is encoded explicitly (nil = unset). Fatal scores
 	// never become bestSoFar — they live in a separate Fatal flag
 	// because compare semantics differ.
-	bestSoFar    *float64
+	bestSoFar      *float64
 	bestSoFarFatal bool
 
 	// mutProb / mutScale are the live mutation parameters threaded

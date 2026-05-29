@@ -7,12 +7,12 @@
 // Tick body). The scheduler itself does no business logic — it
 // repeats:
 //
-//	1. List live instances (DB read)
-//	2. For each instance, fire a goroutine that calls Manager.Tick
-//	3. Sleep until next interval
-//	4. On ctx cancel, return (in-flight Tick goroutines complete on
-//	   their own; per-instance mutex inside Manager guarantees no
-//	   overlap).
+//  1. List live instances (DB read)
+//  2. For each instance, fire a goroutine that calls Manager.Tick
+//  3. Sleep until next interval
+//  4. On ctx cancel, return (in-flight Tick goroutines complete on
+//     their own; per-instance mutex inside Manager guarantees no
+//     overlap).
 //
 // 铁律 2 note: time.Now() is read INSIDE Manager.Tick (the "tick outer
 // loop" allowance), not here. The scheduler uses a Go time.Ticker for
@@ -163,4 +163,3 @@ func (s *Scheduler) runTick(ctx context.Context, inst store.StrategyInstance) {
 		)
 	}
 }
-

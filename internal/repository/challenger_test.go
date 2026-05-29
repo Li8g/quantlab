@@ -27,7 +27,7 @@ func samplePackage() resultpkg.ChallengerResultPackage {
 				Encoding: resultpkg.GeneEncodingJSON,
 				Payload:  json.RawMessage(`[0.1,0.2,0.3]`),
 			},
-			SpawnPoint:    resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
+			SpawnPoint: resultpkg.SpawnPointPayload{SpawnMode: resultpkg.SpawnModeRandomOnce},
 			ReproducibilityMetadata: resultpkg.ReproducibilityMetadata{
 				EpochSeed:          42,
 				DataVersion:        "binance/v1",

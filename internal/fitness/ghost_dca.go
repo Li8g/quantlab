@@ -5,8 +5,8 @@
 //
 //   - SimulateGhostDCAMonthly: lump-sum each calendar-month-start at UTC.
 //   - SimulateGhostDCAWeekly:  one inject every 7 elapsed days from bar[0],
-//                              sized MonthlyInject / 4.33 to roughly match
-//                              monthly cash outflow.
+//     sized MonthlyInject / 4.33 to roughly match
+//     monthly cash outflow.
 //
 // Both share the same kernel (simulateDCA) and the same friction path
 // (quant.ApplyBuyFriction). InitialCapital is invested at bar[0]; periodic

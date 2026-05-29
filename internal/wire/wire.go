@@ -84,12 +84,12 @@ func (t MessageType) IsKnown() bool {
 //
 // Field constraints (§2.4 of the protocol doc):
 //   - MsgID:         ULID (26 chars). Sender-assigned; receiver must echo
-//                    via ref_msg_id / echo_msg_id when responding.
+//     via ref_msg_id / echo_msg_id when responding.
 //   - Type:          one of the MessageType constants.
 //   - SchemaVersion: must equal SchemaVersion ("v5.3.3"); codec rejects.
 //   - TimestampMs:   sender wall clock at send.
 //   - AccountID:     ULID; required after auth_ok; may be empty during
-//                    handshake (hello / auth_required / auth).
+//     handshake (hello / auth_required / auth).
 //   - Payload:       JSON object (never null; empty payloads use {}).
 type Envelope struct {
 	MsgID         string          `json:"msg_id"`
