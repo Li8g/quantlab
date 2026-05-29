@@ -18,6 +18,7 @@ package data
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -27,6 +28,12 @@ import (
 
 	"quantlab/internal/saas/store"
 )
+
+// ErrImportCancelled is returned by ImportSymbol when the OnMonth hook
+// requests cancellation at a month boundary. The async import worker maps
+// it to the `cancelled` job status (distinct from a failure). Months
+// already imported are preserved (ImportSymbol is idempotent).
+var ErrImportCancelled = errors.New("data: import cancelled at month boundary")
 
 // DefaultBatchSize is the GORM CreateInBatches batch size. Picked to fit
 // comfortably under PG's max_locks_per_transaction in a single insert and
@@ -53,6 +60,16 @@ type Orchestrator struct {
 	Source    string     // KLine.Source tag, default "binance.vision"
 	BatchSize int
 	Logger    *slog.Logger
+
+	// OnMonth, when non-nil, is called at each month boundary with the
+	// count of months processed so far and the total. Returning true
+	// requests a clean cancel — ImportSymbol stops at the boundary (no
+	// half-month dirty write; the month is the atomic upsert unit) and
+	// returns ErrImportCancelled. The async import worker injects this to
+	// persist months_done and honour cancel requests; the CLI leaves it
+	// nil. The orchestrator never imports the import_jobs package — the
+	// hook keeps the boundary clean (docs/phase9-data-import-v1.md §6).
+	OnMonth func(done, total int) (cancel bool)
 }
 
 func NewOrchestrator(db *gorm.DB) *Orchestrator {
@@ -87,7 +104,8 @@ func (o *Orchestrator) ImportSymbol(
 		Symbol: symbol, Interval: interval, StartMs: startMs, EndMs: endMs,
 	}
 
-	for _, m := range monthRange(start, end) {
+	months := monthRange(start, end)
+	for i, m := range months {
 		rows, err := o.fetchMonth(ctx, symbol, interval, m.Year, m.Month)
 		if err != nil {
 			// TODO: api fallback — on 404 for unarchived months, walk daily
@@ -96,20 +114,24 @@ func (o *Orchestrator) ImportSymbol(
 		}
 		summary.MonthsFetched++
 
-		filtered := filterByOpenTime(rows, startMs, endMs)
-		if len(filtered) == 0 {
-			continue
-		}
-		inserted, err := o.bulkInsert(ctx, symbol, interval, filtered)
-		if err != nil {
-			return summary, fmt.Errorf("insert month %04d-%02d: %w", m.Year, m.Month, err)
-		}
-		summary.RowsInserted += inserted
+		if filtered := filterByOpenTime(rows, startMs, endMs); len(filtered) > 0 {
+			inserted, err := o.bulkInsert(ctx, symbol, interval, filtered)
+			if err != nil {
+				return summary, fmt.Errorf("insert month %04d-%02d: %w", m.Year, m.Month, err)
+			}
+			summary.RowsInserted += inserted
 
-		o.Logger.Info("orchestrator: ingested month",
-			"symbol", symbol, "interval", interval,
-			"year", m.Year, "month", m.Month,
-			"rows_in_archive", len(rows), "rows_inserted", inserted)
+			o.Logger.Info("orchestrator: ingested month",
+				"symbol", symbol, "interval", interval,
+				"year", m.Year, "month", m.Month,
+				"rows_in_archive", len(rows), "rows_inserted", inserted)
+		}
+
+		// Month boundary: report progress / honour cancel (no-op when
+		// the hook is unset, e.g. the CLI path).
+		if o.OnMonth != nil && o.OnMonth(i+1, len(months)) {
+			return summary, ErrImportCancelled
+		}
 	}
 
 	gaps, err := o.detectAndPersistGaps(ctx, symbol, interval, startMs, endMs)

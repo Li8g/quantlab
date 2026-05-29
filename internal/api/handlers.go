@@ -61,6 +61,11 @@ var (
 	// enforces "at most one active per (strategy, pair)"; reviewers
 	// must Retire the incumbent before promoting a successor.
 	ErrActiveChampionExists = errors.New("active champion already exists for this (strategy_id, pair); retire it first")
+
+	// ErrImportActive: a Create for an (symbol, interval) pair that
+	// already has a queued/running import job. The partial unique index
+	// uq_import_jobs_active rejects the INSERT. → 409 Conflict.
+	ErrImportActive = errors.New("an import is already active for this (symbol, interval)")
 )
 
 // EpochCreator triggers a new evolution task. The HTTP layer holds
@@ -197,6 +202,11 @@ type Handlers struct {
 	Klines          DataCoverageLister
 	Trades          TradeLister
 	SharpeBank      SharpeBankStatter
+	// Imports enables the 4 /data/import* routes. cmd/saas wires it only
+	// when AppRole != saas (the config-layer gate, docs/phase9-data-
+	// import-v1.md §2.3) — nil on a production saas instance, so the
+	// routes simply aren't registered there.
+	Imports ImportJobStore
 
 	// Live-monitor (场景② F2) read collaborators. All nil-skippable
 	// — see live_handlers.go. InstanceList enables GET /instances;
@@ -278,6 +288,24 @@ func (h *Handlers) Register(r gin.IRouter) {
 	}
 	if h.SharpeBank != nil {
 		g.GET("/ga/sharpebank/stats", h.GetSharpeBankStats)
+	}
+
+	// Async kline import (Phase 9, 8th endpoint). Registered only when
+	// the Imports collaborator is wired — cmd/saas does so only for
+	// AppRole != saas (config gate). admin-only at the request layer,
+	// same gate form as promote/retire.
+	if h.Imports != nil {
+		if h.AuthRequired != nil && h.RequireAdmin != nil {
+			g.POST("/data/import", h.AuthRequired, h.RequireAdmin, h.CreateImport)
+			g.GET("/data/import/:job_id", h.AuthRequired, h.RequireAdmin, h.GetImport)
+			g.GET("/data/imports", h.AuthRequired, h.RequireAdmin, h.ListImports)
+			g.POST("/data/import/:job_id/cancel", h.AuthRequired, h.RequireAdmin, h.CancelImport)
+		} else {
+			g.POST("/data/import", h.CreateImport)
+			g.GET("/data/import/:job_id", h.GetImport)
+			g.GET("/data/imports", h.ListImports)
+			g.POST("/data/import/:job_id/cancel", h.CancelImport)
+		}
 	}
 
 	// Auth surface. /auth/login is the only public-by-design endpoint

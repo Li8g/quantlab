@@ -178,7 +178,7 @@ type SharpeBank struct {
 	Skew             float64 `json:"skew"`
 	Kurtosis         float64 `json:"kurtosis"`
 
-	SpawnMode                  resultpkg.SpawnMode `gorm:"type:varchar(16)" json:"spawn_mode"`
+	SpawnMode                   resultpkg.SpawnMode `gorm:"type:varchar(16)" json:"spawn_mode"`
 	FingerprintDistanceToParent *float64            `json:"fingerprint_distance_to_parent,omitempty"`
 }
 
@@ -287,13 +287,13 @@ type User struct {
 	ID           uint       `gorm:"primaryKey"                          json:"id"`
 	UserID       string     `gorm:"type:varchar(32);uniqueIndex"        json:"user_id"` // ULID; URL 暴露字段
 	CreatedAt    time.Time  `gorm:"index"                               json:"created_at"`
-	UpdatedAt    time.Time                                              `json:"updated_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 	Email        string     `gorm:"type:varchar(255);uniqueIndex"       json:"email"`
 	PasswordHash string     `gorm:"type:varchar(255);not null"          json:"-"`
 	Role         UserRole   `gorm:"type:varchar(16);index;not null"     json:"role"`
 	DisplayName  string     `gorm:"type:varchar(128)"                   json:"display_name"`
 	Active       bool       `gorm:"index;default:true;not null"         json:"active"`
-	LastLoginAt  *time.Time                                             `json:"last_login_at,omitempty"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 }
 
 // -------- B. StrategyTemplate + StrategyInstance --------
@@ -312,8 +312,8 @@ const (
 // rows from registry.IDs().
 type StrategyTemplate struct {
 	ID                   uint      `gorm:"primaryKey"                       json:"id"`
-	CreatedAt            time.Time                                          `json:"created_at"`
-	UpdatedAt            time.Time                                          `json:"updated_at"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 	StrategyID           string    `gorm:"type:varchar(64);uniqueIndex"     json:"strategy_id"`
 	DisplayName          string    `gorm:"type:varchar(128);not null"       json:"display_name"`
 	Version              string    `gorm:"type:varchar(32);not null"        json:"version"`
@@ -327,8 +327,8 @@ type StrategyTemplate struct {
 // WHERE status != 'retired' is created via raw SQL in db.go.
 type StrategyInstance struct {
 	ID               uint           `gorm:"primaryKey"                            json:"id"`
-	CreatedAt        time.Time                                                `json:"created_at"`
-	UpdatedAt        time.Time                                                `json:"updated_at"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 	InstanceID       string         `gorm:"type:varchar(32);uniqueIndex"          json:"instance_id"` // ULID
 	StrategyID       string         `gorm:"type:varchar(64);index;not null"       json:"strategy_id"`
 	Pair             string         `gorm:"type:varchar(32);index;not null"       json:"pair"`
@@ -336,7 +336,7 @@ type StrategyInstance struct {
 	OwnerUserID      uint           `gorm:"index;not null"                         json:"owner_user_id"`
 	Status           InstanceStatus `gorm:"type:varchar(16);default:'idle';index" json:"status"`
 	ActiveChampID    *string        `gorm:"type:varchar(64);index"                 json:"active_champion_id,omitempty"`
-	LastTickWallTime *time.Time                                                `json:"last_tick_wall_time,omitempty"` // wall clock for ops
+	LastTickWallTime *time.Time     `json:"last_tick_wall_time,omitempty"` // wall clock for ops
 }
 
 // -------- C. PortfolioState + RuntimeState --------
@@ -367,8 +367,8 @@ type PortfolioState struct {
 // soft limit ≤ 64KB (jsonb 1 page = 8KB; over that → TOAST).
 type RuntimeState struct {
 	ID         uint            `gorm:"primaryKey"                    json:"id"`
-	CreatedAt  time.Time                                             `json:"created_at"`
-	UpdatedAt  time.Time                                             `json:"updated_at"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
 	InstanceID string          `gorm:"type:varchar(32);uniqueIndex"  json:"instance_id"`
 	NowMs      int64           `gorm:"not null"                       json:"now_ms"`
 	StateJSON  json.RawMessage `gorm:"type:jsonb;not null"            json:"state_json"`
@@ -391,44 +391,44 @@ const (
 type TradeStatus string
 
 const (
-	TradeStatusPending        TradeStatus = "pending"
-	TradeStatusAcked          TradeStatus = "acked"
-	TradeStatusFilled         TradeStatus = "filled"
-	TradeStatusPartialFilled  TradeStatus = "partial_filled"
-	TradeStatusCancelled      TradeStatus = "cancelled"
-	TradeStatusRejected       TradeStatus = "rejected"
+	TradeStatusPending       TradeStatus = "pending"
+	TradeStatusAcked         TradeStatus = "acked"
+	TradeStatusFilled        TradeStatus = "filled"
+	TradeStatusPartialFilled TradeStatus = "partial_filled"
+	TradeStatusCancelled     TradeStatus = "cancelled"
+	TradeStatusRejected      TradeStatus = "rejected"
 )
 
 // SpotLot is a long-lived position lot (§6.1).
 // OpenMs/CloseMs取自 entry/close trade 首个 SpotExecution.FilledAtExchangeMs.
 type SpotLot struct {
-	ID           uint    `gorm:"primaryKey"                      json:"id"`
-	CreatedAt    time.Time                                       `json:"created_at"`
-	UpdatedAt    time.Time                                       `json:"updated_at"`
-	LotID        string  `gorm:"type:varchar(32);uniqueIndex"    json:"lot_id"` // ULID
-	InstanceID   string  `gorm:"type:varchar(32);index;not null" json:"instance_id"`
-	Symbol       string  `gorm:"type:varchar(16);index;not null" json:"symbol"`
-	Kind         LotKind `gorm:"type:varchar(8);index;not null"  json:"kind"`
-	OpenMs       int64   `gorm:"not null"                         json:"open_ms"`
-	CloseMs      *int64                                           `json:"close_ms,omitempty"`
-	Quantity     float64 `gorm:"not null"                         json:"quantity"`
-	EntryPrice   float64 `gorm:"not null"                         json:"entry_price"`
-	EntryTradeID string  `gorm:"type:varchar(32);index"           json:"entry_trade_id"` // client_order_id
+	ID           uint      `gorm:"primaryKey"                      json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	LotID        string    `gorm:"type:varchar(32);uniqueIndex"    json:"lot_id"` // ULID
+	InstanceID   string    `gorm:"type:varchar(32);index;not null" json:"instance_id"`
+	Symbol       string    `gorm:"type:varchar(16);index;not null" json:"symbol"`
+	Kind         LotKind   `gorm:"type:varchar(8);index;not null"  json:"kind"`
+	OpenMs       int64     `gorm:"not null"                         json:"open_ms"`
+	CloseMs      *int64    `json:"close_ms,omitempty"`
+	Quantity     float64   `gorm:"not null"                         json:"quantity"`
+	EntryPrice   float64   `gorm:"not null"                         json:"entry_price"`
+	EntryTradeID string    `gorm:"type:varchar(32);index"           json:"entry_trade_id"` // client_order_id
 }
 
 // TradeRecord is the SaaS-side record of an order intent and its outcome
 // (§6.2). Most fields mirror OrderIntent / TradeCommand wire formats.
 type TradeRecord struct {
 	ID            uint        `gorm:"primaryKey"                              json:"id"`
-	CreatedAt     time.Time                                                 `json:"created_at"`
-	UpdatedAt     time.Time                                                 `json:"updated_at"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 	ClientOrderID string      `gorm:"type:varchar(32);uniqueIndex"            json:"client_order_id"`
 	InstanceID    string      `gorm:"type:varchar(32);index;not null"         json:"instance_id"`
 	Symbol        string      `gorm:"type:varchar(16);index;not null"         json:"symbol"`
 	Side          string      `gorm:"type:varchar(8);not null"                json:"side"`
 	OrderType     string      `gorm:"type:varchar(16);not null"               json:"order_type"`
 	QuantityUSD   float64     `gorm:"not null"                                 json:"quantity_usd"`
-	LimitPrice    *float64                                                  `json:"limit_price,omitempty"`
+	LimitPrice    *float64    `json:"limit_price,omitempty"`
 	NowMsAtSaaS   int64       `gorm:"not null"                                 json:"now_ms_at_saas"`
 	ValidUntilMs  int64       `gorm:"not null"                                 json:"valid_until_ms"`
 	Status        TradeStatus `gorm:"type:varchar(16);index;default:'pending'" json:"status"`
@@ -443,7 +443,7 @@ type TradeRecord struct {
 // multi-account scaling should change to composite unique
 // (instance_id, exchange_order_id).
 type SpotExecution struct {
-	ID                 uint    `gorm:"primaryKey"                       json:"id"`
+	ID                 uint `gorm:"primaryKey"                       json:"id"`
 	CreatedAt          time.Time
 	ClientOrderID      string  `gorm:"type:varchar(32);index;not null"  json:"client_order_id"` // FK to TradeRecord
 	ExchangeOrderID    string  `gorm:"type:varchar(64);index;not null"  json:"exchange_order_id"`
@@ -452,7 +452,7 @@ type SpotExecution struct {
 	FillFeeAsset       string  `gorm:"type:varchar(16);not null"        json:"fill_fee_asset"`
 	FillFeeAmount      float64 `gorm:"not null"                          json:"fill_fee_amount"`
 	FilledAtExchangeMs int64   `gorm:"not null"                          json:"filled_at_exchange_ms"`
-	ActualSlippageBPS  float64                                            `json:"actual_slippage_bps"` // Agent-computed
+	ActualSlippageBPS  float64 `json:"actual_slippage_bps"` // Agent-computed
 }
 
 // -------- F. AgentToken (added 2026-05-20 for Phase 7 Step 2) --------
@@ -467,12 +467,12 @@ type SpotExecution struct {
 type AgentToken struct {
 	ID         uint       `gorm:"primaryKey"                       json:"id"`
 	CreatedAt  time.Time  `gorm:"index"                            json:"created_at"`
-	UpdatedAt  time.Time                                            `json:"updated_at"`
-	AgentID    string     `gorm:"type:varchar(32);uniqueIndex"     json:"agent_id"`     // ULID
-	AccountID  string     `gorm:"type:varchar(32);index;not null"  json:"account_id"`   // ULID
-	TokenHash  string     `gorm:"type:varchar(60);not null"        json:"-"`            // bcrypt(secret) cost=12
+	UpdatedAt  time.Time  `json:"updated_at"`
+	AgentID    string     `gorm:"type:varchar(32);uniqueIndex"     json:"agent_id"`   // ULID
+	AccountID  string     `gorm:"type:varchar(32);index;not null"  json:"account_id"` // ULID
+	TokenHash  string     `gorm:"type:varchar(60);not null"        json:"-"`          // bcrypt(secret) cost=12
 	Label      string     `gorm:"type:varchar(64)"                 json:"label,omitempty"`
-	LastSeenAt *time.Time                                            `json:"last_seen_at,omitempty"`
+	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
 	RevokedAt  *time.Time `gorm:"index"                            json:"revoked_at,omitempty"`
 }
 
@@ -518,7 +518,7 @@ const (
 type AuditLog struct {
 	ID        uint            `gorm:"primaryKey"                                 json:"id"`
 	CreatedAt time.Time       `gorm:"index"                                      json:"created_at"`
-	NowMs     *int64                                                              `json:"now_ms,omitempty"` // v1 阶段所有 19 个 Action 均填 nil
+	NowMs     *int64          `json:"now_ms,omitempty"` // v1 阶段所有 19 个 Action 均填 nil
 	Actor     string          `gorm:"type:varchar(64);index;not null"            json:"actor"`
 	Action    AuditAction     `gorm:"type:varchar(48);index;not null"            json:"action"`
 	Subject   string          `gorm:"type:varchar(128);index;not null"           json:"subject"`
@@ -535,14 +535,14 @@ type ReconciliationDiscrepancy struct {
 	ID             uint      `gorm:"primaryKey"                      json:"id"`
 	CreatedAt      time.Time `gorm:"index"                           json:"created_at"`
 	AccountID      string    `gorm:"type:varchar(64);index;not null" json:"account_id"`
-	InstanceID     string    `gorm:"type:varchar(32);index"          json:"instance_id"` // resolved when account↔instance is 1:1; "" when account spans many
-	Asset          string    `gorm:"type:varchar(16);not null"       json:"asset"`       // "BTC" / "USDT"
-	ExpectedAmount float64   `json:"expected_amount"`                                    // SaaS bookkeeping (BTC: dead+float+cold; USDT)
-	ActualAmount   float64   `json:"actual_amount"`                                      // exchange free+locked
-	DiffAmount     float64   `json:"diff_amount"`                                        // actual - expected
-	DriftBps       float64   `json:"drift_bps"`                                          // |diff| / max(|expected|,|actual|,floor) * 1e4
+	InstanceID     string    `gorm:"type:varchar(32);index"          json:"instance_id"`    // resolved when account↔instance is 1:1; "" when account spans many
+	Asset          string    `gorm:"type:varchar(16);not null"       json:"asset"`          // "BTC" / "USDT"
+	ExpectedAmount float64   `json:"expected_amount"`                                       // SaaS bookkeeping (BTC: dead+float+cold; USDT)
+	ActualAmount   float64   `json:"actual_amount"`                                         // exchange free+locked
+	DiffAmount     float64   `json:"diff_amount"`                                           // actual - expected
+	DriftBps       float64   `json:"drift_bps"`                                             // |diff| / max(|expected|,|actual|,floor) * 1e4
 	ReportedAtMs   int64     `gorm:"index"                           json:"reported_at_ms"` // delta_report.reported_at_ms
-	DetectedAtMs   int64     `json:"detected_at_ms"`                                     // SaaS wall clock at detection
+	DetectedAtMs   int64     `json:"detected_at_ms"`                                        // SaaS wall clock at detection
 }
 
 // AgentError is one exchange-layer error the Agent collected since its last
@@ -559,6 +559,37 @@ type AgentError struct {
 	OccurredAtMs int64     `gorm:"index"                           json:"occurred_at_ms"`
 	ReportedAtMs int64     `json:"reported_at_ms"` // delta_report.reported_at_ms that carried it
 }
+
+// ImportJob is one async kline-import task — the HTTP-pollable twin of
+// the CLI `datafeeder import`, wrapping data.Orchestrator.ImportSymbol in
+// the evolution_tasks create→poll model (Phase 9, docs/phase9-data-import-v1.md).
+// Status reuses resultpkg.TaskStatus (no parallel enum). A partial unique
+// index on (symbol,interval) WHERE status IN (queued,running) enforces
+// per-pair mutual exclusion (added in db.go after AutoMigrate — GORM tags
+// can't express partial unique).
+type ImportJob struct {
+	gorm.Model
+	JobID    string               `gorm:"type:varchar(64);uniqueIndex" json:"import_job_id"`
+	Symbol   string               `gorm:"type:varchar(16);index"       json:"symbol"`
+	Interval string               `gorm:"type:varchar(8);index"        json:"interval"`
+	StartMs  int64                `json:"start_ms"`
+	EndMs    int64                `json:"end_ms"`
+	Status   resultpkg.TaskStatus `gorm:"type:varchar(16);index"       json:"status"`
+
+	MonthsDone   int   `json:"months_done"`
+	MonthsTotal  int   `json:"months_total"`
+	RowsInserted int64 `json:"rows_inserted"`
+	GapsDetected int   `json:"gaps_detected"`
+
+	CancelRequested bool   `gorm:"index" json:"cancel_requested"`              // 决策 5: worker checks at month end
+	RequestedBy     string `gorm:"type:varchar(64);index" json:"requested_by"` // triggering admin, for audit
+
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+	FailureReason *string    `gorm:"type:text" json:"failure_reason,omitempty"`
+}
+
+func (ImportJob) TableName() string { return "import_jobs" }
 
 // AllModels returns every GORM model for AutoMigrate.
 // Keep in sync when adding new tables.
@@ -588,5 +619,7 @@ func AllModels() []interface{} {
 		// Phase 8 — delta_report reconciliation forensic trail (Option 2)
 		&ReconciliationDiscrepancy{},
 		&AgentError{},
+		// Phase 9 — async kline import jobs
+		&ImportJob{},
 	}
 }

@@ -29,6 +29,7 @@ import (
 
 	"quantlab/internal/api"
 	"quantlab/internal/api/middleware"
+	"quantlab/internal/data"
 	"quantlab/internal/migrate"
 	"quantlab/internal/repository"
 	"quantlab/internal/saas/agentauth"
@@ -199,6 +200,7 @@ func main() {
 	runtimeRepo := repository.NewRuntimeRepo(db)
 	tradeRepo := repository.NewTradeRepo(db)
 	reconRepo := repository.NewReconRepo(db)
+	importJobRepo := repository.NewImportJobRepo(db)
 
 	registry := epoch.DefaultRegistry()
 	svc := epoch.New(
@@ -302,6 +304,22 @@ func main() {
 		// admin JWTs auto-expire on JWT.AdminTTL (cfg default 10min).
 		Users:  userRepo,
 		Tokens: authSvc,
+	}
+
+	// Async kline import (Phase 9, docs/phase9-data-import-v1.md §2.3):
+	// research/ops only — never exposed on a production saas instance.
+	// The AppRole != saas gate wires the routes (via h.Imports), the
+	// startup orphan sweep, and the single serial worker together; on
+	// saas all three stay dark.
+	if cfg.AppRole != config.AppRoleSaaS {
+		h.Imports = importJobRepo
+		if n, err := importJobRepo.SweepOrphans(ctx); err != nil {
+			log.Printf("saas: import orphan sweep: %v", err)
+		} else if n > 0 {
+			log.Printf("saas: swept %d orphaned import job(s) → failed", n)
+		}
+		importFn := data.OrchestratorImportFunc(data.NewOrchestrator(db))
+		go data.NewImportWorker(importJobRepo, importFn, nil).Run(ctx)
 	}
 
 	if cfg.AppRole != config.AppRoleDev {

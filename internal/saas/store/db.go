@@ -98,5 +98,18 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("store.NewDB: partial unique strategy_instances: %w", err)
 	}
 
+	// Partial unique index on import_jobs per docs/phase9-data-import-v1.md
+	// §2.1: a (symbol, interval) pair can only have one active import at a
+	// time (the orchestrator delete+rewrites that range's gap rows, so
+	// concurrent imports of the same pair corrupt each other). Active =
+	// queued|running; terminal jobs don't block re-import. GORM tags can't
+	// express partial unique, so DDL explicitly.
+	const importJobUniqueSQL = `CREATE UNIQUE INDEX IF NOT EXISTS uq_import_jobs_active
+		ON import_jobs (symbol, interval)
+		WHERE status IN ('queued', 'running')`
+	if err := db.WithContext(ctx).Exec(importJobUniqueSQL).Error; err != nil {
+		return nil, fmt.Errorf("store.NewDB: partial unique import_jobs: %w", err)
+	}
+
 	return db, nil
 }
