@@ -69,6 +69,17 @@ func (a sharpeBankAdapter) Stats(ctx context.Context, strategyID, pair string) (
 	}, nil
 }
 
+// hubPresence bridges the wshub.Registry to the api layer's
+// AgentPresence — reports whether an account's Agent is connected and
+// past handshake. Lives here because the Registry is process-local to
+// the Hub; a stateless API replica would leave Handlers.Presence nil.
+type hubPresence struct{ reg *wshub.Registry }
+
+func (p hubPresence) IsConnected(accountID string) bool {
+	c, err := p.reg.Get(accountID)
+	return err == nil && c.IsReady()
+}
+
 // klineCoverageAdapter bridges repository.KLineRepo to the api layer's
 // DataCoverageLister — translates repository.CoverageRow to
 // api.DataCoverageRow without coupling the two packages.
@@ -272,7 +283,13 @@ func main() {
 		Klines:          klineCoverageAdapter{repo: klineRepo},
 		Trades:          tradeRepo,
 		SharpeBank:      sharpeBankAdapter{repo: sharpeRepo},
-		AuthRequired:    middleware.AuthRequired(authSvc),
+		// Live-monitor (场景② F2). Repos double as the interfaces;
+		// Presence reads the Hub registry, so it is wired only here
+		// (the process that holds the Hub).
+		InstanceList: instanceRepo,
+		Portfolios:   portfolioRepo,
+		Presence:     hubPresence{reg: hub.Registry()},
+		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,
 		),

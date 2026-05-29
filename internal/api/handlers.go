@@ -198,6 +198,14 @@ type Handlers struct {
 	Trades          TradeLister
 	SharpeBank      SharpeBankStatter
 
+	// Live-monitor (场景② F2) read collaborators. All nil-skippable
+	// — see live_handlers.go. InstanceList enables GET /instances;
+	// Portfolios/Presence enrich GET /instances/:id/live (Presence is
+	// process-affine to the Hub, omitted on stateless replicas).
+	InstanceList InstanceLister
+	Portfolios   PortfolioReader
+	Presence     AgentPresence
+
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests
 	// that exercise handlers without auth leave this nil.
@@ -294,6 +302,12 @@ func (h *Handlers) Register(r gin.IRouter) {
 	if h.Trades != nil {
 		inst.GET("/:instance_id/trades", h.ListInstanceTrades)
 	}
+	// Live-monitor reads (场景② F2). Viewer-readable through the
+	// inst-group AuthRequired; each nil-skippable per its collaborator.
+	if h.InstanceList != nil {
+		inst.GET("", h.ListInstances)
+	}
+	inst.GET("/:instance_id/live", h.GetInstanceLive)
 }
 
 // ===== handlers =====
