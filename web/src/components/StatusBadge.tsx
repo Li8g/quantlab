@@ -1,6 +1,7 @@
 import type {
   DecisionColor,
   DecisionStatus,
+  InstanceStatus,
   TaskStatus,
   VerificationStatus,
 } from '../lib/types'
@@ -60,4 +61,31 @@ export function OosBadge({
 }) {
   if (color) return <Badge color={OOS_COLOR[color]} label={`OOS ${color}`} />
   return <Badge color={OOS_STATUS_COLOR[status] ?? 'bg-slate-100 text-slate-600'} label={status} />
+}
+
+// Instance lifecycle status → color. Mirrors store.InstanceStatus.
+const INSTANCE_COLORS: Record<InstanceStatus, string> = {
+  live: 'bg-green-100 text-green-700',
+  paused: 'bg-amber-100 text-amber-700',
+  idle: 'bg-slate-100 text-slate-600',
+  retired: 'bg-slate-200 text-slate-500',
+}
+
+export function InstanceStatusBadge({ status }: { status: InstanceStatus }) {
+  return (
+    <Badge
+      color={INSTANCE_COLORS[status] ?? 'bg-slate-100 text-slate-600'}
+      label={status}
+    />
+  )
+}
+
+// Agent connection presence (live monitor). Green dot = connected.
+export function ConnectionBadge({ connected }: { connected: boolean }) {
+  return (
+    <Badge
+      color={connected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}
+      label={connected ? '● connected' : '● offline'}
+    />
+  )
 }

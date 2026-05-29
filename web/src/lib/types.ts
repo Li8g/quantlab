@@ -122,3 +122,77 @@ export interface ChallengerPackage {
     oos_result: OOSResult
   }
 }
+
+// ---- F2 live monitor (mirrors internal/api/live_handlers.go) ----
+
+export type InstanceStatus = 'idle' | 'live' | 'paused' | 'retired'
+
+// One row of GET /instances and the embedded instance on /live.
+export interface InstanceResponse {
+  instance_id: string
+  strategy_id: string
+  pair: string
+  account_id: string
+  owner_user_id: number
+  status: InstanceStatus
+  active_champion_id?: string
+  last_tick_wall_time_ms?: number
+}
+
+export interface InstanceListResponse {
+  items: InstanceResponse[]
+  count: number
+}
+
+// Latest portfolio_states row. equity/mark_price are present only when a
+// mark price was available (Tier M); equity = (dead+float)*mark + usdt,
+// cold_sealed excluded per the strategy NAV formula.
+export interface PortfolioSnapshotView {
+  dead_btc: number
+  float_btc: number
+  cold_sealed_btc: number
+  usdt: number
+  now_ms: number
+  last_processed_bar_time: number
+  equity?: number
+  mark_price?: number
+  mark_price_ms?: number
+}
+
+export interface ConnectionHealth {
+  connected: boolean
+}
+
+// One exchange-side fill, folded onto its parent trade.
+export interface SpotExecutionSummary {
+  exchange_order_id: string
+  fill_quantity: number
+  fill_price: number
+  fill_fee_asset: string
+  fill_fee_amount: number
+  filled_at_exchange_ms: number
+  actual_slippage_bps: number
+}
+
+export interface TradeRecordSummary {
+  client_order_id: string
+  symbol: string
+  side: string
+  order_type: string
+  quantity_usd: number
+  limit_price?: number
+  now_ms_at_saas: number
+  valid_until_ms: number
+  status: string
+  created_at_ms: number
+  fills?: SpotExecutionSummary[]
+}
+
+// GET /instances/:id/live — aggregate snapshot. portfolio/connection are
+// omitted when unavailable; recent_trades is always present.
+export interface InstanceLiveResponse {
+  instance: InstanceResponse
+  portfolio?: PortfolioSnapshotView
+  connection?: ConnectionHealth
+  recent_trades: TradeRecordSummary[]
+}

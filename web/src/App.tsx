@@ -11,6 +11,8 @@ import LoginPage from './pages/LoginPage'
 import ChampionsPage from './pages/ChampionsPage'
 import TasksPage from './pages/TasksPage'
 import ChallengerReviewPage from './pages/ChallengerReviewPage'
+import InstancesPage from './pages/InstancesPage'
+import InstanceLivePage from './pages/InstanceLivePage'
 
 // "Analysis" is a deep link out to optuna-dashboard, per intent (a): the
 // native UI never rebuilds the analysis scene.
@@ -61,6 +63,7 @@ function Shell({ children }: { children: ReactNode }) {
           <span className="mr-4 font-semibold tracking-tight">QuantLab</span>
           <NavItem to="/champions" label="Champions" />
           <NavItem to="/tasks" label="Tasks" />
+          <NavItem to="/instances" label="Live" />
           <a
             href={OPTUNA_URL}
             target="_blank"
@@ -105,6 +108,11 @@ export default function App() {
                 <Route path="/champions" element={<ChampionsPage />} />
                 <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/tasks/:taskId" element={<ChallengerReviewPage />} />
+                <Route path="/instances" element={<InstancesPage />} />
+                <Route
+                  path="/instances/:instanceId"
+                  element={<InstanceLivePage />}
+                />
                 <Route path="*" element={<Placeholder title="Not found" />} />
               </Routes>
             </Shell>
