@@ -10,9 +10,9 @@
 //   - portfolio / equity  → DB hypertable portfolio_states (PortfolioRepo.Latest)
 //   - recent trades       → DB (TradeRecord, persisted by cmd/saas/agentmsg.go)
 //   - connection health   → Hub in-memory Registry — the ONLY piece with
-//                           process affinity. Optional: when Presence is
-//                           nil (stateless replica that doesn't hold the
-//                           Hub) the `connection` block is simply omitted.
+//     process affinity. Optional: when Presence is
+//     nil (stateless replica that doesn't hold the
+//     Hub) the `connection` block is simply omitted.
 //
 // Both endpoints are registered only when their collaborator is non-nil,
 // matching the Phase 9 nil-skip convention so existing handler tests
@@ -70,6 +70,20 @@ type ExecutionLister interface {
 type PriceReader interface {
 	LatestClose(ctx context.Context, symbol, interval string) (*store.KLine, error)
 }
+
+// ReconReader fetches the Phase 8 reconciliation tail (持仓对账) for an
+// instance: position-drift discrepancies + agent-collected exchange
+// errors. Backed by ReconRepo. Nil-skippable (Tier L): when nil, /live
+// omits both `recent_discrepancies` and `recent_errors`.
+type ReconReader interface {
+	ListDiscrepanciesForInstance(ctx context.Context, instanceID string, limit int) ([]store.ReconciliationDiscrepancy, error)
+	ListAgentErrorsForInstance(ctx context.Context, instanceID string, limit int) ([]store.AgentError, error)
+}
+
+// liveSnapshotReconRows is the reconciliation tail length folded into
+// /live (Tier L) — the monitor only needs "any recent drift / errors?",
+// not the full forensic history.
+const liveSnapshotReconRows = 20
 
 // liveMarkInterval is the kline interval used to mark live holdings to
 // market. Hardcoded 1m to match the live tick interval (see
@@ -183,7 +197,52 @@ func (h *Handlers) GetInstanceLive(c *gin.Context) {
 		}
 	}
 
+	// Reconciliation tail (Tier L) — Phase 8 持仓对账 forensic rows,
+	// keyed by instance_id. Nil-skippable; absent keys on a replica
+	// without the collaborator.
+	if h.Recon != nil {
+		discs, err := h.Recon.ListDiscrepanciesForInstance(c.Request.Context(), id, liveSnapshotReconRows)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, err)
+			return
+		}
+		for _, d := range discs {
+			resp.RecentDiscrepancies = append(resp.RecentDiscrepancies, toDiscrepancyView(d))
+		}
+		errs, err := h.Recon.ListAgentErrorsForInstance(c.Request.Context(), id, liveSnapshotReconRows)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, err)
+			return
+		}
+		for _, e := range errs {
+			resp.RecentErrors = append(resp.RecentErrors, toAgentErrorView(e))
+		}
+	}
+
 	c.JSON(http.StatusOK, resp)
+}
+
+// toDiscrepancyView maps a persisted drift row to its wire summary.
+func toDiscrepancyView(d store.ReconciliationDiscrepancy) ReconciliationDiscrepancyView {
+	return ReconciliationDiscrepancyView{
+		Asset:          d.Asset,
+		ExpectedAmount: d.ExpectedAmount,
+		ActualAmount:   d.ActualAmount,
+		DiffAmount:     d.DiffAmount,
+		DriftBps:       d.DriftBps,
+		ReportedAtMs:   d.ReportedAtMs,
+		DetectedAtMs:   d.DetectedAtMs,
+	}
+}
+
+// toAgentErrorView maps a persisted agent error to its wire summary.
+func toAgentErrorView(e store.AgentError) AgentErrorView {
+	return AgentErrorView{
+		Code:         e.Code,
+		Message:      e.Message,
+		OccurredAtMs: e.OccurredAtMs,
+		ReportedAtMs: e.ReportedAtMs,
+	}
 }
 
 // attachFills loads every fill for the given summaries' orders in one
@@ -276,12 +335,37 @@ type SpotExecutionSummary struct {
 	ActualSlippageBPS  float64 `json:"actual_slippage_bps"`
 }
 
+// ReconciliationDiscrepancyView is one persisted position-drift row
+// (Phase 8 持仓对账), folded into /live's reconciliation tail (Tier L).
+type ReconciliationDiscrepancyView struct {
+	Asset          string  `json:"asset"`
+	ExpectedAmount float64 `json:"expected_amount"`
+	ActualAmount   float64 `json:"actual_amount"`
+	DiffAmount     float64 `json:"diff_amount"`
+	DriftBps       float64 `json:"drift_bps"`
+	ReportedAtMs   int64   `json:"reported_at_ms"`
+	DetectedAtMs   int64   `json:"detected_at_ms"`
+}
+
+// AgentErrorView is one persisted exchange-layer error from a
+// delta_report, folded into /live's error stream (Tier L).
+type AgentErrorView struct {
+	Code         string `json:"code"`
+	Message      string `json:"message"`
+	OccurredAtMs int64  `json:"occurred_at_ms"`
+	ReportedAtMs int64  `json:"reported_at_ms"`
+}
+
 // InstanceLiveResponse is the body of GET /api/v1/instances/:id/live.
 // Portfolio and Connection are omitted when unavailable (no tick yet /
 // no Hub in this process); RecentTrades is always present (possibly []).
+// RecentDiscrepancies/RecentErrors are omitted when the Recon
+// collaborator is unwired (Tier L nil-skip).
 type InstanceLiveResponse struct {
-	Instance     InstanceResponse       `json:"instance"`
-	Portfolio    *PortfolioSnapshotView `json:"portfolio,omitempty"`
-	Connection   *ConnectionHealth      `json:"connection,omitempty"`
-	RecentTrades []TradeRecordSummary   `json:"recent_trades"`
+	Instance            InstanceResponse                `json:"instance"`
+	Portfolio           *PortfolioSnapshotView          `json:"portfolio,omitempty"`
+	Connection          *ConnectionHealth               `json:"connection,omitempty"`
+	RecentTrades        []TradeRecordSummary            `json:"recent_trades"`
+	RecentDiscrepancies []ReconciliationDiscrepancyView `json:"recent_discrepancies,omitempty"`
+	RecentErrors        []AgentErrorView                `json:"recent_errors,omitempty"`
 }

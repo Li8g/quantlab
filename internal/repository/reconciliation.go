@@ -37,3 +37,40 @@ func (r *ReconRepo) InsertAgentError(ctx context.Context, e *store.AgentError) e
 	}
 	return r.db.WithContext(ctx).Create(e).Error
 }
+
+// ListDiscrepanciesForInstance returns the most-recent drift rows for an
+// instance, newest first. Used by the /live snapshot's reconciliation
+// tail (Tier L). An empty instanceID returns (nil, nil) without a query.
+func (r *ReconRepo) ListDiscrepanciesForInstance(ctx context.Context, instanceID string, limit int) ([]store.ReconciliationDiscrepancy, error) {
+	if instanceID == "" {
+		return nil, nil
+	}
+	var rows []store.ReconciliationDiscrepancy
+	err := r.db.WithContext(ctx).
+		Where("instance_id = ?", instanceID).
+		Order("detected_at_ms DESC").
+		Limit(limit).
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// ListAgentErrorsForInstance returns the most-recent agent errors for an
+// instance, newest first. Used by the /live snapshot's error stream.
+func (r *ReconRepo) ListAgentErrorsForInstance(ctx context.Context, instanceID string, limit int) ([]store.AgentError, error) {
+	if instanceID == "" {
+		return nil, nil
+	}
+	var rows []store.AgentError
+	err := r.db.WithContext(ctx).
+		Where("instance_id = ?", instanceID).
+		Order("occurred_at_ms DESC").
+		Limit(limit).
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}

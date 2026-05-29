@@ -211,6 +211,9 @@ type Handlers struct {
 	// Prices marks /live holdings to market (equity). Nil-skippable:
 	// when nil (or no bar), the equity fields are omitted.
 	Prices PriceReader
+	// Recon folds the Phase 8 reconciliation tail (持仓对账) into /live:
+	// position-drift discrepancies + agent errors (Tier L). Nil-skippable.
+	Recon ReconReader
 
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests
@@ -633,8 +636,8 @@ func (h *Handlers) DeployChampion(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"instance_id":         id,
-		"active_champion_id":  req.ChallengerID,
+		"instance_id":        id,
+		"active_champion_id": req.ChallengerID,
 	})
 }
 

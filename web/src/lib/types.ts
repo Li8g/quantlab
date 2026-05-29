@@ -188,11 +188,34 @@ export interface TradeRecordSummary {
   fills?: SpotExecutionSummary[]
 }
 
+// One persisted position-drift row (Phase 8 持仓对账), Tier L.
+export interface ReconciliationDiscrepancyView {
+  asset: string
+  expected_amount: number
+  actual_amount: number
+  diff_amount: number
+  drift_bps: number
+  reported_at_ms: number
+  detected_at_ms: number
+}
+
+// One persisted exchange-layer error from a delta_report, Tier L.
+export interface AgentErrorView {
+  code: string
+  message: string
+  occurred_at_ms: number
+  reported_at_ms: number
+}
+
 // GET /instances/:id/live — aggregate snapshot. portfolio/connection are
 // omitted when unavailable; recent_trades is always present.
+// recent_discrepancies/recent_errors are omitted when the recon
+// collaborator is unwired (Tier L nil-skip).
 export interface InstanceLiveResponse {
   instance: InstanceResponse
   portfolio?: PortfolioSnapshotView
   connection?: ConnectionHealth
   recent_trades: TradeRecordSummary[]
+  recent_discrepancies?: ReconciliationDiscrepancyView[]
+  recent_errors?: AgentErrorView[]
 }

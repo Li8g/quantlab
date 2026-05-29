@@ -11,9 +11,11 @@ import {
   InstanceStatusBadge,
 } from '../components/StatusBadge'
 import type {
+  AgentErrorView,
   InstanceLiveResponse,
   InstanceStatus,
   PortfolioSnapshotView,
+  ReconciliationDiscrepancyView,
   TradeRecordSummary,
 } from '../lib/types'
 
@@ -58,6 +60,8 @@ export default function InstanceLivePage() {
   if (!data) return null
 
   const { instance, portfolio, connection, recent_trades } = data
+  const discrepancies = data.recent_discrepancies ?? []
+  const agentErrors = data.recent_errors ?? []
 
   function requestAction(verb: ActionVerb) {
     const tag = `${instance.strategy_id} · ${instance.pair}`
@@ -103,6 +107,9 @@ export default function InstanceLivePage() {
       </div>
 
       <TradesCard trades={recent_trades} />
+
+      <ReconciliationCard rows={discrepancies} />
+      <AgentErrorsCard rows={agentErrors} />
 
       {pending && auth && (
         <SudoModal
@@ -336,5 +343,95 @@ function TradeRow({ t }: { t: TradeRecordSummary }) {
         </tr>
       ))}
     </>
+  )
+}
+
+// amountByAsset formats a holdings amount with the right precision for the
+// asset (USDT → 2dp money, base asset → 8dp).
+function amountByAsset(asset: string, v: number) {
+  return asset === 'USDT' ? formatUsd(v) : formatBtc(v)
+}
+
+// Reconciliation panel (Tier L): position drift the Agent reported vs
+// SaaS bookkeeping (Phase 8 持仓对账). Empty = books match the exchange.
+function ReconciliationCard({ rows }: { rows: ReconciliationDiscrepancyView[] }) {
+  return (
+    <div className="mt-4">
+      <h2 className="mb-2 text-sm font-semibold text-slate-700">
+        Reconciliation
+      </h2>
+      {rows.length === 0 ? (
+        <p className="text-sm text-emerald-600">
+          ✓ No discrepancies — books match the exchange.
+        </p>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-red-200 bg-white">
+          <table className="w-full text-sm">
+            <thead className="bg-red-50 text-left text-red-700">
+              <tr>
+                <th className="px-4 py-2 font-medium">Asset</th>
+                <th className="px-4 py-2 font-medium">Expected</th>
+                <th className="px-4 py-2 font-medium">Actual</th>
+                <th className="px-4 py-2 font-medium">Diff</th>
+                <th className="px-4 py-2 font-medium">Drift</th>
+                <th className="px-4 py-2 font-medium">Detected</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map((d) => (
+                <tr key={`${d.asset}-${d.detected_at_ms}`}>
+                  <td className="px-4 py-2 font-medium">{d.asset}</td>
+                  <td className="px-4 py-2 tabular-nums">
+                    {amountByAsset(d.asset, d.expected_amount)}
+                  </td>
+                  <td className="px-4 py-2 tabular-nums">
+                    {amountByAsset(d.asset, d.actual_amount)}
+                  </td>
+                  <td className="px-4 py-2 tabular-nums text-red-600">
+                    {amountByAsset(d.asset, d.diff_amount)}
+                  </td>
+                  <td className="px-4 py-2 tabular-nums">
+                    {formatNum(d.drift_bps, 1)} bps
+                  </td>
+                  <td className="px-4 py-2">{formatMs(d.detected_at_ms)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Agent error stream (Tier L): exchange-layer errors the Agent collected
+// (rate limits, partial outages) reported via delta_report.
+function AgentErrorsCard({ rows }: { rows: AgentErrorView[] }) {
+  return (
+    <div className="mt-4">
+      <h2 className="mb-2 text-sm font-semibold text-slate-700">
+        Agent errors
+      </h2>
+      {rows.length === 0 ? (
+        <p className="text-sm text-slate-400">No agent errors.</p>
+      ) : (
+        <ul className="space-y-1">
+          {rows.map((e) => (
+            <li
+              key={`${e.code}-${e.occurred_at_ms}`}
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm"
+            >
+              <span className="font-mono text-xs font-medium text-amber-800">
+                {e.code}
+              </span>
+              <span className="ml-2 text-slate-600">{e.message}</span>
+              <span className="ml-2 text-xs text-slate-400">
+                {formatMs(e.occurred_at_ms)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }

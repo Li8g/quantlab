@@ -292,6 +292,7 @@ func main() {
 		Presence:     hubPresence{reg: hub.Registry()},
 		Executions:   tradeRepo,
 		Prices:       klineRepo,
+		Recon:        reconRepo,
 		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,
