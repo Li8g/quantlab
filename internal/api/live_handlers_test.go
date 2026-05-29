@@ -78,12 +78,13 @@ func TestListInstances(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		role     store.UserRole
-		userID   uint
-		listErr  error
-		wantCode int
-		wantIDs  []string // expected instance_ids in response, order-preserved
+		name         string
+		role         store.UserRole
+		userID       uint
+		adminCapable bool
+		listErr      error
+		wantCode     int
+		wantIDs      []string // expected instance_ids in response, order-preserved
 	}{
 		{
 			name: "admin sees all owners", role: store.UserRoleAdmin, userID: 1,
@@ -92,6 +93,13 @@ func TestListInstances(t *testing.T) {
 		{
 			name: "viewer sees only own", role: store.UserRoleViewer, userID: 7,
 			wantCode: http.StatusOK, wantIDs: []string{"i-a", "i-c"},
+		},
+		{
+			// Admin's standing session: viewer role (24h) but admin_capable
+			// from the DB role. Sees every owner without a step-up token.
+			name: "admin_capable viewer sees all owners", role: store.UserRoleViewer,
+			userID: 99, adminCapable: true,
+			wantCode: http.StatusOK, wantIDs: []string{"i-a", "i-b", "i-c"},
 		},
 		{
 			name: "operator with no instances sees none", role: store.UserRoleOperator, userID: 99,
@@ -106,7 +114,9 @@ func TestListInstances(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			h := &Handlers{InstanceList: &fakeInstanceLister{rows: rows, err: c.listErr}}
-			r := withClaimsHandlers(h, &auth.Claims{UserID: c.userID, Role: string(c.role)})
+			r := withClaimsHandlers(h, &auth.Claims{
+				UserID: c.userID, Role: string(c.role), AdminCapable: c.adminCapable,
+			})
 
 			rec := httptest.NewRecorder()
 			req, _ := http.NewRequest(http.MethodGet, "/api/v1/instances", nil)
@@ -150,20 +160,21 @@ func TestGetInstanceLive(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		role      store.UserRole
-		userID    uint
-		seed      bool // seed the instance into the store
-		instErr   error
-		portfolio *store.PortfolioState
-		portErr   error
-		presence   *fakePresence        // nil → collaborator not wired
-		trades     []store.TradeRecord
-		tradesErr  error
-		executions *fakeExecutionLister // nil → collaborator not wired
-		prices     *fakePriceReader     // nil → collaborator not wired
-		wantCode   int
-		check      func(t *testing.T, resp InstanceLiveResponse, trades *fakeTradeLister)
+		name         string
+		role         store.UserRole
+		userID       uint
+		adminCapable bool
+		seed         bool // seed the instance into the store
+		instErr      error
+		portfolio    *store.PortfolioState
+		portErr      error
+		presence     *fakePresence // nil → collaborator not wired
+		trades       []store.TradeRecord
+		tradesErr    error
+		executions   *fakeExecutionLister // nil → collaborator not wired
+		prices       *fakePriceReader     // nil → collaborator not wired
+		wantCode     int
+		check        func(t *testing.T, resp InstanceLiveResponse, trades *fakeTradeLister)
 	}{
 		{
 			name: "happy: all blocks present", role: store.UserRoleAdmin, userID: 1,
@@ -227,6 +238,18 @@ func TestGetInstanceLive(t *testing.T) {
 		{
 			name: "cross-owner viewer → 403", role: store.UserRoleViewer, userID: 999,
 			seed: true, portfolio: samplePortfolio, wantCode: http.StatusForbidden,
+		},
+		{
+			// Same cross-owner viewer, but admin_capable: the standing
+			// admin session reads any instance's snapshot (200, not 403).
+			name: "cross-owner admin_capable viewer allowed", role: store.UserRoleViewer,
+			userID: 999, adminCapable: true,
+			seed: true, portfolio: samplePortfolio, wantCode: http.StatusOK,
+			check: func(t *testing.T, resp InstanceLiveResponse, _ *fakeTradeLister) {
+				if resp.Instance.InstanceID != "i-1" {
+					t.Errorf("instance_id = %q, want i-1", resp.Instance.InstanceID)
+				}
+			},
 		},
 		{
 			name: "missing instance → 404", role: store.UserRoleAdmin, userID: 1,
@@ -360,7 +383,9 @@ func TestGetInstanceLive(t *testing.T) {
 			if c.prices != nil {
 				h.Prices = c.prices
 			}
-			r := withClaimsHandlers(h, &auth.Claims{UserID: c.userID, Role: string(c.role)})
+			r := withClaimsHandlers(h, &auth.Claims{
+				UserID: c.userID, Role: string(c.role), AdminCapable: c.adminCapable,
+			})
 
 			rec := httptest.NewRecorder()
 			req, _ := http.NewRequest(http.MethodGet, "/api/v1/instances/i-1/live", nil)

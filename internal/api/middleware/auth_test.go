@@ -173,3 +173,33 @@ func TestRequireRole_RejectsViewerOnOperatorGate(t *testing.T) {
 		t.Errorf("viewer must hit 403 on operator+ gate, got %d", rec.Code)
 	}
 }
+
+// TestRequireRole_AdminCapableViewerStillRejected pins the security
+// boundary behind the admin_capable claim: it grants admin-scoped reads
+// (canViewInstance) but must NOT satisfy a write gate. RequireRole keys
+// off the issued Role, so an admin's standing viewer session — viewer
+// role, admin_capable=true — is still 403'd on an admin-only route.
+// Privileged writes (promote/retire) therefore still demand a fresh
+// admin step-up token.
+func TestRequireRole_AdminCapableViewerStillRejected(t *testing.T) {
+	svc := newTestAuth(t)
+	token, _, err := svc.IssueToken(1, string(store.UserRoleViewer), true)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	r := ginTestEngine()
+	r.GET("/p",
+		AuthRequired(svc),
+		RequireRole(store.UserRoleAdmin),
+		func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodGet, "/p", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("admin_capable viewer must still hit 403 on admin gate, got %d", rec.Code)
+	}
+}
