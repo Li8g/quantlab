@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/context'
 import { SudoModal } from '../auth/SudoModal'
 import { apiFetch } from '../lib/api'
 import { formatMs } from '../lib/format'

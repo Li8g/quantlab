@@ -6,7 +6,7 @@ import {
   useLocation,
 } from 'react-router-dom'
 import type { ReactNode } from 'react'
-import { useAuth } from './auth/AuthContext'
+import { useAuth } from './auth/context'
 import LoginPage from './pages/LoginPage'
 import ChampionsPage from './pages/ChampionsPage'
 import TasksPage from './pages/TasksPage'

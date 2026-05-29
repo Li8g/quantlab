@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
@@ -9,24 +7,13 @@ import {
 } from 'react'
 import { apiFetch, setUnauthorizedHandler } from '../lib/api'
 import type { LoginResponse } from '../lib/types'
+import { AuthContext, type AuthState } from './context'
 
 // Sudo-style auth (docs/frontend-promote-retire-v1.md §3): the default
 // session is a viewer token. Elevation to admin for promote/retire is a
 // separate, short-lived step-up handled by SudoModal (F1) — this context
-// holds only the standing session.
-
-export interface AuthState {
-  token: string
-  role: string
-  expiresAt: number // unix ms
-  email: string // kept for SudoModal re-login + reviewed_by
-}
-
-interface AuthContextValue {
-  auth: AuthState | null
-  login: (email: string, password: string, role?: string) => Promise<void>
-  logout: () => void
-}
+// holds only the standing session. AuthState / AuthContextValue / useAuth
+// live in ./context so this file exports only the provider component.
 
 const STORAGE_KEY = 'quantlab.auth'
 
@@ -42,8 +29,6 @@ function loadStored(): AuthState | null {
     return null
   }
 }
-
-const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [auth, setAuth] = useState<AuthState | null>(loadStored)
@@ -80,10 +65,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({ auth, login, logout }), [auth, login, logout])
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
-}
-
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
 }

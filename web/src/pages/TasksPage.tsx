@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/context'
 import { apiFetch } from '../lib/api'
 import { formatMs } from '../lib/format'
 import { TaskStatusBadge } from '../components/StatusBadge'

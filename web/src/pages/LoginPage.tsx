@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/context'
 import { ApiError } from '../lib/api'
 
 // Viewer login (F0.3). Sudo-style step-up to admin for promote/retire is
