@@ -258,18 +258,7 @@ func (h *Handlers) ListInstanceTrades(c *gin.Context) {
 	}
 	items := make([]TradeRecordSummary, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, TradeRecordSummary{
-			ClientOrderID: r.ClientOrderID,
-			Symbol:        r.Symbol,
-			Side:          r.Side,
-			OrderType:     r.OrderType,
-			QuantityUSD:   r.QuantityUSD,
-			LimitPrice:    r.LimitPrice,
-			NowMsAtSaaS:   r.NowMsAtSaaS,
-			ValidUntilMs:  r.ValidUntilMs,
-			Status:        string(r.Status),
-			CreatedAtMs:   r.CreatedAt.UnixMilli(),
-		})
+		items = append(items, toTradeSummary(r))
 	}
 	c.JSON(http.StatusOK, ListInstanceTradesResponse{Items: items, Count: len(items)})
 }
