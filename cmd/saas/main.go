@@ -289,6 +289,7 @@ func main() {
 		InstanceList: instanceRepo,
 		Portfolios:   portfolioRepo,
 		Presence:     hubPresence{reg: hub.Registry()},
+		Executions:   tradeRepo,
 		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,

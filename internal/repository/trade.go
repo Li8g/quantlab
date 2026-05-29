@@ -89,3 +89,23 @@ func (r *TradeRepo) InsertSpotExecution(ctx context.Context, ex *store.SpotExecu
 	}
 	return r.db.WithContext(ctx).Create(ex).Error
 }
+
+// ListExecutionsForOrders returns every fill whose client_order_id is in
+// the supplied set, oldest fill first. Used by the live-monitor /live
+// snapshot to attach fill detail to the recent trade tail in a single
+// query (the order set is already bounded by the trade limit). An empty
+// input returns (nil, nil) without touching the DB.
+func (r *TradeRepo) ListExecutionsForOrders(ctx context.Context, clientOrderIDs []string) ([]store.SpotExecution, error) {
+	if len(clientOrderIDs) == 0 {
+		return nil, nil
+	}
+	var rows []store.SpotExecution
+	err := r.db.WithContext(ctx).
+		Where("client_order_id IN ?", clientOrderIDs).
+		Order("filled_at_exchange_ms ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}

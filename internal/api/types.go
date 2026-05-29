@@ -266,6 +266,11 @@ type TradeRecordSummary struct {
 	ValidUntilMs  int64    `json:"valid_until_ms"`
 	Status        string   `json:"status"`
 	CreatedAtMs   int64    `json:"created_at_ms"`
+
+	// Fills carries exchange-side fill detail, populated only on the
+	// /live snapshot path (via ExecutionLister). The /trades list
+	// leaves it nil, so the key is absent there.
+	Fills []SpotExecutionSummary `json:"fills,omitempty"`
 }
 
 // ListInstanceTradesResponse is the body of

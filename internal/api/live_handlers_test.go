@@ -37,6 +37,17 @@ type fakePresence struct{ connected bool }
 
 func (f *fakePresence) IsConnected(_ string) bool { return f.connected }
 
+type fakeExecutionLister struct {
+	rows   []store.SpotExecution
+	err    error
+	gotIDs []string
+}
+
+func (f *fakeExecutionLister) ListExecutionsForOrders(_ context.Context, ids []string) ([]store.SpotExecution, error) {
+	f.gotIDs = ids
+	return f.rows, f.err
+}
+
 func liveJSON(t *testing.T, body []byte) InstanceLiveResponse {
 	t.Helper()
 	var out InstanceLiveResponse
@@ -137,11 +148,12 @@ func TestGetInstanceLive(t *testing.T) {
 		instErr   error
 		portfolio *store.PortfolioState
 		portErr   error
-		presence  *fakePresence // nil → collaborator not wired
-		trades    []store.TradeRecord
-		tradesErr error
-		wantCode  int
-		check     func(t *testing.T, resp InstanceLiveResponse, trades *fakeTradeLister)
+		presence   *fakePresence        // nil → collaborator not wired
+		trades     []store.TradeRecord
+		tradesErr  error
+		executions *fakeExecutionLister // nil → collaborator not wired
+		wantCode   int
+		check      func(t *testing.T, resp InstanceLiveResponse, trades *fakeTradeLister)
 	}{
 		{
 			name: "happy: all blocks present", role: store.UserRoleAdmin, userID: 1,
@@ -219,6 +231,46 @@ func TestGetInstanceLive(t *testing.T) {
 			seed: true, portfolio: samplePortfolio, tradesErr: gorm.ErrInvalidDB,
 			wantCode: http.StatusInternalServerError,
 		},
+		{
+			name: "fills folded onto matching orders", role: store.UserRoleAdmin, userID: 1,
+			seed: true, trades: sampleTrades,
+			executions: &fakeExecutionLister{rows: []store.SpotExecution{
+				{ClientOrderID: "co-1", ExchangeOrderID: "ex-1a", FillQuantity: 0.3, FillPrice: 60000},
+				{ClientOrderID: "co-1", ExchangeOrderID: "ex-1b", FillQuantity: 0.2, FillPrice: 60010},
+				{ClientOrderID: "co-2", ExchangeOrderID: "ex-2a", FillQuantity: 0.1, FillPrice: 61000},
+			}},
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp InstanceLiveResponse, _ *fakeTradeLister) {
+				byOrder := map[string]int{}
+				for _, tr := range resp.RecentTrades {
+					byOrder[tr.ClientOrderID] = len(tr.Fills)
+				}
+				if byOrder["co-1"] != 2 {
+					t.Errorf("co-1 fills = %d, want 2", byOrder["co-1"])
+				}
+				if byOrder["co-2"] != 1 {
+					t.Errorf("co-2 fills = %d, want 1", byOrder["co-2"])
+				}
+			},
+		},
+		{
+			name: "no ExecutionLister: fills omitted", role: store.UserRoleAdmin, userID: 1,
+			seed: true, trades: sampleTrades, executions: nil,
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp InstanceLiveResponse, _ *fakeTradeLister) {
+				for _, tr := range resp.RecentTrades {
+					if tr.Fills != nil {
+						t.Errorf("order %s fills = %v, want nil (collaborator unwired)", tr.ClientOrderID, tr.Fills)
+					}
+				}
+			},
+		},
+		{
+			name: "execution read error → 500", role: store.UserRoleAdmin, userID: 1,
+			seed: true, trades: sampleTrades,
+			executions: &fakeExecutionLister{err: gorm.ErrInvalidDB},
+			wantCode:   http.StatusInternalServerError,
+		},
 	}
 
 	for _, c := range cases {
@@ -239,6 +291,9 @@ func TestGetInstanceLive(t *testing.T) {
 			}
 			if c.presence != nil {
 				h.Presence = c.presence
+			}
+			if c.executions != nil {
+				h.Executions = c.executions
 			}
 			r := withClaimsHandlers(h, &auth.Claims{UserID: c.userID, Role: string(c.role)})
 

@@ -205,6 +205,9 @@ type Handlers struct {
 	InstanceList InstanceLister
 	Portfolios   PortfolioReader
 	Presence     AgentPresence
+	// Executions folds SpotExecution fill detail into /live's trade
+	// tail. Nil-skippable: when nil, recent_trades omit `fills`.
+	Executions ExecutionLister
 
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests
