@@ -1,6 +1,6 @@
 # Phase 9 — `/data/import` 异步设计 v1
 
-`[v1 设计冻结 2026-05-28 — 实现 defer 到 frontend 阶段]`
+`[v1 设计冻结 2026-05-28 — 实现完成 2026-05-29 commit dd21789]`
 
 这份文档冻结 `POST /data/import` 的 API 契约、表结构、状态机、并发模型与用户决策。**代码尚未实现**——Phase 9 REST 补全的最后一个端点,绑定在 6 月 frontend 阶段拉动(为不存在的前端 ship 是 zero value,ops 当前用 CLI `datafeeder import` 已够)。本文档的目的是先把形态钉死,让 frontend 一开工就有现成契约可对接。
 
@@ -230,9 +230,21 @@ type Orchestrator struct {
 
 ---
 
-## 10. 实现位置(待填)
+## 10. 实现位置(已实现 — commit dd21789)
 
-实现后回填 `file:line`,并把本文档 header 从"实现 defer"改为"frozen + 实现完成"。
+| 件 | 位置 |
+|---|---|
+| 表 `ImportJob` + TableName | `internal/saas/store/models.go`(`AllModels` 注册) |
+| partial unique index `uq_import_jobs_active` | `internal/saas/store/db.go`(AutoMigrate 后 raw SQL) |
+| repo | `internal/repository/import_job.go`(Create/Get/List/NextQueued/MarkRunning/RecordMonth/Finish/SetCancelRequested/SweepOrphans;`isUniqueViolation` 不依赖 gorm TranslateError) |
+| orchestrator hook | `internal/data/orchestrator.go`(`Orchestrator.OnMonth` + 月末检查 + `ErrImportCancelled` sentinel) |
+| worker | `internal/data/import_worker.go`(`ImportWorker` + `ImportFunc`/`OrchestratorImportFunc` 注入缝便于单测) |
+| handler + 类型 | `internal/api/handlers_import.go`(4 路由 + 请求/响应);路由注册 `internal/api/handlers.go`(`h.Imports != nil`) |
+| sentinel | `api.ErrImportActive`(`internal/api/handlers.go` 边界 sentinel,repo 返回它) |
+| wiring + gate | `cmd/saas/main.go`(`cfg.AppRole != AppRoleSaaS` → 设 `h.Imports` + orphan sweep + 起 worker goroutine) |
+| 测试 | `handlers_import_test.go`(202/409/400×4/404/list/cancel)+ `import_worker_test.go`(状态机,fake ImportFunc)+ `import_job_integration_test.go`(unique index/转换/cancel/orphan sweep,Postgres) |
+
+实际规模 ≈ 1120 LoC(含测试),接近 §7 估的 645 LoC 核心 + 测试。注:`ImportJob` 用 gorm.Model(软删),集成测试 cleanup 须 `Unscoped()` 硬删否则 job_id 唯一索引挡重跑。
 
 ---
 
