@@ -19,6 +19,7 @@ export interface AuthState {
   token: string
   role: string
   expiresAt: number // unix ms
+  email: string // kept for SudoModal re-login + reviewed_by
 }
 
 interface AuthContextValue {
@@ -62,6 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         token: res.token,
         role: res.role,
         expiresAt: res.expires_at,
+        email,
       }
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next))
       setAuth(next)

@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState, type ReactNode } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { SudoModal } from '../auth/SudoModal'
 import { apiFetch } from '../lib/api'
 import { formatMs } from '../lib/format'
 import { DecisionStatusBadge, OosBadge } from '../components/StatusBadge'
@@ -54,6 +55,8 @@ export default function ChallengerReviewPage() {
   const { taskId } = useParams<{ taskId: string }>()
   const { auth } = useAuth()
   const token = auth?.token
+  const queryClient = useQueryClient()
+  const [sudoOpen, setSudoOpen] = useState(false)
 
   const taskQ = useQuery({
     queryKey: ['task', taskId],
@@ -102,6 +105,7 @@ export default function ChallengerReviewPage() {
 
   const s = summaryQ.data
   const pkg = packageQ.data
+  const canPromote = s?.decision_status === 'pending' && !s.test_mode
 
   return (
     <div className="space-y-5">
@@ -114,7 +118,37 @@ export default function ChallengerReviewPage() {
             test_mode — not promotable
           </span>
         )}
+        {canPromote && (
+          <button
+            type="button"
+            onClick={() => setSudoOpen(true)}
+            className="ml-auto rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-800"
+          >
+            Promote
+          </button>
+        )}
       </div>
+
+      {sudoOpen && auth && challengerId && (
+        <SudoModal
+          action={`Promote challenger ${challengerId.slice(0, 12)} to champion.`}
+          email={auth.email}
+          onClose={() => setSudoOpen(false)}
+          onConfirm={async (adminToken, note) => {
+            await apiFetch(`/challengers/${challengerId}/promote`, {
+              method: 'POST',
+              token: adminToken,
+              body: {
+                reviewed_by: auth.email,
+                decision_note: note || undefined,
+              },
+            })
+            await queryClient.invalidateQueries({
+              queryKey: ['challenger', challengerId],
+            })
+          }}
+        />
+      )}
 
       {summaryQ.isLoading && (
         <p className="text-sm text-slate-500">Loading summary…</p>
