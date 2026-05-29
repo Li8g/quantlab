@@ -9,6 +9,8 @@ import type { ReactNode } from 'react'
 import { useAuth } from './auth/AuthContext'
 import LoginPage from './pages/LoginPage'
 import ChampionsPage from './pages/ChampionsPage'
+import TasksPage from './pages/TasksPage'
+import ChallengerReviewPage from './pages/ChallengerReviewPage'
 
 // "Analysis" is a deep link out to optuna-dashboard, per intent (a): the
 // native UI never rebuilds the analysis scene.
@@ -101,7 +103,8 @@ export default function App() {
                   element={<Navigate to="/champions" replace />}
                 />
                 <Route path="/champions" element={<ChampionsPage />} />
-                <Route path="/tasks" element={<Placeholder title="Tasks" />} />
+                <Route path="/tasks" element={<TasksPage />} />
+                <Route path="/tasks/:taskId" element={<ChallengerReviewPage />} />
                 <Route path="*" element={<Placeholder title="Not found" />} />
               </Routes>
             </Shell>
