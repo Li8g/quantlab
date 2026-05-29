@@ -60,6 +60,20 @@ func (r *InstanceRepo) ListLive(ctx context.Context) ([]store.StrategyInstance, 
 	return rows, nil
 }
 
+// ListByAccount returns every instance owned by an exchange account,
+// any status. delta_report reconciliation (Phase 8) uses it to resolve
+// the account-level position snapshot back to the SaaS-side portfolio(s):
+// 1 row → attribute the discrepancy to that instance; many → account-level.
+func (r *InstanceRepo) ListByAccount(ctx context.Context, accountID string) ([]store.StrategyInstance, error) {
+	var rows []store.StrategyInstance
+	if err := r.db.WithContext(ctx).
+		Where("account_id = ?", accountID).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // UpdateStatus transitions an instance to a new Status. The state
 // machine (§4.2 transition graph) is enforced by the caller — this
 // repo is a thin writer.

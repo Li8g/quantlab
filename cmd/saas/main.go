@@ -198,6 +198,7 @@ func main() {
 	portfolioRepo := repository.NewPortfolioRepo(db)
 	runtimeRepo := repository.NewRuntimeRepo(db)
 	tradeRepo := repository.NewTradeRepo(db)
+	reconRepo := repository.NewReconRepo(db)
 
 	registry := epoch.DefaultRegistry()
 	svc := epoch.New(
@@ -231,7 +232,7 @@ func main() {
 	// fans out to Redis (when configured) so other processes can query
 	// `agent:{accountID}:status` per protocol §7.2.
 	agentAuthSvc := agentauth.NewService(agentauth.NewGormTokenStore(db))
-	agentMsgs := newAgentMessageHandler(tradeRepo, nil)
+	agentMsgs := newAgentMessageHandler(tradeRepo, instanceRepo, portfolioRepo, reconRepo, nil)
 
 	var statusReporter agentstatus.Reporter = agentstatus.NopReporter{}
 	if cfg.Redis.Addr == "" {

@@ -525,6 +525,41 @@ type AuditLog struct {
 	DataJSON  json.RawMessage `gorm:"type:jsonb"                                 json:"data_json,omitempty"`
 }
 
+// ReconciliationDiscrepancy is one detected drift between the exchange's
+// reported holdings (delta_report.positions — ground truth) and SaaS's own
+// portfolio bookkeeping, recorded per asset. Append-only forensic trail:
+// the durable, queryable, joinable record behind 持仓对账 — chosen over
+// ephemeral logs precisely so incident retrospective survives log rotation
+// (Phase 8, Option 2). [INVENTED v1]
+type ReconciliationDiscrepancy struct {
+	ID             uint      `gorm:"primaryKey"                      json:"id"`
+	CreatedAt      time.Time `gorm:"index"                           json:"created_at"`
+	AccountID      string    `gorm:"type:varchar(64);index;not null" json:"account_id"`
+	InstanceID     string    `gorm:"type:varchar(32);index"          json:"instance_id"` // resolved when account↔instance is 1:1; "" when account spans many
+	Asset          string    `gorm:"type:varchar(16);not null"       json:"asset"`       // "BTC" / "USDT"
+	ExpectedAmount float64   `json:"expected_amount"`                                    // SaaS bookkeeping (BTC: dead+float+cold; USDT)
+	ActualAmount   float64   `json:"actual_amount"`                                      // exchange free+locked
+	DiffAmount     float64   `json:"diff_amount"`                                        // actual - expected
+	DriftBps       float64   `json:"drift_bps"`                                          // |diff| / max(|expected|,|actual|,floor) * 1e4
+	ReportedAtMs   int64     `gorm:"index"                           json:"reported_at_ms"` // delta_report.reported_at_ms
+	DetectedAtMs   int64     `json:"detected_at_ms"`                                     // SaaS wall clock at detection
+}
+
+// AgentError is one exchange-layer error the Agent collected since its last
+// delta_report (rate limits, partial outages — §5.11 since_last_report.errors).
+// Append-only; feeds incident retrospective and the Tier L error stream.
+// Distinct from the wire-level `error` message (§5.15). [INVENTED v1]
+type AgentError struct {
+	ID           uint      `gorm:"primaryKey"                      json:"id"`
+	CreatedAt    time.Time `gorm:"index"                           json:"created_at"`
+	AccountID    string    `gorm:"type:varchar(64);index;not null" json:"account_id"`
+	InstanceID   string    `gorm:"type:varchar(32);index"          json:"instance_id"`
+	Code         string    `gorm:"type:varchar(64);index;not null" json:"code"`
+	Message      string    `gorm:"type:text"                       json:"message"`
+	OccurredAtMs int64     `gorm:"index"                           json:"occurred_at_ms"`
+	ReportedAtMs int64     `json:"reported_at_ms"` // delta_report.reported_at_ms that carried it
+}
+
 // AllModels returns every GORM model for AutoMigrate.
 // Keep in sync when adding new tables.
 func AllModels() []interface{} {
@@ -550,5 +585,8 @@ func AllModels() []interface{} {
 		&AuditLog{},
 		// Phase 7 Step 2 — Agent WS bearer-token table (saas-ws-protocol-v1.md §4.3)
 		&AgentToken{},
+		// Phase 8 — delta_report reconciliation forensic trail (Option 2)
+		&ReconciliationDiscrepancy{},
+		&AgentError{},
 	}
 }

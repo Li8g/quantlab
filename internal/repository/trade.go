@@ -90,6 +90,26 @@ func (r *TradeRepo) InsertSpotExecution(ctx context.Context, ex *store.SpotExecu
 	return r.db.WithContext(ctx).Create(ex).Error
 }
 
+// ExecutionExists reports whether a fill with this (client_order_id,
+// filled_at_exchange_ms) is already persisted. delta_report fills are a
+// fallback channel redundant with order_update (§5.11); the hot path
+// dedups via envelope msg_id replay protection, but delta_report fills
+// arrive on a different envelope, so they need content-level dedup before
+// insert to avoid double-counting. Cheap SELECT on the low-freq (~60s)
+// reconciliation path.
+func (r *TradeRepo) ExecutionExists(ctx context.Context, clientOrderID string, filledAtExchangeMs int64) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&store.SpotExecution{}).
+		Where("client_order_id = ? AND filled_at_exchange_ms = ?", clientOrderID, filledAtExchangeMs).
+		Limit(1).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // ListExecutionsForOrders returns every fill whose client_order_id is in
 // the supplied set, oldest fill first. Used by the live-monitor /live
 // snapshot to attach fill detail to the recent trade tail in a single

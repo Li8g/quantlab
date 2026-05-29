@@ -111,6 +111,154 @@ func TestBuildSpotExecution_BadDecimal(t *testing.T) {
 	}
 }
 
+// delta_report fills carry their own order ids (unlike order_update);
+// buildSpotExecutionFrom must take them from the args, not a parent.
+func TestBuildSpotExecutionFrom_DeltaReportFill(t *testing.T) {
+	f := wire.Fill{
+		FillQuantityDecimal:  "0.5",
+		FillPriceDecimal:     "60000",
+		FillFeeAsset:         "USDT",
+		FillFeeAmountDecimal: "0.3",
+		FilledAtExchangeMs:   1714000000999,
+		ActualSlippageBps:    1.0,
+		ClientOrderID:        "dr-co-1",
+		ExchangeOrderID:      "dr-ex-1",
+	}
+	ex, err := buildSpotExecutionFrom(f.ClientOrderID, f.ExchangeOrderID, f)
+	if err != nil {
+		t.Fatalf("buildSpotExecutionFrom: %v", err)
+	}
+	if ex.ClientOrderID != "dr-co-1" || ex.ExchangeOrderID != "dr-ex-1" {
+		t.Errorf("order ids = %q/%q, want dr-co-1/dr-ex-1", ex.ClientOrderID, ex.ExchangeOrderID)
+	}
+	if ex.FillQuantity != 0.5 || ex.FilledAtExchangeMs != 1714000000999 {
+		t.Errorf("fill = %+v", ex)
+	}
+}
+
+func TestReconcilePositions(t *testing.T) {
+	// flaggedSet returns the assets reconcilePositions flagged as drift.
+	flaggedSet := func(t *testing.T, expected map[string]float64, pos []wire.Position) map[string]bool {
+		t.Helper()
+		drifts, err := reconcilePositions(expected, pos)
+		if err != nil {
+			t.Fatalf("reconcilePositions: %v", err)
+		}
+		got := map[string]bool{}
+		for _, d := range drifts {
+			if d.Flagged {
+				got[d.Asset] = true
+			}
+		}
+		return got
+	}
+	pos := func(sym, free, locked string) wire.Position {
+		return wire.Position{Symbol: sym, FreeDecimal: free, LockedDecimal: locked}
+	}
+	eq := func(a, b map[string]bool) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for k := range a {
+			if !b[k] {
+				return false
+			}
+		}
+		return true
+	}
+
+	cases := []struct {
+		name     string
+		expected map[string]float64
+		pos      []wire.Position
+		want     map[string]bool // assets expected to be flagged
+	}{
+		{
+			name:     "matched holdings: no drift",
+			expected: map[string]float64{"BTC": 0.5, "USDT": 1000},
+			pos:      []wire.Position{pos("BTC", "0.5", "0.0"), pos("USDT", "1000.0", "0.0")},
+			want:     map[string]bool{},
+		},
+		{
+			name:     "free+locked summed to match",
+			expected: map[string]float64{"BTC": 0.5},
+			pos:      []wire.Position{pos("BTC", "0.3", "0.2")}, // 0.3+0.2 == 0.5
+			want:     map[string]bool{},
+		},
+		{
+			name:     "BTC drift flagged",
+			expected: map[string]float64{"BTC": 0.5, "USDT": 1000},
+			pos:      []wire.Position{pos("BTC", "0.6", "0.0"), pos("USDT", "1000.0", "0.0")},
+			want:     map[string]bool{"BTC": true},
+		},
+		{
+			name:     "BTC dust under floor: not flagged",
+			expected: map[string]float64{"BTC": 0},
+			pos:      []wire.Position{pos("BTC", "0.0000005", "0.0")}, // 5e-7 < 1e-6 floor
+			want:     map[string]bool{},
+		},
+		{
+			name:     "USDT dust under floor: not flagged",
+			expected: map[string]float64{"USDT": 0},
+			pos:      []wire.Position{pos("USDT", "0.005", "0.0")}, // < 0.01 floor
+			want:     map[string]bool{},
+		},
+		{
+			name:     "exchange holds asset SaaS doesn't track",
+			expected: map[string]float64{},
+			pos:      []wire.Position{pos("ETH", "2.0", "0.0")},
+			want:     map[string]bool{"ETH": true},
+		},
+		{
+			name:     "SaaS expects asset exchange doesn't report",
+			expected: map[string]float64{"BTC": 1.0},
+			pos:      []wire.Position{},
+			want:     map[string]bool{"BTC": true},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := flaggedSet(t, c.expected, c.pos)
+			if !eq(got, c.want) {
+				t.Errorf("flagged = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestReconcilePositions_DeterministicOrderAndDiffSign(t *testing.T) {
+	drifts, err := reconcilePositions(
+		map[string]float64{"USDT": 1000, "BTC": 0.5},
+		[]wire.Position{
+			{Symbol: "USDT", FreeDecimal: "1100", LockedDecimal: "0"}, // +100
+			{Symbol: "BTC", FreeDecimal: "0.4", LockedDecimal: "0"},   // -0.1
+		},
+	)
+	if err != nil {
+		t.Fatalf("reconcilePositions: %v", err)
+	}
+	// Sorted asset order: BTC, USDT.
+	if len(drifts) != 2 || drifts[0].Asset != "BTC" || drifts[1].Asset != "USDT" {
+		t.Fatalf("order = %+v, want [BTC, USDT]", drifts)
+	}
+	if drifts[0].Diff >= 0 {
+		t.Errorf("BTC diff = %v, want negative (actual < expected)", drifts[0].Diff)
+	}
+	if drifts[1].Diff <= 0 {
+		t.Errorf("USDT diff = %v, want positive (actual > expected)", drifts[1].Diff)
+	}
+}
+
+func TestReconcilePositions_BadDecimal(t *testing.T) {
+	_, err := reconcilePositions(
+		map[string]float64{"BTC": 1},
+		[]wire.Position{{Symbol: "BTC", FreeDecimal: "abc", LockedDecimal: "0"}},
+	)
+	if err == nil {
+		t.Fatal("want error on bad free_decimal")
+	}
+}
+
 func TestBuildTradeRecord_LimitOrderCopiesPrice(t *testing.T) {
 	oi := strategy.OrderIntent{
 		Kind:          strategy.OrderKindMacro,
