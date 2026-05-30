@@ -116,6 +116,14 @@ func (c *ArchiveClient) DownloadChecksum(ctx context.Context, archiveURL string)
 	return ParseChecksumFile(body)
 }
 
+// ErrArchiveNotFound is returned (wrapped) by ArchiveClient downloads when
+// the requested object does not exist yet (HTTP 404). For monthly klines
+// this is the normal signal that an archive has not been published —
+// Binance publishes month M's zip a few days into month M+1 — so the
+// orchestrator treats it as the trigger to fall back to the REST API.
+// Callers detect it with errors.Is(err, ErrArchiveNotFound).
+var ErrArchiveNotFound = errors.New("archive: object not found")
+
 func (c *ArchiveClient) download(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -126,6 +134,9 @@ func (c *ArchiveClient) download(ctx context.Context, url string) ([]byte, error
 		return nil, fmt.Errorf("archive: GET %s: %w", url, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("archive: GET %s: HTTP 404: %w", url, ErrArchiveNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("archive: GET %s: HTTP %d", url, resp.StatusCode)
 	}

@@ -3,10 +3,10 @@
 // imported range for gaps and persist KLineGap rows.
 //
 // Scope (this iteration):
-//   - Monthly archive ingest only. The API fallback hook (Orchestrator.API)
-//     is present and tested by Phase 1.5-b but NOT wired into ImportSymbol
-//     yet — the "near 1-2 days unarchived" path from phase plan §四 step 4
-//     is a follow-up. Searches: "TODO: api fallback".
+//   - Monthly archive ingest, with a REST-API fallback for months whose
+//     monthly zip is not published yet (ErrArchiveNotFound → fetchMonthViaAPI).
+//     This covers the "near 1-2 days unarchived" path from phase plan §四
+//     step 4 (the current month, before Binance publishes its zip).
 //   - Bulk insert uses GORM CreateInBatches with ON CONFLICT DO NOTHING.
 //     Adequate for prototype-scale ranges (a few months at 1m); the full
 //     9-year backfill (~4.7M rows) would want pgx.CopyFrom for the 50-100×
@@ -56,7 +56,7 @@ type ImportSummary struct {
 type Orchestrator struct {
 	DB        *gorm.DB
 	Archive   *ArchiveClient
-	API       *APIClient // [TODO: api fallback] currently unused
+	API       *APIClient // REST fallback for unpublished months; nil disables it
 	Source    string     // KLine.Source tag, default "binance.vision"
 	BatchSize int
 	Logger    *slog.Logger
@@ -108,9 +108,19 @@ func (o *Orchestrator) ImportSymbol(
 	for i, m := range months {
 		rows, err := o.fetchMonth(ctx, symbol, interval, m.Year, m.Month)
 		if err != nil {
-			// TODO: api fallback — on 404 for unarchived months, walk daily
-			// archives or APIClient.FetchKlines for that month's days.
-			return summary, fmt.Errorf("month %04d-%02d: %w", m.Year, m.Month, err)
+			// Monthly archive not published yet (typically the current
+			// month — Binance publishes month M's zip a few days into
+			// month M+1). Fall back to the REST API for that month's bars.
+			// Other errors (network, checksum, parse) are real failures and
+			// propagate unchanged.
+			if errors.Is(err, ErrArchiveNotFound) && o.API != nil {
+				o.Logger.Info("orchestrator: monthly archive not published, falling back to API",
+					"symbol", symbol, "interval", interval, "year", m.Year, "month", m.Month)
+				rows, err = o.fetchMonthViaAPI(ctx, symbol, interval, m.Year, m.Month)
+			}
+			if err != nil {
+				return summary, fmt.Errorf("month %04d-%02d: %w", m.Year, m.Month, err)
+			}
 		}
 		summary.MonthsFetched++
 
@@ -164,6 +174,45 @@ func (o *Orchestrator) fetchMonth(
 		return nil, fmt.Errorf("parse csv: %w", err)
 	}
 	return rows, nil
+}
+
+// fetchMonthViaAPI backfills one calendar month's klines through the REST
+// API instead of the monthly archive. It is the fallback the orchestrator
+// takes when the monthly zip is not published yet (ErrArchiveNotFound) —
+// typically the current month. It paginates forward in pages of
+// klineMaxLimit from the month's first ms to its last ms (both inclusive),
+// advancing past the last returned bar each page until a page comes back
+// empty. Rows are ascending by OpenTime, matching the archive path, so
+// downstream filtering / upsert / dedupe behave identically regardless of
+// origin. Unlike the archive path there is no checksum: the REST API is
+// itself the source of truth (phase plan §三).
+func (o *Orchestrator) fetchMonthViaAPI(
+	ctx context.Context, symbol, interval string, year, month int,
+) ([]KlineRow, error) {
+	if o.API == nil {
+		return nil, fmt.Errorf("api fallback unavailable: Orchestrator.API is nil")
+	}
+	monthStart := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	startMs := monthStart.UnixMilli()
+	endMs := monthStart.AddDate(0, 1, 0).UnixMilli() - 1 // inclusive last ms of month
+
+	var all []KlineRow
+	for cursor := startMs; cursor <= endMs; {
+		page, err := o.API.FetchKlines(ctx, symbol, interval, cursor, endMs, klineMaxLimit)
+		if err != nil {
+			return nil, fmt.Errorf("api fetch %04d-%02d from %d: %w", year, month, cursor, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		all = append(all, page...)
+		next := page[len(page)-1].OpenTime + 1
+		if next <= cursor { // guard against an API that ignores startTime
+			break
+		}
+		cursor = next
+	}
+	return all, nil
 }
 
 // bulkInsert upserts rows into klines, returning the count of newly-

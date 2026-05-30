@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -332,6 +333,9 @@ func TestArchiveClient_404Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 404") {
 		t.Errorf("err = %q, want 'HTTP 404'", err.Error())
+	}
+	if !errors.Is(err, ErrArchiveNotFound) {
+		t.Errorf("err = %v, want errors.Is ErrArchiveNotFound (orchestrator's API-fallback trigger)", err)
 	}
 }
 
