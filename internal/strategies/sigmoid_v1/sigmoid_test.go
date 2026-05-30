@@ -1,6 +1,7 @@
 package sigmoid_v1
 
 import (
+	"math"
 	"math/rand"
 	"reflect"
 	"sort"
@@ -322,6 +323,65 @@ func TestMutateProb1ChangesSomeDim(t *testing.T) {
 	}
 	if !changed {
 		t.Errorf("Mutate prob=1 changed nothing:\n  in  %v\n  out %v", g, m)
+	}
+}
+
+// TestMutationScaleLinearity is §10.1 priority test #9: the per-dimension
+// perturbation magnitude must scale linearly with the `scale` knob —
+// doubling scale doubles the average mutation step. The engine's mutation
+// ramp (convergence.go widens scale on plateau toward MutationScaleMax)
+// relies on this: if scale stopped scaling magnitude, the ramp would
+// silently fail to widen exploration and no other test would catch it.
+//
+// Method: from a center gene (so Clamp rarely clips), drive prob=1 Mutate
+// with two RNGs seeded identically per iteration. The internal Float64 /
+// NormFloat64 draws then match, so each dimension's pre-Clamp delta at
+// scale=2 is exactly twice the scale=1 delta. We accumulate per-dimension
+// |delta| normalised by that dimension's GeneStep (so every dim weighs
+// equally instead of the large-step macro_inject dim dominating) and assert
+// the scale=2 total is ~2x the scale=1 total. Fixed seeds make the ratio
+// deterministic; integer rounding on period dims and the rare bound clip
+// add a small, repeatable bias that the band tolerates.
+func TestMutationScaleLinearity(t *testing.T) {
+	s := New(60_000)
+
+	// Center gene: midpoint of every dimension's [min,max], normalised
+	// through Clamp (rounds period dims to int, enforces short<long).
+	base := make(domain.Gene, GeneDim)
+	for d := 0; d < GeneDim; d++ {
+		base[d] = (bounds[d][0] + bounds[d][1]) / 2
+	}
+	base = s.Clamp(base)
+
+	// Per-dimension GeneStep, indexed by gene dim, from the segment table.
+	step := make([]float64, GeneDim)
+	for _, seg := range s.Segments() {
+		for li, gi := range seg.Dimensions {
+			step[gi] = seg.GeneStep[li]
+		}
+	}
+
+	const iters = 2000
+	var sum1, sum2 float64
+	for i := 0; i < iters; i++ {
+		// Identical streams → matched internal draws at both scales.
+		rng1 := newRNG(int64(7919 + i))
+		rng2 := newRNG(int64(7919 + i))
+		m1 := s.Mutate(base, 1.0, 1.0, rng1)
+		m2 := s.Mutate(base, 1.0, 2.0, rng2)
+		for d := 0; d < GeneDim; d++ {
+			sum1 += math.Abs(m1[d]-base[d]) / step[d]
+			sum2 += math.Abs(m2[d]-base[d]) / step[d]
+		}
+	}
+
+	if sum1 == 0 {
+		t.Fatal("scale=1 produced zero total mutation; test setup is broken")
+	}
+	ratio := sum2 / sum1
+	t.Logf("mean mutation-magnitude ratio (scale2/scale1) = %.4f over %d iters", ratio, iters)
+	if ratio < 1.8 || ratio > 2.2 {
+		t.Errorf("mutation magnitude not linear in scale: ratio = %.4f, want ~2.0 (in [1.8, 2.2])", ratio)
 	}
 }
 

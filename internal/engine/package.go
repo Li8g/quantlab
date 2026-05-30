@@ -38,8 +38,10 @@ import (
 //
 // Empty-string defaults are tolerated by resultpkg.Validate (the
 // version strings are mandatory there, but DataVersion / engine-version
-// strings are not). Phase 5C-plan will replace placeholder hashes with
-// real ones computed from the EvaluablePlan + bars.
+// strings are not). In production the SaaS Epoch service supplies real
+// PlanHash / BarsHash (computed by data.BuildEvaluablePlan via
+// quant.PlanHash / quant.BarsHash) here; only engine tests pass
+// placeholder hash strings.
 type BuildContext struct {
 	ChallengerID string
 	Pair         string

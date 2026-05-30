@@ -73,6 +73,14 @@ func TestGAConvergesOnToy(t *testing.T) {
 // runs, even though evaluatePopulation uses goroutines (worker pickup
 // order is nondeterministic but Adapter.Evaluate is pure of (gene, plan),
 // so per-index scores are stable).
+//
+// Together with TestRunEpoch_BestRawEvaluateMatchesBestScore (score
+// reproduces within 1e-12), this satisfies §10.1 priority test #7
+// "TestReplayWithinTolerance": same EpochSeed + data version → gene
+// identical and ScoreTotal within tolerance. (We assert exact gene
+// equality, which is strictly stronger than the doc's tolerance ask.)
+// The doc's audit-replay-from-persisted-package path is the Audit-phase
+// /audit/replay endpoint, explicitly non-blocking for the prototype.
 func TestRunEpochDeterministic(t *testing.T) {
 	cfg := engine.DefaultConfig()
 	cfg.PopSize = 30
