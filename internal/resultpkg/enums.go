@@ -22,6 +22,14 @@ type WindowName string
 // SkippedBy indicates which earlier window's Fatal caused a cascade skip.
 type SkippedBy string
 
+// FatalReason is the closed set of window-level Fatal causes recorded on
+// CrucibleResult.FatalReason. It is a named string (not a typed field) so
+// the frozen v5.3.3 struct stays *string on the wire; producers reference
+// the constants and CrucibleResult.Validate gates membership. The numeric
+// MDD that tripped mdd_exceeded lives in CrucibleResult.FatalMDDValue, not
+// in this token.
+type FatalReason string
+
 // SpawnMode is the SpawnPoint-injection scheme for an Epoch.
 // Frozen as a three-state enum (v5.3.2+); no longer a free string.
 type SpawnMode string
@@ -99,6 +107,15 @@ const (
 	SpawnModeManual     SpawnMode = "manual"      // taken from request body's spawn_point
 )
 
+const (
+	// FatalReasonMDDExceeded: running drawdown crossed plan.FatalMDD. The
+	// crossing value is recorded separately in FatalMDDValue.
+	FatalReasonMDDExceeded FatalReason = "mdd_exceeded"
+	// FatalReasonNavNonPositive: NAV reached <= 0 (degenerate equity path),
+	// log-return undefined; FatalMDDValue is set to 1.0 to flag wipeout.
+	FatalReasonNavNonPositive FatalReason = "nav_non_positive"
+)
+
 // GeneEncodingJSON is the only legal Encoding value for ChampionGenePayload
 // during the prototype phase. Other encodings (array/base64) require a
 // FingerprintVersion bump.
@@ -148,6 +165,15 @@ func (s VerificationStatus) IsValid() bool {
 func (s SkippedBy) IsValid() bool {
 	switch s {
 	case SkippedByCascadeFrom6M, SkippedByCascadeFrom2Y, SkippedByCascadeFrom5Y:
+		return true
+	}
+	return false
+}
+
+// IsValid reports whether r is one of the known window-level Fatal causes.
+func (r FatalReason) IsValid() bool {
+	switch r {
+	case FatalReasonMDDExceeded, FatalReasonNavNonPositive:
 		return true
 	}
 	return false

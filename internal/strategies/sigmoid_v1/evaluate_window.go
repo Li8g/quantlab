@@ -193,7 +193,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	}
 
 	if fatal {
-		reason := fmt.Sprintf("drawdown_%.2f", observedMDD)
+		reason := string(resultpkg.FatalReasonMDDExceeded)
 		return resultpkg.CrucibleResult{
 			Window:        window.Name,
 			Score:         resultpkg.SliceScore{Fatal: true, Value: nil},
@@ -216,7 +216,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 		// Degenerate: log undefined. Treat as Fatal (something went
 		// catastrophically wrong upstream of MDD threshold). Records
 		// MDD as 1.0 to flag total wipeout.
-		reason := "nav_non_positive"
+		reason := string(resultpkg.FatalReasonNavNonPositive)
 		ts := finalBar.OpenTime
 		one := 1.0
 		return resultpkg.CrucibleResult{

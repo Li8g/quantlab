@@ -777,7 +777,8 @@ func (r *CrucibleResult) Validate() error {
 以下问题暂不阻塞第一阶段编码，但必须保留标记，避免后面遗忘：
 
 - `[QUESTION]` `pair` 是否收敛为标准格式或专用类型 `TradingPair`。
-- `[QUESTION]` `slice_score.reason` / `fatal_reason` 是否最终枚举化（候选值：`mdd_exceeded`、`invalid_path`、`insufficient_bars`）。
+- `[QUESTION]` `slice_score.reason` 是否最终枚举化。
+- `[RESOLVED]` `fatal_reason` 原型期枚举化为 `mdd_exceeded` / `nav_non_positive`（`resultpkg.FatalReason` + `IsValid` + `CrucibleResult.Validate` 成员闸门；字段保留 `*string` 不动冻结结构）。数值 MDD 另存 `fatal_mdd_value`。
 - `[RESOLVED]` `score_raw` = `Σ weight·score`（一致性惩罚前加权总分，不归一化），原型期固定，见 `fitness/aggregate.go` `AggregateScoreTotal`（FitnessVersion `v1-raw-std`）。
 - `[QUESTION]` `BarsHash` 序列化范围：仅含 `OpenTime+Close` 还是完整 `OHLCV` 字段，待实现层确认。
 - `[QUESTION]` `champion_gene.payload` 将来是否改为统一数组编码或 base64 二进制。

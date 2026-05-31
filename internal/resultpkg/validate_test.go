@@ -49,6 +49,16 @@ func TestCrucibleResultValidate_ThreeStateMutex(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "fatal_invalid_reason",
+			in: CrucibleResult{
+				Window:        Window6M,
+				Score:         SliceScore{Fatal: true, Value: nil},
+				BarsEvaluated: 543,
+				FatalReason:   sp("drawdown_0.70"),
+			},
+			wantErr: true,
+		},
+		{
 			name: "normal_missing_value",
 			in: CrucibleResult{
 				Window:        Window6M,

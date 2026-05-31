@@ -1,6 +1,9 @@
 package resultpkg
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Validate checks the basic invariants of SliceScore in isolation.
 // The full three-state mutual exclusion is checked on CrucibleResult,
@@ -42,8 +45,22 @@ func (r *CrucibleResult) Validate() error {
 	if r.Score.Fatal && r.Score.Value != nil {
 		return errors.New("CrucibleResult: Fatal window must have Score.Value=nil")
 	}
+	if r.Score.Fatal && r.FatalReason != nil && !FatalReason(*r.FatalReason).IsValid() {
+		return fmt.Errorf("CrucibleResult: fatal_reason %q is not a known FatalReason", *r.FatalReason)
+	}
 	return nil
 }
+
+// NOTE (deferred-validation seam): CrucibleResult.Validate is currently
+// exercised only by resultpkg's own tests — it is NOT wired into the
+// RunEpoch hot loop, so the fatal_reason gate above is a test-enforced
+// invariant, not a live runtime guard. With a single trusted in-house
+// strategy that is sufficient (the producer references the FatalReason
+// constants directly). When a second / external strategy lands, assert the
+// strategy-returned RawEvaluateResult at the strategy→engine boundary
+// (right after Evaluate), with an explicit failure policy: panic in
+// dev/CI, degrade to treat-as-Fatal + diagnostics in prod. See the
+// fatal_reason enum in enums.go.
 
 // Validate checks that each window result is internally consistent.
 // Note: deliberately does NOT check ScoreTotal — RawEvaluateResult does
