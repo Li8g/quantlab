@@ -105,6 +105,11 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// DefaultDeltaReportInterval is the §5.11 delta_report cadence. The
+// Agent sends an account-level reconciliation snapshot this often as the
+// fallback channel for lost OrderUpdate frames.
+const DefaultDeltaReportInterval = 60 * time.Second
+
 // DefaultBackoff returns the 8-step backoff sequence from §4.5. Cap is
 // the final value; reconnect loops should hold at cap for further misses.
 func DefaultBackoff() []time.Duration {

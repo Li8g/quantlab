@@ -61,6 +61,65 @@ type Client struct {
 	connMu  sync.Mutex
 	conn    wsconn.Conn
 	connCtx context.Context
+
+	// writeMu serializes conn.WriteFrame across goroutines. Frames are
+	// produced by the read-loop handlers, the async onOrderEvent
+	// callback, AND the delta-report ticker — without this they could
+	// interleave bytes on the wire. Distinct from connMu, which only
+	// guards the c.conn pointer swap on (re)connect.
+	writeMu sync.Mutex
+
+	// delta accumulates fills/errors observed since the last
+	// delta_report; drained on each send. Lives on the Client (not the
+	// session) so undrained fills survive a reconnect and are resent —
+	// strengthening the lost-OrderUpdate fallback (§5.11).
+	delta deltaBuffer
+
+	// deltaInterval is the delta_report cadence (§5.11 ~60s). Zero falls
+	// back to DefaultDeltaReportInterval at construction.
+	deltaInterval time.Duration
+}
+
+// deltaBuffer accumulates the since_last_report payload for the next
+// delta_report. Safe for concurrent use: fills arrive from the
+// trade-command handler and the async order-event callback, while the
+// delta-report goroutine drains.
+type deltaBuffer struct {
+	mu     sync.Mutex
+	fills  []wire.Fill
+	errors []wire.AgentError
+}
+
+func (b *deltaBuffer) addFill(f wire.Fill) {
+	b.mu.Lock()
+	b.fills = append(b.fills, f)
+	b.mu.Unlock()
+}
+
+func (b *deltaBuffer) addError(e wire.AgentError) {
+	b.mu.Lock()
+	b.errors = append(b.errors, e)
+	b.mu.Unlock()
+}
+
+// drain returns the accumulated fills/errors and resets the buffer.
+// Returns nil slices when empty so the marshalled delta_report carries
+// empty arrays rather than stale data.
+func (b *deltaBuffer) drain() (fills []wire.Fill, errs []wire.AgentError) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fills, errs = b.fills, b.errors
+	b.fills, b.errors = nil, nil
+	return fills, errs
+}
+
+// requeue prepends previously-drained items back onto the buffer when a
+// send fails, so a transient write error doesn't drop the fallback data.
+func (b *deltaBuffer) requeue(fills []wire.Fill, errs []wire.AgentError) {
+	b.mu.Lock()
+	b.fills = append(fills, b.fills...)
+	b.errors = append(errs, b.errors...)
+	b.mu.Unlock()
 }
 
 // Options tunes Client construction. Zero-valued fields fall back to
@@ -72,6 +131,10 @@ type Options struct {
 	MsgIDFn       func() string
 	NowFn         func() time.Time
 	BackoffJitter func() float64
+
+	// DeltaReportInterval overrides the delta_report cadence. Zero →
+	// DefaultDeltaReportInterval (60s). Tests set a short value.
+	DeltaReportInterval time.Duration
 }
 
 // NewClient wires a Client. Required deps: cfg + exchange + idempotency.
@@ -86,6 +149,7 @@ func NewClient(cfg Config, ex Exchange, idem IdempotencyStore, opt Options) *Cli
 		nowFn:         opt.NowFn,
 		backoff:       opt.Backoff,
 		backoffJitter: opt.BackoffJitter,
+		deltaInterval: opt.DeltaReportInterval,
 	}
 	if c.log == nil {
 		c.log = slog.Default()
@@ -107,6 +171,9 @@ func NewClient(cfg Config, ex Exchange, idem IdempotencyStore, opt Options) *Cli
 			// uniform in [0.8, 1.2]
 			return 0.8 + rand.Float64()*0.4
 		}
+	}
+	if c.deltaInterval <= 0 {
+		c.deltaInterval = DefaultDeltaReportInterval
 	}
 	// Opt-in: if the exchange backend can stream async order events
 	// (Binance UDS, future websocket streamers), subscribe so resting
@@ -247,7 +314,71 @@ func (c *Client) runSession(ctx context.Context) (retErr error) {
 	c.resetBackoff()
 	c.log.Info("agent_session_ready", "account_id", c.cfg.AccountID)
 
+	// Session-scoped delta_report ticker. sessCtx is cancelled the
+	// moment runReadLoop returns (disconnect), stopping the goroutine
+	// before the next reconnect dials a new conn. The delta buffer
+	// itself lives on the Client, so fills accumulated this session
+	// survive into the next one.
+	sessCtx, sessCancel := context.WithCancel(ctx)
+	defer sessCancel()
+	go c.runDeltaReportLoop(sessCtx, conn)
+
 	return c.runReadLoop(ctx, conn)
+}
+
+// runDeltaReportLoop sends a delta_report every deltaInterval until ctx
+// is cancelled (session end). conn is the session's connection; sends
+// that race a teardown surface as a write error and are retried next
+// tick (the buffer is requeued).
+func (c *Client) runDeltaReportLoop(ctx context.Context, conn wsconn.Conn) {
+	t := time.NewTicker(c.deltaInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c.sendDeltaReport(ctx, conn)
+		}
+	}
+}
+
+// sendDeltaReport assembles and sends one delta_report (§5.11): the
+// current account positions plus the fills/errors accumulated since the
+// last report. A Positions() failure does not abort the report — it
+// becomes an AgentError in the report so SaaS still sees the heartbeat
+// and the drained fills. On write failure the drained items are requeued
+// so the fallback data isn't lost.
+func (c *Client) sendDeltaReport(ctx context.Context, conn wsconn.Conn) {
+	posCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	positions, err := c.exchange.Positions(posCtx)
+	cancel()
+	if err != nil {
+		c.delta.addError(wire.AgentError{
+			Code:         "positions_query_failed",
+			Message:      err.Error(),
+			OccurredAtMs: c.nowMs(),
+		})
+		c.log.Warn("agent_delta_report_positions_failed", "err", err)
+		// positions stays nil; still send the report so the buffered
+		// fills + this error reach SaaS.
+	}
+
+	fills, errs := c.delta.drain()
+	dr := wire.DeltaReport{
+		ReportedAtMs: c.nowMs(),
+		Positions:    positionsToWire(positions),
+		SinceLastReport: wire.DeltaReportSince{
+			Fills:  fills,
+			Errors: errs,
+		},
+	}
+	// Fresh context so the session ctx cancelling mid-send doesn't abort
+	// the write; sendTyped applies its own 5s deadline.
+	if sendErr := c.sendTyped(context.Background(), conn, wire.TypeDeltaReport, dr); sendErr != nil {
+		c.delta.requeue(fills, errs)
+		c.log.Warn("agent_delta_report_send_failed", "err", sendErr)
+	}
 }
 
 // runReadLoop consumes frames from conn until ctx cancellation or
@@ -289,7 +420,12 @@ func (c *Client) sendTyped(ctx context.Context, conn wsconn.Conn, t wire.Message
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := conn.WriteFrame(wctx, raw); err != nil {
+	// Serialize writes: the read-loop handlers, onOrderEvent, and the
+	// delta-report ticker all call sendTyped from different goroutines.
+	c.writeMu.Lock()
+	err = conn.WriteFrame(wctx, raw)
+	c.writeMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("write %s: %w", t, err)
 	}
 	return nil
@@ -463,14 +599,21 @@ func (c *Client) onOrderEvent(ev OrderEvent) {
 
 	if ev.Fill != nil {
 		slip := computeSlippageBps(side, rec.MarketRef, ev.Fill.FillPrice)
-		ou.Fills = append(ou.Fills, wire.Fill{
+		wf := wire.Fill{
 			FillQuantityDecimal:  formatDecimal(ev.Fill.FillQuantity),
 			FillPriceDecimal:     formatDecimal(ev.Fill.FillPrice),
 			FillFeeAsset:         ev.Fill.FillFeeAsset,
 			FillFeeAmountDecimal: formatDecimal(ev.Fill.FillFeeAmount),
 			FilledAtExchangeMs:   ev.Fill.FilledAtExchangeMs,
 			ActualSlippageBps:    slip,
-		})
+		}
+		ou.Fills = append(ou.Fills, wf)
+		// Tee into the delta_report buffer with order identity attached
+		// (§5.11 fallback for a lost order_update).
+		df := wf
+		df.ClientOrderID = ev.ClientOrderID
+		df.ExchangeOrderID = ou.ExchangeOrderID
+		c.delta.addFill(df)
 	}
 
 	// Update idempotency status to the latest terminal/non-terminal

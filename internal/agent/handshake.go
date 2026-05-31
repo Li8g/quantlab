@@ -78,22 +78,29 @@ func (c *Client) doHandshake(ctx context.Context, conn wsconn.Conn) error {
 // not retain open_orders or since_last_fills locally (the MockExchange
 // settles every order immediately and idempotency-store fills are
 // already mirrored to SaaS via OrderUpdate).
-func (c *Client) sendStateSyncResponse(ctx context.Context, conn wsconn.Conn) error {
-	positions, err := c.exchange.Positions(ctx)
-	if err != nil {
-		return fmt.Errorf("exchange.Positions: %w", err)
-	}
-	wirePositions := make([]wire.Position, 0, len(positions))
+// positionsToWire converts the exchange's []agent.Position snapshot to
+// the wire shape. Shared by state_sync_response (handshake) and the
+// delta_report sender (§5.11), so both report positions identically.
+func positionsToWire(positions []Position) []wire.Position {
+	out := make([]wire.Position, 0, len(positions))
 	for _, p := range positions {
-		wirePositions = append(wirePositions, wire.Position{
+		out = append(out, wire.Position{
 			Symbol:        p.Symbol,
 			FreeDecimal:   formatDecimal(p.Free),
 			LockedDecimal: formatDecimal(p.Locked),
 		})
 	}
+	return out
+}
+
+func (c *Client) sendStateSyncResponse(ctx context.Context, conn wsconn.Conn) error {
+	positions, err := c.exchange.Positions(ctx)
+	if err != nil {
+		return fmt.Errorf("exchange.Positions: %w", err)
+	}
 	return c.sendTyped(ctx, conn, wire.TypeStateSyncResponse, wire.StateSyncResponse{
 		ReportedAtMs:   c.nowMs(),
-		Positions:      wirePositions,
+		Positions:      positionsToWire(positions),
 		OpenOrders:     []wire.OpenOrder{}, // v1: mock has no open orders
 		SinceLastFills: []wire.Fill{},      // v1: see comment above
 	})

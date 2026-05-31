@@ -153,14 +153,22 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 		for _, f := range res.Fills {
 			cum = cum.Add(f.FillQuantity)
 			slippageBps := computeSlippageBps(tc.Side, ref, f.FillPrice)
-			ou.Fills = append(ou.Fills, wire.Fill{
+			wf := wire.Fill{
 				FillQuantityDecimal:  formatDecimal(f.FillQuantity),
 				FillPriceDecimal:     formatDecimal(f.FillPrice),
 				FillFeeAsset:         f.FillFeeAsset,
 				FillFeeAmountDecimal: formatDecimal(f.FillFeeAmount),
 				FilledAtExchangeMs:   f.FilledAtExchangeMs,
 				ActualSlippageBps:    slippageBps,
-			})
+			}
+			ou.Fills = append(ou.Fills, wf)
+			// Tee into the delta_report buffer (§5.11 fallback). Unlike
+			// order_update.fills, delta_report fills must name their order
+			// so SaaS can dedupe by (client_order_id, filled_at_exchange_ms).
+			df := wf
+			df.ClientOrderID = tc.ClientOrderID
+			df.ExchangeOrderID = res.ExchangeOrderID
+			c.delta.addFill(df)
 		}
 		ou.CumulativeFilledQuantityDecimal = formatDecimal(cum)
 
