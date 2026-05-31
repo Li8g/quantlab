@@ -217,4 +217,4 @@ POST /api/v1/champions/:champion_id/retire        (admin only)
 
 ## Open Questions (Not Blocking Phase 1)
 
-Tracked in schema doc Appendix B: `pair` type, `fatal_reason` enumeration, `score_raw` definition, `risk_bounds` struct, `alpha_breakdown`/`dsr_summary`/`stress_summary` formalization (Phase 2).
+Tracked in schema doc Appendix B: `pair` type, `fatal_reason` enumeration, `risk_bounds` struct, `alpha_breakdown`/`dsr_summary`/`stress_summary` formalization (Phase 2). (`score_raw` resolved in prototype: `Σ weight·score`, consistency-penalty-free weighted sum — see `fitness/aggregate.go`.)

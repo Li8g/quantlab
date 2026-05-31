@@ -778,7 +778,7 @@ func (r *CrucibleResult) Validate() error {
 
 - `[QUESTION]` `pair` 是否收敛为标准格式或专用类型 `TradingPair`。
 - `[QUESTION]` `slice_score.reason` / `fatal_reason` 是否最终枚举化（候选值：`mdd_exceeded`、`invalid_path`、`insufficient_bars`）。
-- `[QUESTION]` `score_raw` 的精确定义是否固定为"一致性惩罚前加权总分"。
+- `[RESOLVED]` `score_raw` = `Σ weight·score`（一致性惩罚前加权总分，不归一化），原型期固定，见 `fitness/aggregate.go` `AggregateScoreTotal`（FitnessVersion `v1-raw-std`）。
 - `[QUESTION]` `BarsHash` 序列化范围：仅含 `OpenTime+Close` 还是完整 `OHLCV` 字段，待实现层确认。
 - `[QUESTION]` `champion_gene.payload` 将来是否改为统一数组编码或 base64 二进制。
 - `[QUESTION]` `spawn_point.risk_bounds` 是否升级为明确结构体。
