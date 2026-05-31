@@ -133,8 +133,8 @@ func buildGeneRecord(challengerID string, pkg resultpkg.ChallengerResultPackage)
 		ConsistencyPenalty: st.ConsistencyPenalty,
 
 		WindowScoresJSON: windowScoresJSON,
-		// WindowAlphaMonthlyJSON / WindowAlphaWeeklyJSON: alpha
-		// decomposition is Phase 5.5+, leave nil here.
+		// WindowAlphaMonthlyJSON / WindowAlphaWeeklyJSON: denormalized
+		// from pkg.Evaluation.AlphaBreakdown after this literal (A3).
 
 		OosAlphaMonthly: oos.OOSAlphaMonthly,
 		OosAlphaWeekly:  oos.OOSAlphaWeekly,
@@ -169,5 +169,32 @@ func buildGeneRecord(challengerID string, pkg resultpkg.ChallengerResultPackage)
 
 		FullPackageJSON: blob,
 	}
+
+	// Denormalize the IS alpha breakdown (A3) into the two queryable
+	// columns: one compact [{window, alpha_ann}] array per DCA baseline.
+	// Best-effort and diagnostic — a missing/malformed breakdown just
+	// leaves both columns nil (older challengers predate A3).
+	if len(pkg.Evaluation.AlphaBreakdown) > 0 {
+		var ab resultpkg.ISAlphaBreakdown
+		if err := json.Unmarshal(pkg.Evaluation.AlphaBreakdown, &ab); err == nil && len(ab.Windows) > 0 {
+			type windowAlphaCol struct {
+				Window string  `json:"window"`
+				Alpha  float64 `json:"alpha_ann"`
+			}
+			monthly := make([]windowAlphaCol, len(ab.Windows))
+			weekly := make([]windowAlphaCol, len(ab.Windows))
+			for i, w := range ab.Windows {
+				monthly[i] = windowAlphaCol{Window: string(w.Window), Alpha: w.AlphaMonthlyAnn}
+				weekly[i] = windowAlphaCol{Window: string(w.Window), Alpha: w.AlphaWeeklyAnn}
+			}
+			if b, err := json.Marshal(monthly); err == nil {
+				record.WindowAlphaMonthlyJSON = b
+			}
+			if b, err := json.Marshal(weekly); err == nil {
+				record.WindowAlphaWeeklyJSON = b
+			}
+		}
+	}
+
 	return record, nil
 }

@@ -16,6 +16,13 @@
 // in later commits (5B-sharpe writes Verification.DSRSummary;
 // 5B-fatal writes Diagnostics.FatalAuditSamples; 5C-plan writes
 // the real PlanHash / BarsHash; 5D writes OOSResult).
+//
+// EvaluationLayer.AlphaBreakdown (backlog A3) is the one EvaluationLayer
+// field NOT computed during RunEpoch: it is a post-epoch enrichment
+// (verification.RunISAlphaBreakdown, re-simulating only the DCA baseline)
+// that the SaaS Epoch service passes in via BuildContext.AlphaBreakdownPayload,
+// mirroring how OOSPayload / ReviewPayload arrive. It is diagnostic-only and
+// omitempty, so its absence is harmless.
 package engine
 
 import (
@@ -89,6 +96,13 @@ type BuildContext struct {
 	// verbatim; BuildChallengerPackage writes it onto
 	// DiagnosticsLayer.FatalAuditSamples when non-empty.
 	FatalAuditSamples []resultpkg.AuditSampleSummary
+
+	// AlphaBreakdownPayload is the optional pre-marshalled ISAlphaBreakdown
+	// (backlog A3) from verification.RunISAlphaBreakdown. The SaaS Epoch
+	// service computes it post-epoch and passes the bytes here. Empty ⇒
+	// EvaluationLayer.AlphaBreakdown stays unset. Already-JSON (RawMessage),
+	// so it is assigned verbatim, not re-validated.
+	AlphaBreakdownPayload json.RawMessage
 }
 
 // BuildChallengerPackage assembles the five-layer package for one
@@ -122,6 +136,9 @@ func BuildChallengerPackage(
 		WindowScores:   bestRaw.Windows,
 		ScoreTotal:     bestScore,
 		FrictionActual: bestRaw.FrictionActual,
+	}
+	if len(bc.AlphaBreakdownPayload) > 0 {
+		eval.AlphaBreakdown = bc.AlphaBreakdownPayload
 	}
 	verif := &resultpkg.VerificationLayer{
 		// OOSResult defaults to NotRun. When the SaaS Epoch service

@@ -422,24 +422,38 @@ func (s *Service) executeEpoch(
 		return fmt.Errorf("marshal review payload: %w", err)
 	}
 
+	// In-sample alpha breakdown (backlog A3, diagnostic only). Computed
+	// post-epoch from the BestGene's per-window returns + the in-memory
+	// plan (no extra kline load), re-simulating only the DCA baseline.
+	// A marshal failure here NEVER fails the epoch (alpha is diagnostic);
+	// the RunISAlphaBreakdown finite-guard keeps the payload JSON-safe, so
+	// this is belt-and-suspenders — on error we simply leave it unset.
+	alphaBreakdown := verification.RunISAlphaBreakdown(result.BestRawEvaluate.Windows, plan, effDefaults.DCA)
+	alphaPayload, err := json.Marshal(alphaBreakdown)
+	if err != nil {
+		log.Printf("epoch %s: alpha breakdown marshal failed (non-fatal): %v", taskID, err)
+		alphaPayload = nil
+	}
+
 	bc := engine.BuildContext{
-		ChallengerID:         challengerID,
-		Pair:                 req.Pair,
-		TestMode:             req.TestMode,
-		OosDays:              req.OosDays,
-		FatalAuditSampleRate: req.FatalAuditSampleRate,
-		DataVersion:          s.buildMeta.DataVersion,
-		EngineVersion:        s.buildMeta.EngineVersion,
-		StrategyVersion:      s.buildMeta.StrategyVersion,
-		HardwareSignature:    s.buildMeta.HardwareSignature,
-		GoVersion:            s.buildMeta.GoVersion,
-		BuildID:              s.buildMeta.BuildID,
-		PlanHash:             planHash,
-		BarsHash:             barsHash,
-		DSRSummary:           dsrBlob,
-		OOSPayload:           oosPayload,
-		ReviewPayload:        reviewPayload,
-		FatalAuditSamples:    result.FatalAuditSamples,
+		ChallengerID:          challengerID,
+		Pair:                  req.Pair,
+		TestMode:              req.TestMode,
+		OosDays:               req.OosDays,
+		FatalAuditSampleRate:  req.FatalAuditSampleRate,
+		DataVersion:           s.buildMeta.DataVersion,
+		EngineVersion:         s.buildMeta.EngineVersion,
+		StrategyVersion:       s.buildMeta.StrategyVersion,
+		HardwareSignature:     s.buildMeta.HardwareSignature,
+		GoVersion:             s.buildMeta.GoVersion,
+		BuildID:               s.buildMeta.BuildID,
+		PlanHash:              planHash,
+		BarsHash:              barsHash,
+		DSRSummary:            dsrBlob,
+		OOSPayload:            oosPayload,
+		ReviewPayload:         reviewPayload,
+		FatalAuditSamples:     result.FatalAuditSamples,
+		AlphaBreakdownPayload: alphaPayload,
 	}
 	pkg, err := engine.BuildChallengerPackage(
 		strat, plan, result.BestGene, result.BestRawEvaluate, result.BestScore, cfg, bc,

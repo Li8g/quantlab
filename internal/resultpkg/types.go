@@ -195,6 +195,35 @@ type EvaluationLayer struct {
 	GapsEncounteredInEval *GapStats        `json:"gaps_encountered_in_eval,omitempty"`
 }
 
+// AlphaBreakdownVersionV1 tags the [INVENTED v1] ISAlphaBreakdown shape.
+const AlphaBreakdownVersionV1 = "alpha-v1"
+
+// WindowAlpha is one in-sample crucible window's annualized strategy-vs-DCA
+// excess return — the same alpha measure RunOOS reports (verification/oos.go),
+// computed per IS window. All rates are annualized; alpha_*_ann = strat_ann -
+// dca_*_ann against the dual (monthly/weekly) DCA baselines.
+//
+// [INVENTED v1] This is serialized into EvaluationLayer.AlphaBreakdown
+// (a json.RawMessage) and is NOT part of the frozen v5.3.3 schema. A3 fills
+// it forward-only as diagnostic data; nothing consumes it yet, so the shape
+// may still evolve until a reader pins it (hence the Version tag).
+type WindowAlpha struct {
+	Window          WindowName `json:"window"`
+	StratAnn        float64    `json:"strat_ann"`
+	DCAMonthlyAnn   float64    `json:"dca_monthly_ann"`
+	DCAWeeklyAnn    float64    `json:"dca_weekly_ann"`
+	AlphaMonthlyAnn float64    `json:"alpha_monthly_ann"`
+	AlphaWeeklyAnn  float64    `json:"alpha_weekly_ann"`
+}
+
+// ISAlphaBreakdown wraps the per-window IS alpha series. Windows that were
+// Fatal, cascade-skipped, or degenerate carry no strat return and are absent
+// from Windows (an all-Fatal challenger yields an empty slice).
+type ISAlphaBreakdown struct {
+	Version string        `json:"version"`
+	Windows []WindowAlpha `json:"windows"`
+}
+
 // OOSResult is the Anchored Holdout outcome.
 type OOSResult struct {
 	Status          VerificationStatus `json:"status"`
