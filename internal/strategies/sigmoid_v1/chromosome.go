@@ -6,6 +6,10 @@
 // 13 dimensions, 5 segments. See §4.1 for the dimension table, §4.2 for
 // segment layout (block-crossover boundaries + per-dim Fingerprint and
 // Mutate steps).
+//
+// The mirror is no longer discipline-only: doc_layout_test.go parses §4.1
+// and §4.2 out of the markdown and fails the build on any drift between
+// this file and the spec.
 package sigmoid_v1
 
 import (
