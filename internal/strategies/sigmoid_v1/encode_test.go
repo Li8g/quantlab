@@ -213,15 +213,20 @@ func TestDecodeEliteRejectsWrongDimension(t *testing.T) {
 	}
 }
 
-func TestReviewBacktestNoOp(t *testing.T) {
-	// Prototype contract: (nil, nil). Engine must accept both
-	// representations of "no review yet" equivalently.
+func TestReviewBacktestThinShell(t *testing.T) {
+	// ReviewBacktest is a thin (nil, nil) shell by boundary design — the
+	// reproducibility replay lives in verification.RunReview (backlog A1),
+	// driven by the engine layer, not the strategy. A strategy can't host
+	// replay-compare without importing verification, which would breach the
+	// engine/strategy boundary. This is NOT an unimplemented no-op gap;
+	// the shell contract is intentional and the engine treats (nil, nil)
+	// as "strategy contributes no review summary".
 	s := stepTestSigmoid()
 	got, err := s.ReviewBacktest(context.Background(), EncodeChromosome(defaultChromosome()), nil)
 	if err != nil {
 		t.Errorf("ReviewBacktest err = %v, want nil", err)
 	}
 	if got != nil {
-		t.Errorf("ReviewBacktest = %+v, want nil (prototype no-op)", got)
+		t.Errorf("ReviewBacktest = %+v, want nil (thin shell)", got)
 	}
 }

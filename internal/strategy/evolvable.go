@@ -80,13 +80,16 @@ type EvolvableStrategy interface {
 	// field — see this file's package-doc header.
 	Evaluate(ctx context.Context, gene domain.Gene, plan *domain.EvaluablePlan) (*resultpkg.RawEvaluateResult, error)
 
-	// ReviewBacktest is a post-Promote full-history audit replay; the
-	// engine never feeds its output back into GA decisions. Prototype
-	// strategies may return (nil, nil).
+	// ReviewBacktest is a thin strategy-side shell; strategies may return
+	// (nil, nil). The reproducibility replay is driven by the engine layer
+	// via verification.RunReview (backlog A1), not by the strategy — a
+	// strategy can't host replay-compare without importing verification,
+	// which would breach the engine/strategy boundary. The engine never
+	// feeds review output back into GA decisions.
 	//
-	// [INVENTED v1 — Part III-2 (Audit phase) will formalize signature
-	// and result fields. Using *EvaluablePlan for symmetry with Evaluate;
-	// the engine can build a single all-history window when calling.]
+	// RunReview today reproduces the IS evaluation windows
+	// (DataScope="is-windows"). The full-history audit dimension (alpha
+	// breakdown / DSR / stress) is deferred — backlog A1/B.
 	ReviewBacktest(ctx context.Context, gene domain.Gene, plan *domain.EvaluablePlan) (*resultpkg.ReviewSummary, error)
 
 	// EncodeResult stitches the engine-supplied layers into the five-layer

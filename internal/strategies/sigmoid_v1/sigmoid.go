@@ -266,15 +266,18 @@ func (s *Sigmoid) Evaluate(_ context.Context, gene domain.Gene, plan *domain.Eva
 
 // ===== Phase 4c encoding verbs =====
 
-// ReviewBacktest is a prototype no-op per phase plan §5A and §10 of
-// the sigmoid_v1 spec. Returning (nil, nil) matches the toy strategy
-// convention; the engine treats both forms identically and stores no
-// ReviewSummary on the result package.
+// ReviewBacktest is a thin (nil, nil) shell by design — the
+// reproducibility replay it used to be a placeholder for now lives in
+// verification.RunReview, which the engine layer drives out-of-band
+// after RunEpoch. A strategy cannot host that logic itself: replay-
+// compare needs fitness.AggregateScoreTotal and the recorded package,
+// and importing verification here would breach the engine/strategy
+// boundary (CLAUDE.md §"Two-Layer Hard Boundary"). So the verb stays a
+// shell; the engine never feeds its output back into GA decisions.
 //
-// A real implementation would replay the full history under the
-// elected gene and emit alpha breakdown / DSR / stress diagnostics.
-// That's Audit-phase work, deferred per the upstream `[INVENTED v1]`
-// note on EvolvableStrategy.ReviewBacktest.
+// The full-history audit DIMENSION (alpha breakdown / DSR / stress over
+// all history) is still deferred — backlog A1/B. RunReview today covers
+// reproducibility over the IS evaluation windows (DataScope="is-windows").
 func (s *Sigmoid) ReviewBacktest(_ context.Context, _ domain.Gene, _ *domain.EvaluablePlan) (*resultpkg.ReviewSummary, error) {
 	return nil, nil
 }

@@ -387,6 +387,41 @@ func (s *Service) executeEpoch(
 		return fmt.Errorf("marshal oos payload: %w", err)
 	}
 
+	// Reproducibility replay (backlog A1). Independently rebuild the plan
+	// from a FRESH kline load + BuildEvaluablePlan so the hash gate has
+	// teeth: it catches data drift or plan-build non-determinism between
+	// epoch and review, not merely replay determinism. RunReview is
+	// out-of-band and never touches the IS ScoreTotal already written; a
+	// non-nil Go error means an Adapter/strategy contract violation and
+	// fails the task (same convention as RunOOS). The reproducibility
+	// VERDICT (ok/mismatch) rides in the *ReviewSummary, not the error.
+	reviewBars, err := data.LoadKLines(ctx, s.db, req.Pair, req.Interval, 0, math.MaxInt64)
+	if err != nil {
+		return fmt.Errorf("review: load klines: %w", err)
+	}
+	rebuiltPlan, rebuiltPlanHash, rebuiltBarsHash, err := data.BuildEvaluablePlan(reviewBars, planOpts)
+	if err != nil {
+		return fmt.Errorf("review: build plan: %w", err)
+	}
+	reviewSummary, err := verification.RunReview(
+		strat, rebuiltPlan, result.BestGene,
+		verification.ReviewExpectation{
+			Score:       result.BestScore,
+			Fingerprint: result.BestFingerprint,
+			PlanHash:    planHash,
+			BarsHash:    barsHash,
+		},
+		rebuiltPlanHash, rebuiltBarsHash,
+		engine.WindowWeights(), cfg.LambdaCons,
+	)
+	if err != nil {
+		return fmt.Errorf("review verification: %w", err)
+	}
+	reviewPayload, err := verification.MarshalReviewPayload(reviewSummary)
+	if err != nil {
+		return fmt.Errorf("marshal review payload: %w", err)
+	}
+
 	bc := engine.BuildContext{
 		ChallengerID:         challengerID,
 		Pair:                 req.Pair,
@@ -403,6 +438,7 @@ func (s *Service) executeEpoch(
 		BarsHash:             barsHash,
 		DSRSummary:           dsrBlob,
 		OOSPayload:           oosPayload,
+		ReviewPayload:        reviewPayload,
 		FatalAuditSamples:    result.FatalAuditSamples,
 	}
 	pkg, err := engine.BuildChallengerPackage(

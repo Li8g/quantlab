@@ -204,7 +204,17 @@ type OOSResult struct {
 	Notes           *string            `json:"notes,omitempty"`
 }
 
-// ReviewSummary is the ReviewBacktest summary (may be empty in prototype).
+// ReviewSummary is the reproducibility-replay verdict produced by
+// verification.RunReview (backlog A1). Nil when no replay was attempted.
+//
+//	Status:    ok       — rebuilt plan/bars hashes match the recorded
+//	                       metadata AND the replayed fingerprint + IS
+//	                       ScoreTotal reproduce the persisted package.
+//	           mismatch — any of those gates disagreed; Notes carries the
+//	                       recorded-vs-replayed detail. An audit-integrity
+//	                       failure, not a strategy-performance verdict.
+//	DataScope: which bars the replay covered, e.g. "is-windows". The
+//	           full-history dimension is deferred (backlog A1/B).
 type ReviewSummary struct {
 	Status    VerificationStatus `json:"status"`
 	Notes     *string            `json:"notes,omitempty"`

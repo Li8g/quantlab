@@ -75,6 +75,15 @@ type BuildContext struct {
 	// the default; malformed JSON surfaces as an EncodeResult error.
 	OOSPayload json.RawMessage
 
+	// ReviewPayload is the optional pre-marshalled ReviewSummary from the
+	// reproducibility replay (verification.RunReview, backlog A1). The
+	// SaaS Epoch service rebuilds the plan, runs RunReview after RunEpoch,
+	// marshals the *ReviewSummary via verification.MarshalReviewPayload,
+	// and passes the bytes here. Empty ⇒ Verification.ReviewSummary stays
+	// nil (no replay attempted). Malformed JSON surfaces as an
+	// EncodeResult error, mirroring OOSPayload.
+	ReviewPayload json.RawMessage
+
 	// FatalAuditSamples is the §I-3.12 fatal-audit pick collected by
 	// RunEpoch. The caller plumbs EpochResult.FatalAuditSamples
 	// verbatim; BuildChallengerPackage writes it onto
@@ -128,6 +137,13 @@ func BuildChallengerPackage(
 			return resultpkg.ChallengerResultPackage{}, err
 		}
 		verif.OOSResult = oos
+	}
+	if len(bc.ReviewPayload) > 0 {
+		var review resultpkg.ReviewSummary
+		if err := json.Unmarshal(bc.ReviewPayload, &review); err != nil {
+			return resultpkg.ChallengerResultPackage{}, err
+		}
+		verif.ReviewSummary = &review
 	}
 	if len(bc.DSRSummary) > 0 {
 		verif.DSRSummary = bc.DSRSummary

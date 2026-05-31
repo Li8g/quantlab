@@ -52,6 +52,11 @@ const (
 	VerificationStatusOK               VerificationStatus = "ok"
 	VerificationStatusFailed           VerificationStatus = "failed"
 	VerificationStatusInsufficientData VerificationStatus = "insufficient_data"
+	// VerificationStatusMismatch: a reproducibility replay (RunReview)
+	// found the re-evaluated ScoreTotal / fingerprint, or a rebuilt
+	// plan/bars hash, disagreeing with the persisted package. Signals an
+	// audit-integrity failure, not a strategy-performance verdict.
+	VerificationStatusMismatch VerificationStatus = "mismatch"
 )
 
 const (
@@ -132,7 +137,8 @@ func (w WindowName) IsValid() bool {
 func (s VerificationStatus) IsValid() bool {
 	switch s {
 	case VerificationStatusNotRun, VerificationStatusOK,
-		VerificationStatusFailed, VerificationStatusInsufficientData:
+		VerificationStatusFailed, VerificationStatusInsufficientData,
+		VerificationStatusMismatch:
 		return true
 	}
 	return false
