@@ -82,7 +82,7 @@ type CreateEvolutionTaskResponse struct {
 // (the verbatim JSON blob), callers fetch
 // GET /api/v1/challengers/:challenger_id/package.
 //
-// score_total / score_raw / consistency_penalty / max_drawdown are nil
+// score_total / score_raw / consistency_penalty are nil
 // for Fatal aggregate results (SliceScore three-state semantics).
 //
 // retired_at_ms is lifted from champion_histories (NOT decision_status —

@@ -85,7 +85,6 @@ type GeneRecord struct {
 	ScoreTotal         *float64 `json:"score_total,omitempty"`
 	ScoreRaw           *float64 `json:"score_raw,omitempty"`
 	ConsistencyPenalty *float64 `json:"consistency_penalty,omitempty"`
-	MaxDrawdown        *float64 `json:"max_drawdown,omitempty"`
 
 	// Per-window JSON snippets (denormalized from EvaluationLayer).
 	WindowScoresJSON       []byte `gorm:"type:jsonb" json:"window_scores_json,omitempty"`

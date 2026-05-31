@@ -131,7 +131,6 @@ func buildGeneRecord(challengerID string, pkg resultpkg.ChallengerResultPackage)
 		ScoreTotal:         st.Value,
 		ScoreRaw:           st.ScoreRaw,
 		ConsistencyPenalty: st.ConsistencyPenalty,
-		MaxDrawdown:        nil, // populated post-fitness when window components carry MDD; v1 stays nil
 
 		WindowScoresJSON: windowScoresJSON,
 		// WindowAlphaMonthlyJSON / WindowAlphaWeeklyJSON: alpha
