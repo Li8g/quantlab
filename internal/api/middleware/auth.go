@@ -44,7 +44,7 @@ func AuthRequired(svc *auth.Service) gin.HandlerFunc {
 			return
 		}
 		if !strings.HasPrefix(raw, bearerPrefix) {
-			abort401(c, errors.New("Authorization must be 'Bearer <token>'"))
+			abort401(c, errors.New("malformed Authorization header, want 'Bearer <token>'"))
 			return
 		}
 		token := strings.TrimPrefix(raw, bearerPrefix)

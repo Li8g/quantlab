@@ -392,6 +392,7 @@ func TestFingerprintDeterministic(t *testing.T) {
 	rng := newRNG(606)
 	for i := 0; i < 50; i++ {
 		g := s.Sample(rng)
+		//lint:ignore SA4000 deliberate: same gene must hash identically (determinism check)
 		if s.Fingerprint(g) != s.Fingerprint(g) {
 			t.Fatalf("iter %d: Fingerprint not deterministic", i)
 		}

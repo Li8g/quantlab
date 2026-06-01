@@ -93,6 +93,7 @@ func TestToy_MutateResultIsClamped(t *testing.T) {
 func TestToy_FingerprintDeterministic(t *testing.T) {
 	s := New()
 	g := domain.Gene{0.42, -0.3}
+	//lint:ignore SA4000 deliberate: same gene must hash identically (determinism check)
 	if s.Fingerprint(g) != s.Fingerprint(g) {
 		t.Error("Fingerprint nondeterministic")
 	}

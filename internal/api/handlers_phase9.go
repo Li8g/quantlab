@@ -216,13 +216,7 @@ func (h *Handlers) GetCoverage(c *gin.Context) {
 	}
 	items := make([]DataCoverageEntry, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, DataCoverageEntry{
-			Symbol:    r.Symbol,
-			Interval:  r.Interval,
-			MinOpenMs: r.MinOpenMs,
-			MaxOpenMs: r.MaxOpenMs,
-			BarCount:  r.BarCount,
-		})
+		items = append(items, DataCoverageEntry(r))
 	}
 	c.JSON(http.StatusOK, ListCoverageResponse{Items: items, Count: len(items)})
 }

@@ -531,7 +531,7 @@ func buildFillFromExecution(raw rawExecutionReport) (agent.ExchangeFill, error) 
 	if raw.Commission != "" {
 		fee, err = decimal.NewFromString(raw.Commission)
 		if err != nil {
-			return agent.ExchangeFill{}, fmt.Errorf("Commission %q: %w", raw.Commission, err)
+			return agent.ExchangeFill{}, fmt.Errorf("commission %q: %w", raw.Commission, err)
 		}
 	}
 	return agent.ExchangeFill{
