@@ -1,5 +1,31 @@
 # WS Phase 2 真 testnet 实跑手册
 
+## 5 分钟速览
+
+**目标**: 在 Binance testnet 上跑通 `SaaS ⇄ Agent ⇄ Binance` 实盘链路,**不碰真钱**。
+
+**你需要**: 一个 GitHub 账号(登 testnet)· Postgres 在跑 · 能 `go run` 本仓库。
+**耗时**: 一次性配置约 20 分钟;之后每次起服务约 1 分钟。
+
+| 步骤 | 一次性? | 做什么 |
+|---|---|---|
+| 准备 A | ✓ | Binance testnet:GitHub 登录 → 拿 api_key/secret → 确认余额 |
+| 准备 B | 读一下 | `account_id` = 你自己起的逻辑名(本手册统一用 `main`) |
+| 0 | ✓ | 修 `config.agent.yaml`(去缩进 + 填 account_id / saas_token / saas_url) |
+| 1 | ✓ | seed admin 用户 |
+| 2 | ✓ | seed agent token → 填进 `config.agent.yaml` 的 `saas_token` |
+| 3 | 每次 | 起 SaaS(`dev` 自动起 WS:8081 + cron) |
+| 4 | 每次 | 登录拿 admin JWT + 建 StrategyInstance |
+| 5 | 每次 | 起 agent → ✅ **L1 达成**(WS 连上 + 60s delta_report) |
+| 6 | 可选 | deploy champion + start → 下单链路(L2) |
+| 7 | 可选 | kill_switch 实跑(L3) |
+
+**三层验证目标**(详见下方):**L1** WS 链路通(核心)· **L2** 一笔 testnet 成交落库 · **L3** kill→拒单+frozen banner。
+
+> **只想验证 WS 链路**:做到**步骤 5** 即可 —— L1 就是 Phase 2 的核心目标,L2/L3 是加分项。
+
+---
+
 把实盘链路在 Binance **testnet** 上真实跑通:
 `SaaS(WS Hub + cron) ⇄ Agent ⇄ Binance Spot testnet`。
 
