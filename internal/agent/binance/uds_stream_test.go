@@ -240,6 +240,12 @@ type wsTestServer struct {
 	putCount    atomic.Int32
 
 	connWG sync.WaitGroup
+
+	// mu guards closing; it serializes connWG.Add against teardown so a
+	// late incoming WS connection cannot Add concurrently with Cleanup's
+	// Wait (WaitGroup requires Add to happen-before Wait).
+	mu      sync.Mutex
+	closing bool
 }
 
 func newWSTestServer(t *testing.T, listenKey string) *wsTestServer {
@@ -270,7 +276,14 @@ func newWSTestServer(t *testing.T, listenKey string) *wsTestServer {
 			t.Errorf("upgrade: %v", err)
 			return
 		}
+		w.mu.Lock()
+		if w.closing {
+			w.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
 		w.connWG.Add(1)
+		w.mu.Unlock()
 		defer w.connWG.Done()
 		defer conn.Close()
 		for {
@@ -287,6 +300,9 @@ func newWSTestServer(t *testing.T, listenKey string) *wsTestServer {
 	srv := httptest.NewServer(mux)
 	w.srv = srv
 	t.Cleanup(func() {
+		w.mu.Lock()
+		w.closing = true
+		w.mu.Unlock()
 		close(w.disconnect)
 		srv.Close()
 		w.connWG.Wait()
