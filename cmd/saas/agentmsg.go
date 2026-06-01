@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -39,7 +40,30 @@ type agentMessageHandler struct {
 	portfolios *repository.PortfolioRepo
 	recon      *repository.ReconRepo
 	logger     *slog.Logger
+
+	// killer delivers the auto-freeze kill_switch (Option 3). nil ⇒
+	// auto-freeze disabled (drift is still recorded); main.go injects the
+	// wshub.Hub via SetKillSwitchSender after the hub is constructed
+	// (the hub needs Hook, Hook needs the hub — broken by post-construction
+	// injection).
+	killer killSwitchSender
+	// freezeMu guards driftStreak across concurrent per-account
+	// delta_report handling. driftStreak[accountID] is the consecutive
+	// over-the-freeze-line report count; killedSentinel suppresses repeats.
+	freezeMu    sync.Mutex
+	driftStreak map[string]int
 }
+
+// killSwitchSender is the narrow control-plane dependency for auto-freeze
+// (satisfied by *wshub.Hub). Kept as an interface so agentmsg has no
+// compile dependency on wshub and the trigger logic stays unit-testable.
+type killSwitchSender interface {
+	SendKillSwitch(accountID string, ks wire.KillSwitch) error
+}
+
+// SetKillSwitchSender wires the auto-freeze sender post-construction
+// (see killer field). Safe to leave unset — auto-freeze becomes a no-op.
+func (h *agentMessageHandler) SetKillSwitchSender(k killSwitchSender) { h.killer = k }
 
 func newAgentMessageHandler(
 	trades *repository.TradeRepo,
@@ -52,11 +76,12 @@ func newAgentMessageHandler(
 		logger = slog.Default()
 	}
 	return &agentMessageHandler{
-		trades:     trades,
-		instances:  instances,
-		portfolios: portfolios,
-		recon:      recon,
-		logger:     logger,
+		trades:      trades,
+		instances:   instances,
+		portfolios:  portfolios,
+		recon:       recon,
+		logger:      logger,
+		driftStreak: make(map[string]int),
 	}
 }
 
@@ -435,5 +460,90 @@ func (h *agentMessageHandler) reconcile(
 			return fmt.Errorf("agentmsg: delta_report insert discrepancy: %w", err)
 		}
 	}
+
+	// Auto-freeze (kill_switch Option 3): a sustained drift trips the kill.
+	h.maybeAutoFreeze(accountID, drifts)
 	return nil
+}
+
+// freezeToleranceBps is the auto-freeze (kill_switch) line — strictly
+// higher than reconcileToleranceBps (the 50bps ledger/alert line) because
+// auto-freezing halts a LIVE trading agent and a false positive is
+// expensive. [INVENTED v1: tune as real drift data arrives.]
+const freezeToleranceBps = 200.0
+
+// freezeDebounceReports is how many CONSECUTIVE delta_reports must breach
+// the freeze line before the kill fires — a single in-flight-fill blip at
+// the 60s cadence must not halt the agent (Freqtrade-style debounce).
+// [INVENTED v1]
+const freezeDebounceReports = 2
+
+// killedSentinel marks an account already auto-frozen this drift episode
+// so we don't re-fire every subsequent report. Cleared when drift falls
+// back below the freeze line. The agent-side latch is itself cleared only
+// by restarting the process (§5.13); this sentinel just throttles repeats.
+const killedSentinel = -1
+
+// maxFlaggedDriftBps returns the largest flagged drift in bps (0 if none).
+// Only flagged drifts count — they already cleared the dust floor, so a
+// huge relative drift near zero can't trip the freeze.
+func maxFlaggedDriftBps(drifts []driftResult) float64 {
+	max := 0.0
+	for _, d := range drifts {
+		if d.Flagged && d.DriftBps > max {
+			max = d.DriftBps
+		}
+	}
+	return max
+}
+
+// nextDriftStreak advances the per-account debounce counter. prev<0 is the
+// killedSentinel (already fired — suppress repeats). A report below the
+// freeze line resets to 0, which also lifts the sentinel so a recurrence
+// can re-arm.
+func nextDriftStreak(maxBps float64, prev int) int {
+	if maxBps < freezeToleranceBps {
+		return 0
+	}
+	if prev < 0 {
+		return prev
+	}
+	return prev + 1
+}
+
+// maybeAutoFreeze advances the drift streak for accountID and, when it
+// reaches the debounce threshold, sends a discrepancy_detected kill_switch.
+// No-op when no killer is wired. On send success the streak latches to
+// killedSentinel (no repeats); on failure it stays armed so the next
+// report retries.
+func (h *agentMessageHandler) maybeAutoFreeze(accountID string, drifts []driftResult) {
+	maxBps := maxFlaggedDriftBps(drifts)
+
+	h.freezeMu.Lock()
+	next := nextDriftStreak(maxBps, h.driftStreak[accountID])
+	h.driftStreak[accountID] = next
+	h.freezeMu.Unlock()
+
+	if next < freezeDebounceReports || h.killer == nil {
+		return
+	}
+
+	err := h.killer.SendKillSwitch(accountID, wire.KillSwitch{
+		Reason:         wire.KillSwitchDiscrepancyDetected,
+		OperatorUserID: "system", // [INVENTED v1] auto-trigger sentinel, not a human
+		Scope:          wire.KillSwitchScopeAll,
+	})
+	if err != nil {
+		// Account offline or send failed — leave the streak armed so the
+		// next report retries; alert out-of-band (the agent is unmanaged).
+		h.logger.Error("auto_freeze_send_failed",
+			"account_id", accountID, "max_drift_bps", maxBps, "err", err)
+		return
+	}
+	h.freezeMu.Lock()
+	h.driftStreak[accountID] = killedSentinel
+	h.freezeMu.Unlock()
+	h.logger.Warn("auto_freeze_triggered",
+		"account_id", accountID, "max_drift_bps", maxBps,
+		"debounce_reports", freezeDebounceReports)
 }

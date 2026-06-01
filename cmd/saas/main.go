@@ -256,6 +256,10 @@ func main() {
 		OnAgentMessage:    agentMsgs.Hook,
 		OnConnectionState: makeConnectionStateHook(statusReporter),
 	})
+	// Auto-freeze control plane (kill_switch Option 3): the delta_report
+	// drift detector reaches back through the hub to halt a drifting agent.
+	// Injected post-construction to break the hub↔handler cycle.
+	agentMsgs.SetKillSwitchSender(hub)
 
 	tickManager := instance.New(
 		instanceRepo, portfolioRepo, runtimeRepo,
