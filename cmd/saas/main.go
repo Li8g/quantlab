@@ -135,6 +135,7 @@ func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: $CONFIG_PATH or ./config.yaml)")
 	seedEmail := flag.String("seed-user-email", "", "if set, seed one User row with this email and exit (use with --seed-user-password)")
 	seedPassword := flag.String("seed-user-password", "", "password for --seed-user-email; bcrypt-hashed at cost 12, then discarded")
+	seedAgentAccount := flag.String("seed-agent-token", "", "if set, create one AgentToken for this account_id, print the plaintext token, and exit (the only AgentToken-creation path)")
 	backfillPromoteBlob := flag.Bool("backfill-promote-blob", false, "scan gene_records and rewrite full_package_json's PromoteLayer from canonical columns, then exit; pair with --dry-run for preview")
 	backfillOOSBlob := flag.Bool("backfill-oos-blob", false, "scan gene_records and stamp full_package_json.verification.oos_result.status=not_run on pre-Phase-5D rows whose status is empty, then exit; pair with --dry-run for preview")
 	dryRun := flag.Bool("dry-run", false, "preview migrations without writing (no effect outside migration flags)")
@@ -164,6 +165,21 @@ func main() {
 			log.Fatalf("saas: seed user: %v", err)
 		}
 		log.Printf("saas: seeded user email=%s role=admin; exiting", *seedEmail)
+		return
+	}
+
+	// Seed mode: provision one agent token for an account, print the
+	// plaintext (the ONLY time it's recoverable — only bcrypt(secret) is
+	// stored), then exit. This is the only AgentToken-creation path; the
+	// Agent authenticates its WS handshake with this token.
+	if *seedAgentAccount != "" {
+		svc := agentauth.NewService(agentauth.NewGormTokenStore(db))
+		created, err := svc.CreateToken(ctx, *seedAgentAccount, "cli-seed")
+		if err != nil {
+			log.Fatalf("saas: seed agent token: %v", err)
+		}
+		fmt.Printf("agent_token for account_id=%s (put this in config.agent.yaml saas_token):\n%s\n",
+			*seedAgentAccount, created.Plaintext)
 		return
 	}
 
