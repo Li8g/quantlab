@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strconv"
 
 	"gorm.io/gorm"
@@ -22,6 +24,8 @@ import (
 type hubInstanceKiller struct {
 	instances *repository.InstanceRepo
 	hub       *wshub.Hub
+	audit     auditSink
+	logger    *slog.Logger
 }
 
 func (k *hubInstanceKiller) Kill(ctx context.Context, instanceID string, operatorUserID uint) error {
@@ -32,13 +36,20 @@ func (k *hubInstanceKiller) Kill(ctx context.Context, instanceID string, operato
 		}
 		return err
 	}
-	err = k.hub.SendKillSwitch(inst.AccountID, wire.KillSwitch{
+	ks := wire.KillSwitch{
 		Reason:         wire.KillSwitchManualAdminAction,
 		OperatorUserID: strconv.FormatUint(uint64(operatorUserID), 10),
 		Scope:          wire.KillSwitchScopeAll,
-	})
+	}
+	err = k.hub.SendKillSwitch(inst.AccountID, ks)
 	if errors.Is(err, wshub.ErrAccountNotConnected) {
 		return api.ErrKillAgentOffline
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	recordKillAudit(ctx, k.audit, k.logger,
+		fmt.Sprintf("user:%d", operatorUserID), inst.AccountID, ks,
+		map[string]any{"trigger": "manual", "instance_id": instanceID})
+	return nil
 }

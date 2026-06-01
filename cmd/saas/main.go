@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os/signal"
 	"runtime"
@@ -260,6 +261,9 @@ func main() {
 	// drift detector reaches back through the hub to halt a drifting agent.
 	// Injected post-construction to break the hub↔handler cycle.
 	agentMsgs.SetKillSwitchSender(hub)
+	// kill_switch action trail (Option 3 step 5) — first AuditLog writer.
+	auditRepo := repository.NewAuditRepo(db)
+	agentMsgs.auditor = auditRepo
 
 	tickManager := instance.New(
 		instanceRepo, portfolioRepo, runtimeRepo,
@@ -306,7 +310,7 @@ func main() {
 		RequireAdmin: middleware.RequireRole(store.UserRoleAdmin),
 		// Manual kill_switch (Option 3 step 3b): reverse-map instance→
 		// account + Hub.SendKillSwitch. Admin-gated via RequireAdmin above.
-		Killer: &hubInstanceKiller{instances: instanceRepo, hub: hub},
+		Killer: &hubInstanceKiller{instances: instanceRepo, hub: hub, audit: auditRepo, logger: slog.Default()},
 		// Sudo-style login: viewer-default JWTs with the long TTL,
 		// admin JWTs auto-expire on JWT.AdminTTL (cfg default 10min).
 		Users:  userRepo,

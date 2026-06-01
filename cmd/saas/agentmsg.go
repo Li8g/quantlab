@@ -52,6 +52,9 @@ type agentMessageHandler struct {
 	// over-the-freeze-line report count; killedSentinel suppresses repeats.
 	freezeMu    sync.Mutex
 	driftStreak map[string]int
+	// auditor records the instance.kill action trail (Option 3 step 5).
+	// nil ⇒ no audit row (drift is still acted on). Set in main.go.
+	auditor auditSink
 }
 
 // killSwitchSender is the narrow control-plane dependency for auto-freeze
@@ -462,7 +465,7 @@ func (h *agentMessageHandler) reconcile(
 	}
 
 	// Auto-freeze (kill_switch Option 3): a sustained drift trips the kill.
-	h.maybeAutoFreeze(accountID, drifts)
+	h.maybeAutoFreeze(ctx, accountID, drifts)
 	return nil
 }
 
@@ -516,7 +519,7 @@ func nextDriftStreak(maxBps float64, prev int) int {
 // No-op when no killer is wired. On send success the streak latches to
 // killedSentinel (no repeats); on failure it stays armed so the next
 // report retries.
-func (h *agentMessageHandler) maybeAutoFreeze(accountID string, drifts []driftResult) {
+func (h *agentMessageHandler) maybeAutoFreeze(ctx context.Context, accountID string, drifts []driftResult) {
 	maxBps := maxFlaggedDriftBps(drifts)
 
 	h.freezeMu.Lock()
@@ -528,12 +531,12 @@ func (h *agentMessageHandler) maybeAutoFreeze(accountID string, drifts []driftRe
 		return
 	}
 
-	err := h.killer.SendKillSwitch(accountID, wire.KillSwitch{
+	ks := wire.KillSwitch{
 		Reason:         wire.KillSwitchDiscrepancyDetected,
 		OperatorUserID: "system", // [INVENTED v1] auto-trigger sentinel, not a human
 		Scope:          wire.KillSwitchScopeAll,
-	})
-	if err != nil {
+	}
+	if err := h.killer.SendKillSwitch(accountID, ks); err != nil {
 		// Account offline or send failed — leave the streak armed so the
 		// next report retries; alert out-of-band (the agent is unmanaged).
 		h.logger.Error("auto_freeze_send_failed",
@@ -546,4 +549,6 @@ func (h *agentMessageHandler) maybeAutoFreeze(accountID string, drifts []driftRe
 	h.logger.Warn("auto_freeze_triggered",
 		"account_id", accountID, "max_drift_bps", maxBps,
 		"debounce_reports", freezeDebounceReports)
+	recordKillAudit(ctx, h.auditor, h.logger, "system", accountID, ks,
+		map[string]any{"trigger": "auto", "max_drift_bps": maxBps})
 }
