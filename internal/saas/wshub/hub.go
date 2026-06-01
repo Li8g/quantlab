@@ -264,6 +264,36 @@ func (h *Hub) BroadcastGracefulShutdown(retryIn time.Duration) {
 	}
 }
 
+// SendKillSwitch delivers a kill_switch to one account's Agent (control
+// plane of kill_switch Option 3). The Agent latches frozen and rejects
+// subsequent trade_commands (see internal/agent handleKillSwitch).
+//
+// Returns ErrAccountNotConnected when no Ready connection exists. Unlike
+// Dispatch, a miss here is significant: the operator/auto-trigger wanted
+// to halt a specific account and couldn't reach it. The caller decides
+// severity — a manual route surfaces it (e.g. 409); the auto-trigger
+// logs + alerts out-of-band so a killed-but-offline Agent is noticed
+// (it will replay the kill on reconnect once kill state is persisted —
+// step 4).
+func (h *Hub) SendKillSwitch(accountID string, ks wire.KillSwitch) error {
+	cn, err := h.registry.Get(accountID)
+	if err != nil {
+		return err
+	}
+	if !cn.IsReady() {
+		return ErrAccountNotConnected
+	}
+	raw, err := wire.EncodeMessage(wire.TypeKillSwitch, h.msgIDFn(),
+		h.nowMs(), accountID, ks)
+	if err != nil {
+		return fmt.Errorf("wshub.SendKillSwitch: encode: %w", err)
+	}
+	if err := cn.SendFrame(raw); err != nil {
+		return fmt.Errorf("wshub.SendKillSwitch: send: %w", err)
+	}
+	return nil
+}
+
 // buildTradeCommand turns one OrderIntent into a wire.TradeCommand by
 // converting QuantityUSD (float64) → quantity_decimal (string) using
 // latestClose. ClientOrderID falls through if non-empty; otherwise the
