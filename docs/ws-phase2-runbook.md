@@ -22,6 +22,58 @@
 
 ---
 
+## 准备 A — Binance Spot Testnet(注册 / API key / 余额)
+
+> ⚠️ 用 **Spot** Testnet(`testnet.binance.vision`),**不是** Futures Testnet
+> (`testnet.binancefuture.com`)。Testnet 完全独立于真实 Binance、**不碰真钱**、
+> 无需 KYC。注意账户与余额会被官方**定期重置**(约每月),重置后通常要**重新生成
+> API key**。下面 UI 步骤以 2026 年初为准,可能变化,**以官网为准**。
+
+1. **登录**: 打开 https://testnet.binance.vision/ → 点 "Log In with GitHub"。
+   Testnet 用 GitHub OAuth 登录,不需要真实 Binance 账户、不需要实名。
+2. **生成 API Key**: 登录后页面有 **"Generate HMAC_SHA256 Key"**。填一个 label
+   (如 `quantlab-agent`)→ 生成。得到:
+   - **API Key**(公开标识)
+   - **Secret Key** —— ⚠️ **只显示这一次**,立刻复制保存。
+   - 这两个就是 `config.agent.yaml` 里的 `exchange.api_key` / `exchange.api_secret`
+     (你说已填的就是它们)。
+3. **余额**: Spot Testnet 账户**预置**了测试资金(各币种一批,含 USDT / BTC),
+   一般无需手动充值,登录页可看余额。若为 0(刚被重置):在 testnet 页面找领取
+   入口(faucet),或等下个重置周期。
+   - 验证: agent 起来后第一个 `delta_report` 的 positions 会显示真实 testnet
+     持仓;为空 = 余额为 0。
+4. **base_url**: 固定 `https://testnet.binance.vision`(模板里已是)。REST endpoint
+   形如 `https://testnet.binance.vision/api/v3/order`。
+
+> testnet 与真实盘的差别**只在 base_url + 凭证**;`binance_spot` adapter 同一套代码
+> 两边都跑(见 [[ws-protocol-freeze]] commit f968c16)。将来上真实盘 = 换
+> `base_url: https://api.binance.com` + 真实 key —— **那是真钱,务必先在 testnet 跑通。**
+
+## 准备 B — `account_id` 到底是什么
+
+`account_id` **是你自己起的一个逻辑名字**,不是从 Binance 拿来的、也不对应任何
+交易所字段。它在 QuantLab 内部把三样东西绑在一起:
+
+```
+ 一个 agent 进程  ⇄  一套交易所凭证(api_key/secret)  ⇄  一个/多个 StrategyInstance
+                  都靠同一个 account_id 关联
+```
+
+- **长什么样**: 任意字符串,≤64 字符。例如 `main`、`binance-testnet-1`、`btc-spot`。
+  本手册统一用 `main`。
+- **不是什么**: 不是 Binance API key(那是 `exchange.api_key`)、不是 Binance 的
+  account number、不是邮箱/用户名。Binance 只认 api_key/secret;`account_id` 纯粹是
+  QuantLab 这边的命名。
+- **约束**: 同一 owner 下 `(strategy_id, pair, account_id)` 组合唯一(DB partial
+  unique index);≤64 字符。
+- **三处必须完全一致**(见步骤 0): `config.agent.yaml` 的 `account_id`
+  ↔ `--seed-agent-token <这里>` ↔ 建 instance 时的 `account_id`。
+- **怎么起名**: 单账户实验直接用 `main`。将来一个人跑多个交易所子账户(每套独立
+  api_key/secret)时,每个子账户给一个不同的 `account_id`,各自跑一个 agent 进程
+  (协议规定 agent ↔ account 是 1:1)。
+
+---
+
 ## 步骤 0 — 修 `config.agent.yaml`
 
 ⚠️ **当前文件顶层字段有 2 空格缩进** —— YAML 顶层 key 不能缩进,否则解析后字段全空,agent 启动报 `agent: agent_id empty`。改成下面这样(顶层 0 缩进,`exchange:`/`idempotency:` 的子字段 2 缩进):
