@@ -103,6 +103,14 @@ type BuildContext struct {
 	// EvaluationLayer.AlphaBreakdown stays unset. Already-JSON (RawMessage),
 	// so it is assigned verbatim, not re-validated.
 	AlphaBreakdownPayload json.RawMessage
+
+	// StressPayload is the optional pre-marshalled SBB Monte Carlo report
+	// (verification.MCReport, backlog A5) from verification.RunStress. The
+	// SaaS Epoch service re-runs the best gene post-epoch to recover its
+	// return series, bootstraps tail risk, and passes the bytes here.
+	// Empty ⇒ VerificationLayer.StressSummary stays unset. Already-JSON
+	// (RawMessage), assigned verbatim.
+	StressPayload json.RawMessage
 }
 
 // BuildChallengerPackage assembles the five-layer package for one
@@ -164,6 +172,9 @@ func BuildChallengerPackage(
 	}
 	if len(bc.DSRSummary) > 0 {
 		verif.DSRSummary = bc.DSRSummary
+	}
+	if len(bc.StressPayload) > 0 {
+		verif.StressSummary = bc.StressPayload
 	}
 	diag := &resultpkg.DiagnosticsLayer{}
 	if len(bc.FatalAuditSamples) > 0 {

@@ -109,4 +109,11 @@ type EvaluablePlan struct {
 	OosWindow      *CrucibleWindow             `json:"oos_window,omitempty"`
 	Friction       FrictionParams              `json:"friction"`
 	AggregateCache AggregateCache              `json:"-"`
+	// CaptureReturns asks the strategy to attach the longest non-Fatal
+	// window's per-bar log-return series to
+	// RawEvaluateResult.LongestWindowReturns. json:"-" excludes it from
+	// plan_hash (like AggregateCache) — flipping it must never move a
+	// persisted hash. Default false: the GA hot loop never carries the
+	// series; only the post-epoch stress re-run (verification/SBB) sets it.
+	CaptureReturns bool `json:"-"`
 }

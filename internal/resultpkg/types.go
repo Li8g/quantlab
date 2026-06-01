@@ -183,6 +183,14 @@ type RawEvaluateResult struct {
 	FrictionActual     FrictionActual   `json:"friction_actual"`
 	BarsEvaluated      int              `json:"bars_evaluated"`
 	LongestWindowStats *SharpeStats     `json:"longest_window_stats,omitempty"`
+	// LongestWindowReturns carries the per-bar log-return series of the
+	// same longest non-Fatal window as LongestWindowStats — but ONLY when
+	// the plan set CaptureReturns (the post-epoch SBB stress re-run). nil
+	// during the GA loop. json:"-": this never serializes (RawEvaluateResult
+	// is the internal strategy→engine handoff, not a wire type; only its
+	// .Windows reach the persisted package / trace), so it cannot bloat the
+	// trace table or move any hash.
+	LongestWindowReturns []float64 `json:"-"`
 }
 
 // EvaluationLayer is the engine-assembled evaluation layer of the result

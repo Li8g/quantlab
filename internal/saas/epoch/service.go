@@ -435,6 +435,24 @@ func (s *Service) executeEpoch(
 		alphaPayload = nil
 	}
 
+	// SBB Monte Carlo stress test (backlog A5, diagnostic only). Re-runs
+	// the best gene once with CaptureReturns to recover the longest
+	// window's return series (discarded during the GA loop), then
+	// bootstraps tail risk. Non-fatal end to end: a re-run/adapter error
+	// or marshal failure NEVER fails the epoch (OOS + Review already
+	// exercised the Adapter on this gene); we just leave stress_summary
+	// unset. Seeded by the epoch seed so the report is reproducible.
+	var stressPayload json.RawMessage
+	if mc, err := verification.RunStress(ctx, strat, plan, result.BestGene, uint64(epochSeed)); err != nil {
+		log.Printf("epoch %s: stress test failed (non-fatal): %v", taskID, err)
+	} else if mc != nil {
+		if b, err := json.Marshal(mc); err != nil {
+			log.Printf("epoch %s: stress marshal failed (non-fatal): %v", taskID, err)
+		} else {
+			stressPayload = b
+		}
+	}
+
 	bc := engine.BuildContext{
 		ChallengerID:          challengerID,
 		Pair:                  req.Pair,
@@ -454,6 +472,7 @@ func (s *Service) executeEpoch(
 		ReviewPayload:         reviewPayload,
 		FatalAuditSamples:     result.FatalAuditSamples,
 		AlphaBreakdownPayload: alphaPayload,
+		StressPayload:         stressPayload,
 	}
 	pkg, err := engine.BuildChallengerPackage(
 		strat, plan, result.BestGene, result.BestRawEvaluate, result.BestScore, cfg, bc,

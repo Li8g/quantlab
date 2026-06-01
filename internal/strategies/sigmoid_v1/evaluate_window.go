@@ -54,12 +54,17 @@ const stepHistoryCap = MaxChromosomePeriod * 3
 // discarded before applyStrategyOutput — the test §10
 // TestGapHandlingNoFakeTrades invariant ("never trade on a
 // synthesised bar").
-func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams, fatalMDD, initialUSDT float64) (resultpkg.CrucibleResult, *resultpkg.SharpeStats, error) {
+// evaluateWindow returns, in order: the window's CrucibleResult; the
+// SharpeStats (nil on Fatal/degenerate); the per-bar log-return series
+// (the input to those stats); and an error. The caller keeps the
+// returns only for the longest non-Fatal window and only when
+// CaptureReturns is set — see sigmoidAdapter.Evaluate.
+func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWindow, friction domain.FrictionParams, fatalMDD, initialUSDT float64) (resultpkg.CrucibleResult, *resultpkg.SharpeStats, []float64, error) {
 	if len(window.Bars) == 0 {
-		return resultpkg.CrucibleResult{}, nil, fmt.Errorf("evaluateWindow: window %q has no bars", window.Name)
+		return resultpkg.CrucibleResult{}, nil, nil, fmt.Errorf("evaluateWindow: window %q has no bars", window.Name)
 	}
 	if window.WarmupLen >= len(window.Bars) {
-		return resultpkg.CrucibleResult{}, nil, fmt.Errorf(
+		return resultpkg.CrucibleResult{}, nil, nil, fmt.Errorf(
 			"evaluateWindow: window %q WarmupLen=%d >= len(Bars)=%d",
 			window.Name, window.WarmupLen, len(window.Bars),
 		)
@@ -72,7 +77,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	// rebuild inside the hot loop.
 	c, err := DecodeChromosome(gene)
 	if err != nil {
-		return resultpkg.CrucibleResult{}, nil, fmt.Errorf(
+		return resultpkg.CrucibleResult{}, nil, nil, fmt.Errorf(
 			"evaluateWindow: window %q decode chromosome: %w", window.Name, err,
 		)
 	}
@@ -201,7 +206,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 			FatalAtBarTS:  &fatalBarTS,
 			FatalMDDValue: &observedMDD,
 			BarsEvaluated: barsScored,
-		}, nil, nil
+		}, nil, nil, nil
 	}
 
 	// Normal exit: compute log-return on the scored path. Final NAV
@@ -226,7 +231,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 			FatalAtBarTS:  &ts,
 			FatalMDDValue: &one,
 			BarsEvaluated: barsScored,
-		}, nil, nil
+		}, nil, nil, nil
 	}
 
 	// Final return spans the last scored bar's orders being settled
@@ -243,5 +248,5 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 		Window:        window.Name,
 		Score:         resultpkg.SliceScore{Fatal: false, Value: &score},
 		BarsEvaluated: barsScored,
-	}, &stats, nil
+	}, &stats, logReturns, nil
 }

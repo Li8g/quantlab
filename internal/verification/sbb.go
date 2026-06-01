@@ -219,7 +219,7 @@ func RunMonteCarlo(returns []float64, blockLenMean, nIter int, seed uint64, fata
 	for it := 0; it < nIter; it++ {
 		cumLog := 0.0   // log equity; equity = exp(cumLog), starts at 1.0
 		peak := 1.0     // running peak equity, for drawdown-from-peak
-		maxDD := 0.0     // worst drawdown-from-peak on this path
+		maxDD := 0.0    // worst drawdown-from-peak on this path
 		ruined := false // running equity ever ≤ ruinFloor (absolute-from-start)
 
 		filled := 0

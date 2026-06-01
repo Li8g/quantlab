@@ -425,6 +425,10 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 	// construction the longest non-Fatal window — §I-4.2 "T = 回测
 	// horizon" picks the longest available horizon.
 	var longestStats *resultpkg.SharpeStats
+	// longestReturns tracks the same longest non-Fatal window's series,
+	// but only when the plan asked for it (CaptureReturns) — otherwise it
+	// stays nil and the GA hot loop pays nothing for it.
+	var longestReturns []float64
 
 	for _, name := range resultpkg.AllWindowsInEvalOrder() {
 		w, ok := byName[name]
@@ -440,7 +444,7 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 			})
 			continue
 		}
-		res, stats, err := evaluateWindow(a.strat, gene, w, a.plan.Friction, a.plan.FatalMDD, a.plan.InitialUSDT)
+		res, stats, ret, err := evaluateWindow(a.strat, gene, w, a.plan.Friction, a.plan.FatalMDD, a.plan.InitialUSDT)
 		if err != nil {
 			return nil, fmt.Errorf("sigmoid_v1: window %q: %w", name, err)
 		}
@@ -448,6 +452,9 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 		totalBars += res.BarsEvaluated
 		if stats != nil {
 			longestStats = stats
+			if a.plan.CaptureReturns {
+				longestReturns = ret
+			}
 		}
 		if res.Score.Fatal {
 			switch name {
@@ -469,8 +476,9 @@ func (a *sigmoidAdapter) Evaluate(gene domain.Gene) (*resultpkg.RawEvaluateResul
 			TakerFeeBPS: a.plan.Friction.TakerFeeBPS,
 			SlippageBPS: a.plan.Friction.SlippageBPS,
 		},
-		BarsEvaluated:      totalBars,
-		LongestWindowStats: longestStats,
+		BarsEvaluated:        totalBars,
+		LongestWindowStats:   longestStats,
+		LongestWindowReturns: longestReturns,
 	}, nil
 }
 

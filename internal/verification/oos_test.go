@@ -28,6 +28,12 @@ type stubOOSStrategy struct {
 	newAdapterErr error
 	resetErr      error
 	resetCalls    int
+	// RunStress knobs: stressReturns is the series the adapter attaches
+	// to LongestWindowReturns, but ONLY when the plan asked for it —
+	// gotCaptureReturns records the CaptureReturns flag Reset observed,
+	// so tests can assert RunStress actually set it.
+	stressReturns     []float64
+	gotCaptureReturns bool
 }
 
 func (s *stubOOSStrategy) StrategyID() string                                           { return "stub_oos" }
@@ -68,8 +74,11 @@ type stubOOSAdapter struct {
 	parent *stubOOSStrategy
 }
 
-func (a *stubOOSAdapter) Reset(_ *domain.EvaluablePlan) error {
+func (a *stubOOSAdapter) Reset(plan *domain.EvaluablePlan) error {
 	a.parent.resetCalls++
+	if plan != nil {
+		a.parent.gotCaptureReturns = plan.CaptureReturns
+	}
 	return a.parent.resetErr
 }
 func (a *stubOOSAdapter) Close() error { return nil }
@@ -89,7 +98,11 @@ func (a *stubOOSAdapter) Evaluate(_ domain.Gene) (*resultpkg.RawEvaluateResult, 
 		v := a.parent.score
 		cr.Score = resultpkg.SliceScore{Fatal: false, Value: &v}
 	}
-	return &resultpkg.RawEvaluateResult{Windows: []resultpkg.CrucibleResult{cr}}, nil
+	raw := &resultpkg.RawEvaluateResult{Windows: []resultpkg.CrucibleResult{cr}}
+	if a.parent.gotCaptureReturns {
+		raw.LongestWindowReturns = a.parent.stressReturns
+	}
+	return raw, nil
 }
 
 // ----- bar fixture helpers -----
