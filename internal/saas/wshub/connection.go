@@ -531,15 +531,3 @@ func (c *Connection) handlePong(env wire.Envelope) {
 		c.pendingPingID = ""
 	}
 }
-
-// closeAfter is a test/diagnostic helper — Run() uses it to bound the
-// total connection lifetime in tests where we don't want a goroutine to
-// hang forever.
-//
-//nolint:unused
-func (c *Connection) closeAfter(d time.Duration) {
-	go func() {
-		time.Sleep(d)
-		_ = c.Close()
-	}()
-}

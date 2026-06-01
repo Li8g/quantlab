@@ -3,7 +3,6 @@ package wshub
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -97,21 +96,6 @@ func (p *pipeConn) clientReadEnv(t *testing.T) wire.Envelope {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("clientReadEnv: no frame in 2s")
 		return wire.Envelope{}
-	}
-}
-
-// clientTryReadEnv is non-blocking. Returns (env, true) if a frame is
-// already buffered, (zero, false) otherwise.
-func (p *pipeConn) clientTryReadEnv() (wire.Envelope, bool) {
-	select {
-	case frame, ok := <-p.clientReads:
-		if !ok {
-			return wire.Envelope{}, false
-		}
-		env, _ := wire.DecodeEnvelope(frame)
-		return env, true
-	default:
-		return wire.Envelope{}, false
 	}
 }
 
@@ -241,13 +225,6 @@ func encodeForClient(t *testing.T, msgType wire.MessageType, accountID string, p
 		t.Fatalf("encode %s: %v", msgType, err)
 	}
 	return raw
-}
-
-func ignoreClose(err error) error {
-	if errors.Is(err, ErrConnClosed) || errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
 }
 
 // stableMsgID returns a counter-based ULID-shaped msg generator so test

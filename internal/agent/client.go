@@ -58,9 +58,8 @@ type Client struct {
 	backoffJitter func() float64 // returns 0.8..1.2
 
 	// Connection-scoped state. Reset on each successful (re)connect.
-	connMu  sync.Mutex
-	conn    wsconn.Conn
-	connCtx context.Context
+	connMu sync.Mutex
+	conn   wsconn.Conn
 
 	// writeMu serializes conn.WriteFrame across goroutines. Frames are
 	// produced by the read-loop handlers, the async onOrderEvent

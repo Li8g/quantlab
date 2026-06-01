@@ -2,6 +2,8 @@ module quantlab
 
 go 1.25.0
 
+toolchain go1.25.10
+
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/gin-gonic/gin v1.10.0

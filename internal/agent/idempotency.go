@@ -2,7 +2,6 @@ package agent
 
 import (
 	"sync"
-	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -104,7 +103,3 @@ func (m *MemoryStore) Snapshot() []IdempotencyRecord {
 	}
 	return out
 }
-
-// nowMs returns the current ms timestamp; small helper to keep
-// non-mock store impls consistent.
-func nowMs() int64 { return time.Now().UnixMilli() }
