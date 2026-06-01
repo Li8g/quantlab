@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"gorm.io/gorm"
 
@@ -20,4 +21,22 @@ func NewAuditRepo(db *gorm.DB) *AuditRepo { return &AuditRepo{db: db} }
 // autoCreateTime. Insert-only: rows are never updated or deleted.
 func (r *AuditRepo) Insert(ctx context.Context, e *store.AuditLog) error {
 	return r.db.WithContext(ctx).Create(e).Error
+}
+
+// LatestKill returns the most recent instance.kill audit event for an
+// account (subject "account:<id>"), or (nil, nil) when the account was
+// never killed. Powers the /live frozen banner (Option 3 step 4).
+func (r *AuditRepo) LatestKill(ctx context.Context, accountID string) (*store.AuditLog, error) {
+	var row store.AuditLog
+	err := r.db.WithContext(ctx).
+		Where("action = ? AND subject = ?", store.AuditActionInstanceKill, "account:"+accountID).
+		Order("created_at DESC").
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
 }

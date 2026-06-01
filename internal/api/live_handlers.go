@@ -21,6 +21,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -78,6 +79,13 @@ type PriceReader interface {
 type ReconReader interface {
 	ListDiscrepanciesForInstance(ctx context.Context, instanceID string, limit int) ([]store.ReconciliationDiscrepancy, error)
 	ListAgentErrorsForInstance(ctx context.Context, instanceID string, limit int) ([]store.AgentError, error)
+}
+
+// KillStatusReader fetches the most recent instance.kill audit event for
+// an account (kill_switch Option 3 step 4). Backed by AuditRepo.
+// Nil-skippable: when nil, /live omits `kill_status`.
+type KillStatusReader interface {
+	LatestKill(ctx context.Context, accountID string) (*store.AuditLog, error)
 }
 
 // liveSnapshotReconRows is the reconciliation tail length folded into
@@ -216,6 +224,19 @@ func (h *Handlers) GetInstanceLive(c *gin.Context) {
 		}
 		for _, e := range errs {
 			resp.RecentErrors = append(resp.RecentErrors, toAgentErrorView(e))
+		}
+	}
+
+	// Kill status (Option 3 step 4) — most recent kill_switch for this
+	// account, surfaced as a frozen banner. Nil-skippable.
+	if h.Kills != nil {
+		kill, err := h.Kills.LatestKill(c.Request.Context(), inst.AccountID)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, err)
+			return
+		}
+		if kill != nil {
+			resp.KillStatus = toKillStatusView(*kill)
 		}
 	}
 
@@ -368,4 +389,36 @@ type InstanceLiveResponse struct {
 	RecentTrades        []TradeRecordSummary            `json:"recent_trades"`
 	RecentDiscrepancies []ReconciliationDiscrepancyView `json:"recent_discrepancies,omitempty"`
 	RecentErrors        []AgentErrorView                `json:"recent_errors,omitempty"`
+	KillStatus          *KillStatusView                 `json:"kill_status,omitempty"`
+}
+
+// KillStatusView surfaces the most recent kill_switch for the instance's
+// account (Option 3 step 4). Present ⇒ the account was killed and the
+// agent latched frozen. v1 has no resume signal, so this reflects the
+// LAST kill event, not a live "still frozen?" probe — after the admin
+// restarts the agent process the latch clears but this banner persists
+// until a newer event supersedes it (the front-end notes "如已重启可忽略").
+// [INVENTED v1; resume message is v2, §5.13]
+type KillStatusView struct {
+	KilledAtMs     int64  `json:"killed_at_ms"`
+	Actor          string `json:"actor"`  // "user:<id>" | "system"
+	Reason         string `json:"reason"` // wire.KillSwitchReason
+	OperatorUserID string `json:"operator_user_id,omitempty"`
+	Trigger        string `json:"trigger"` // "manual" | "auto"
+}
+
+// toKillStatusView maps a persisted instance.kill AuditLog to its wire
+// summary, pulling reason/operator/trigger out of the event's DataJSON.
+func toKillStatusView(a store.AuditLog) *KillStatusView {
+	v := &KillStatusView{KilledAtMs: a.CreatedAt.UnixMilli(), Actor: a.Actor}
+	var data struct {
+		Reason         string `json:"reason"`
+		OperatorUserID string `json:"operator_user_id"`
+		Trigger        string `json:"trigger"`
+	}
+	if len(a.DataJSON) > 0 {
+		_ = json.Unmarshal(a.DataJSON, &data)
+	}
+	v.Reason, v.OperatorUserID, v.Trigger = data.Reason, data.OperatorUserID, data.Trigger
+	return v
 }

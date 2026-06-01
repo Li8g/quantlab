@@ -303,6 +303,7 @@ func main() {
 		Executions:   tradeRepo,
 		Prices:       klineRepo,
 		Recon:        reconRepo,
+		Kills:        auditRepo, // /live frozen banner (Option 3 step 4)
 		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,

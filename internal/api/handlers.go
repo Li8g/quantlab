@@ -224,6 +224,9 @@ type Handlers struct {
 	// Recon folds the Phase 8 reconciliation tail (持仓对账) into /live:
 	// position-drift discrepancies + agent errors (Tier L). Nil-skippable.
 	Recon ReconReader
+	// Kills folds the most recent kill_switch (Option 3 step 4) into /live
+	// as a frozen banner. Nil-skippable.
+	Kills KillStatusReader
 
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests

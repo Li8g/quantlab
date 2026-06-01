@@ -14,6 +14,7 @@ import type {
   AgentErrorView,
   InstanceLiveResponse,
   InstanceStatus,
+  KillStatusView,
   PortfolioSnapshotView,
   ReconciliationDiscrepancyView,
   TradeRecordSummary,
@@ -92,6 +93,8 @@ export default function InstanceLivePage() {
           {instance.instance_id}
         </span>
       </div>
+
+      {data.kill_status && <KillBanner kill={data.kill_status} />}
 
       <ControlsCard
         status={instance.status}
@@ -350,6 +353,26 @@ function TradeRow({ t }: { t: TradeRecordSummary }) {
 // asset (USDT → 2dp money, base asset → 8dp).
 function amountByAsset(asset: string, v: number) {
   return asset === 'USDT' ? formatUsd(v) : formatBtc(v)
+}
+
+// Frozen banner (Option 3 step 4): shown when the account has a
+// kill_switch on record. v1 has no resume signal, so this reflects the
+// last kill — after restarting the agent it is stale (noted inline).
+function KillBanner({ kill }: { kill: KillStatusView }) {
+  const when = new Date(kill.killed_at_ms).toLocaleString()
+  const how = kill.trigger === 'auto' ? 'Auto-frozen' : 'Manually killed'
+  return (
+    <div className="mb-4 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800">
+      <div className="font-semibold">⚠️ Agent frozen — kill_switch active</div>
+      <div className="mt-1">
+        {how} · reason <span className="font-mono">{kill.reason}</span> · by{' '}
+        <span className="font-mono">{kill.actor}</span> · {when}
+      </div>
+      <div className="mt-1 text-xs text-red-600">
+        New orders are rejected. Resume = restart the agent process (v1). 若已重启 agent 可忽略此提示。
+      </div>
+    </div>
+  )
 }
 
 // Reconciliation panel (Tier L): position drift the Agent reported vs

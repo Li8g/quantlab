@@ -207,10 +207,24 @@ export interface AgentErrorView {
   reported_at_ms: number
 }
 
+// Most recent kill_switch for the instance's account (Option 3 step 4).
+// Present ⇒ the account was killed and the agent latched frozen. v1 has no
+// resume signal, so this is the LAST kill event, not a live "still
+// frozen?" probe — after restarting the agent the banner is stale and can
+// be disregarded.
+export interface KillStatusView {
+  killed_at_ms: number
+  actor: string // "user:<id>" | "system"
+  reason: string // wire.KillSwitchReason
+  operator_user_id?: string
+  trigger: string // "manual" | "auto"
+}
+
 // GET /instances/:id/live — aggregate snapshot. portfolio/connection are
 // omitted when unavailable; recent_trades is always present.
 // recent_discrepancies/recent_errors are omitted when the recon
-// collaborator is unwired (Tier L nil-skip).
+// collaborator is unwired (Tier L nil-skip). kill_status is present only
+// when the account has been killed.
 export interface InstanceLiveResponse {
   instance: InstanceResponse
   portfolio?: PortfolioSnapshotView
@@ -218,4 +232,5 @@ export interface InstanceLiveResponse {
   recent_trades: TradeRecordSummary[]
   recent_discrepancies?: ReconciliationDiscrepancyView[]
   recent_errors?: AgentErrorView[]
+  kill_status?: KillStatusView
 }
