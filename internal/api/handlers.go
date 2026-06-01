@@ -239,6 +239,12 @@ type Handlers struct {
 	// AuthRequired — tests that bypass auth leave it nil.
 	RequireAdmin gin.HandlerFunc
 
+	// Killer enables POST /instances/:instance_id/kill (manual kill_switch,
+	// Option 3 step 3b). Admin-only. Nil ⇒ the route isn't registered
+	// (same nil-skip pattern as the other collaborators); cmd/saas wires a
+	// Hub-backed impl.
+	Killer InstanceKiller
+
 	// Login collaborators. Both must be non-nil for /auth/login to be
 	// registered — tests that don't exercise login leave them nil.
 	Users  UserAuthenticator
@@ -345,6 +351,18 @@ func (h *Handlers) Register(r gin.IRouter) {
 		inst.GET("", h.ListInstances)
 	}
 	inst.GET("/:instance_id/live", h.GetInstanceLive)
+
+	// Manual kill_switch (Option 3 step 3b) — admin only, distinct from the
+	// operator+ write endpoints above. Nil Killer ⇒ unregistered; nil
+	// RequireAdmin falls back to ungated (handler tests bypass middleware),
+	// mirroring promote/retire.
+	if h.Killer != nil {
+		if h.RequireAdmin != nil {
+			inst.POST("/:instance_id/kill", h.RequireAdmin, h.KillInstance)
+		} else {
+			inst.POST("/:instance_id/kill", h.KillInstance)
+		}
+	}
 }
 
 // ===== handlers =====

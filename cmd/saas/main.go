@@ -304,6 +304,9 @@ func main() {
 			store.UserRoleOperator, store.UserRoleAdmin,
 		),
 		RequireAdmin: middleware.RequireRole(store.UserRoleAdmin),
+		// Manual kill_switch (Option 3 step 3b): reverse-map instance→
+		// account + Hub.SendKillSwitch. Admin-gated via RequireAdmin above.
+		Killer: &hubInstanceKiller{instances: instanceRepo, hub: hub},
 		// Sudo-style login: viewer-default JWTs with the long TTL,
 		// admin JWTs auto-expire on JWT.AdminTTL (cfg default 10min).
 		Users:  userRepo,
