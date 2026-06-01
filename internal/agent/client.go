@@ -78,6 +78,15 @@ type Client struct {
 	// deltaInterval is the delta_report cadence (§5.11 ~60s). Zero falls
 	// back to DefaultDeltaReportInterval at construction.
 	deltaInterval time.Duration
+
+	// frozen latches true when a kill_switch arrives. Client-scoped (NOT
+	// connection-scoped) so it SURVIVES reconnect — a kill is a hard latch
+	// cleared only by restarting the process (§5.13 v1; a resume message
+	// is v2). While frozen the Agent rejects new trade_commands (HALTED
+	// semantics) yet still services the read loop, heartbeats, async
+	// fills, and delta_reports; it does NOT auto-cancel or auto-liquidate
+	// (that is a human decision via the SaaS console).
+	frozen atomic.Bool
 }
 
 // deltaBuffer accumulates the since_last_report payload for the next
@@ -501,16 +510,19 @@ func (c *Client) handleGracefulShutdown(_ context.Context, env wire.Envelope) {
 		"reason", gs.Reason, "retry_in_ms", gs.RetryInMs)
 }
 
-// handleKillSwitch acks the kill and stops accepting future
-// TradeCommands. v1 implementation: ack accepted, log; the Agent does
-// not maintain open orders in MockExchange, so there's nothing to
-// cancel. Real-exchange impl will iterate open orders here.
+// handleKillSwitch latches the Agent into the frozen (HALTED) state: it
+// sets the hard latch so every subsequent trade_command is rejected (see
+// handleTradeCommand), acks receipt, and logs. Per §5.13 the latch clears
+// only by restarting the process (v1; a resume message is v2). The Agent
+// does NOT auto-cancel open orders or liquidate — the book is left intact
+// for a human reviewer's explicit kill+flatten action via the console.
 func (c *Client) handleKillSwitch(ctx context.Context, conn wsconn.Conn, env wire.Envelope) {
 	ks, err := wire.DecodePayload[wire.KillSwitch](env)
 	if err != nil {
 		c.sendError(ctx, conn, wire.ErrorCodeDecodeFailed, err.Error(), env.MsgID)
 		return
 	}
+	c.frozen.Store(true)
 	c.log.Warn("agent_kill_switch",
 		"reason", ks.Reason, "operator", ks.OperatorUserID, "scope", ks.Scope)
 	// Reply with an ack to confirm receipt; v1 uses the kill_switch's

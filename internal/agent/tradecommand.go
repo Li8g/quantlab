@@ -20,6 +20,20 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 		return
 	}
 
+	// Frozen latch (kill_switch / HALTED): reject every new order without
+	// submitting. Checked before expiry/idempotency so a killed Agent
+	// never reaches the exchange. The latch survives reconnect and clears
+	// only on process restart (§5.13).
+	if c.frozen.Load() {
+		c.sendAck(ctx, conn, wire.Ack{
+			ClientOrderID: tc.ClientOrderID,
+			Status:        wire.AckStatusRejected,
+			ExchangeNowMs: c.nowMs(),
+			RejectReason:  "agent frozen by kill_switch",
+		})
+		return
+	}
+
 	// Expiry check (§5.8): if valid_until_ms has passed (per Agent wall
 	// clock OR per SaaS's NowMsAtSaaS, whichever is later), reject with
 	// status=expired without submitting.
