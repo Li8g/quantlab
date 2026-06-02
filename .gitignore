@@ -35,6 +35,12 @@ vendor/
 .claude/
 graphify-out/
 
+# Agent local SQLite idempotency store (config.agent.yaml db_path; default
+# agent.db) + its WAL/SHM sidecars. Per-process runtime state, never committed.
+agent.db
+*.db-wal
+*.db-shm
+
 # --- IDE / editor ---
 .idea/
 .vscode/
