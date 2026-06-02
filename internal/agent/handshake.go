@@ -50,7 +50,11 @@ func (c *Client) doHandshake(ctx context.Context, conn wsconn.Conn) error {
 	switch env.Type {
 	case wire.TypeAuthFail:
 		fail, _ := wire.DecodePayload[wire.AuthFail](env)
-		return fmt.Errorf("auth_fail: %s (%s)", fail.Code, fail.Reason)
+		err := fmt.Errorf("auth_fail: %s (%s)", fail.Code, fail.Reason)
+		if isFatalAuthCode(fail.Code) {
+			return fmt.Errorf("%w: %w", errFatalAuth, err)
+		}
+		return err
 	case wire.TypeAuthOK:
 		// ok
 	default:
@@ -124,5 +128,25 @@ func readOneEnvelope(ctx context.Context, conn wsconn.Conn) (wire.Envelope, erro
 // any wire-format-affecting change.
 const AgentVersion = "0.1.0"
 
-// silence the unused warning if some import drifts
-var _ = errors.New
+// errFatalAuth marks an auth failure the reconnect loop can never recover
+// from by retrying with the same config. Run checks for it via errors.Is
+// and exits instead of backing off. Every auth_fail code is fatal: each
+// requires an operator fix — a new/un-revoked token, a matching account_id,
+// or a redeployed binary — so silently backing off forever would just be
+// noise.
+var errFatalAuth = errors.New("fatal auth failure")
+
+// isFatalAuthCode classifies an auth_fail code as unrecoverable. Driven by
+// the typed wire.AuthFailCode rather than substring-matching the rendered
+// error string, so a free-form AuthFail.Reason can never flip the
+// classification. A future code defaults to recoverable (the switch's
+// default) until explicitly classified here.
+func isFatalAuthCode(code wire.AuthFailCode) bool {
+	switch code {
+	case wire.AuthFailInvalidToken, wire.AuthFailRevoked,
+		wire.AuthFailSchemaMismatch, wire.AuthFailAccountMismatch:
+		return true
+	default:
+		return false
+	}
+}

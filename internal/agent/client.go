@@ -8,7 +8,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -266,13 +265,7 @@ func errString(err error) string {
 // revoked token). Schema-mismatch errors are also fatal — the operator
 // must redeploy a matching binary.
 func isFatalAuthErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "invalid_token") ||
-		strings.Contains(msg, "revoked") ||
-		strings.Contains(msg, "schema_mismatch")
+	return errors.Is(err, errFatalAuth)
 }
 
 // nextBackoff returns the next wait duration with jitter, and advances

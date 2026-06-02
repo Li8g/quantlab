@@ -35,8 +35,10 @@ type AuthOK struct {
 }
 
 // AuthFailCode enumerates the reasons SaaS rejects an Auth frame. The Agent
-// must treat InvalidToken / Revoked as fatal (no reconnect backoff —
-// retrying with the same config is pointless and noisy).
+// treats every code as fatal (no reconnect backoff — each needs an operator
+// fix: new/un-revoked token, matching account_id, or redeployed binary, so
+// retrying with the same config is pointless and noisy). See the Agent's
+// isFatalAuthCode.
 type AuthFailCode string
 
 const (

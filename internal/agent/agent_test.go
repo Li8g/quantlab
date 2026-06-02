@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -238,6 +239,46 @@ func TestHandshake_AuthFailIsFatal(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s after auth_fail")
+	}
+}
+
+// TestIsFatalAuthErr_DrivenByCodeNotReason guards the auth-fail
+// classification against substring leakage: it must key off the typed
+// AuthFailCode (via the errFatalAuth sentinel), never the free-form text of
+// the error. Every auth_fail code is fatal regardless of its Reason, while a
+// recoverable transport error whose message happens to contain a fatal
+// keyword must stay recoverable.
+func TestIsFatalAuthErr_DrivenByCodeNotReason(t *testing.T) {
+	mk := func(code wire.AuthFailCode, reason string) error {
+		err := fmt.Errorf("auth_fail: %s (%s)", code, reason)
+		if isFatalAuthCode(code) {
+			return fmt.Errorf("%w: %w", errFatalAuth, err)
+		}
+		return err
+	}
+	cases := []struct {
+		name      string
+		err       error
+		wantFatal bool
+	}{
+		{"nil", nil, false},
+		{"invalid_token", mk(wire.AuthFailInvalidToken, "bad token"), true},
+		{"revoked", mk(wire.AuthFailRevoked, "key rotated"), true},
+		{"schema_mismatch", mk(wire.AuthFailSchemaMismatch, "redeploy"), true},
+		{"account_mismatch", mk(wire.AuthFailAccountMismatch, "check config"), true},
+		// Fatal codes trip regardless of a benign/empty Reason.
+		{"account_mismatch_empty_reason", mk(wire.AuthFailAccountMismatch, ""), true},
+		// The fragility this fix removes: a recoverable transport error whose
+		// message contains a fatal keyword must NOT be classified fatal —
+		// classification keys off the sentinel, not substring matching.
+		{"transport_err_with_fatal_word", fmt.Errorf("read: stream revoked by peer"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFatalAuthErr(tc.err); got != tc.wantFatal {
+				t.Errorf("isFatalAuthErr(%v) = %v, want %v", tc.err, got, tc.wantFatal)
+			}
+		})
 	}
 }
 

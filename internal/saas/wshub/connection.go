@@ -388,7 +388,7 @@ func (c *Connection) doHandshake(ctx context.Context) error {
 	if hello.AccountID != verified.AccountID {
 		c.sendAuthFail(ctx, wire.AuthFailAccountMismatch,
 			"hello.account_id does not match token binding")
-		return fmt.Errorf("account_mismatch: hello=%q token=%q",
+		return fmt.Errorf("account_mismatch: hello=%q token_account=%q",
 			hello.AccountID, verified.AccountID)
 	}
 	c.AgentID = verified.AgentID
