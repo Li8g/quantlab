@@ -22,7 +22,7 @@ SELECT
     count(*)                 AS active_count,
     array_agg(challenger_id) AS challenger_ids,
     array_agg(id)            AS row_ids
-FROM champion_history
+FROM champion_histories
 WHERE retired_at IS NULL
   AND deleted_at IS NULL
 GROUP BY strategy_id, pair

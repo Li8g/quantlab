@@ -130,7 +130,7 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 	const championUniqueSQL = `CREATE UNIQUE INDEX IF NOT EXISTS uq_champion_active
-		ON champion_history (strategy_id, pair)
+		ON champion_histories (strategy_id, pair)
 		WHERE retired_at IS NULL AND deleted_at IS NULL`
 	if err := db.WithContext(ctx).Exec(championUniqueSQL).Error; err != nil {
 		return nil, fmt.Errorf("store.NewDB: partial unique champion_history: %w", err)

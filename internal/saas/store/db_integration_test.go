@@ -66,6 +66,49 @@ func TestNewDB_HypertableAndExtension(t *testing.T) {
 	}
 }
 
+// TestNewDB_ChampionUniqueIndexTableName guards against table-name drift in
+// the hand-written `uq_champion_active` DDL. The ChampionHistory model has no
+// TableName() override, so GORM AutoMigrate creates the GORM-default plural
+// table `champion_histories`; an earlier DDL hard-coded the singular
+// `champion_history`, which never exists, so NewDB aborted on every fresh
+// migration with `relation "champion_history" does not exist`. The bug is
+// invisible to model-based queries (db.Model(&ChampionHistory{}) resolves the
+// plural name) — only the literal in the raw DDL drifts. This test pins the
+// index to the real table: NewDB succeeding already proves the DDL ran, and
+// the pg_indexes lookup proves it landed on champion_histories.
+func TestNewDB_ChampionUniqueIndexTableName(t *testing.T) {
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		t.Fatalf("load config %s: %v", *configPath, err)
+	}
+	// A buggy DDL (singular table) makes NewDB itself fail here.
+	db, err := store.NewDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, _ := db.DB()
+		if sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	var tableName, indexDef string
+	if err := db.Raw(
+		`SELECT tablename, indexdef FROM pg_indexes WHERE indexname = 'uq_champion_active'`,
+	).Row().Scan(&tableName, &indexDef); err != nil {
+		t.Fatalf("query pg_indexes for uq_champion_active: %v", err)
+	}
+	if tableName != "champion_histories" {
+		t.Errorf("uq_champion_active on wrong table: got %q, want champion_histories", tableName)
+	}
+	// Sanity-check the predicate so a future rewrite can't silently turn the
+	// partial index into a full one (which would block legit re-promotes).
+	if !strings.Contains(indexDef, "retired_at IS NULL") {
+		t.Errorf("uq_champion_active lost its partial predicate: %q", indexDef)
+	}
+}
+
 // TestStrategyInstance_PartialUniqueActive verifies that the partial
 // unique index `(owner_user_id, strategy_id, pair, account_id) WHERE
 // status != 'retired'` blocks two ACTIVE instances on the same key but
