@@ -59,15 +59,12 @@ func ComputeSharpeStats(returns []float64) resultpkg.SharpeStats {
 	}
 }
 
-// meanOf is a tiny local helper — quant doesn't export a public
-// Mean function and KahanSum is internal-only here.
+// meanOf is a tiny local helper — quant doesn't export a public Mean
+// function. Uses quant.KahanSum (not a naive loop) to stay consistent
+// with quant.StdDev's compensated summation on long return series.
 func meanOf(xs []float64) float64 {
 	if len(xs) == 0 {
 		return 0
 	}
-	var sum float64
-	for _, x := range xs {
-		sum += x
-	}
-	return sum / float64(len(xs))
+	return quant.KahanSum(xs) / float64(len(xs))
 }
