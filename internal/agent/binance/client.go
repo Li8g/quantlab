@@ -215,32 +215,6 @@ func (c *Client) unsigned(ctx context.Context, method, path string, params url.V
 	return c.do(req)
 }
 
-// withAPIKey issues a request with the X-MBX-APIKEY header but NO
-// timestamp/recvWindow/signature. Used by Binance's USER_STREAM
-// security tier (listenKey lifecycle: POST/PUT/DELETE
-// /api/v3/userDataStream). signed() is wrong for these endpoints —
-// Binance rejects the listenKey-keepalive PUT with -1101 ("illegal
-// characters in query") if a signature is appended.
-//
-// params may be nil. Empty apiKey trips ErrEmptyAPIKey at call time
-// rather than at NewClient so a public-only client can still boot.
-func (c *Client) withAPIKey(ctx context.Context, method, path string, params url.Values) ([]byte, error) {
-	if c.apiKey == "" {
-		return nil, ErrEmptyAPIKey
-	}
-	u := c.baseURL + path
-	if len(params) > 0 {
-		u += "?" + params.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
-	if err != nil {
-		return nil, fmt.Errorf("binance: build api-key request: %w", err)
-	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
-	req.Header.Set("User-Agent", userAgent)
-	return c.do(req)
-}
-
 // signed issues an authenticated request. timestamp + recvWindow are
 // appended to params, the canonical-encoded query string is HMAC-SHA256
 // signed with apiSecret, and the resulting signature is added as the
@@ -278,6 +252,49 @@ func (c *Client) signed(ctx context.Context, method, path string, params url.Val
 	req.Header.Set("X-MBX-APIKEY", c.apiKey)
 	req.Header.Set("User-Agent", userAgent)
 	return c.do(req)
+}
+
+// APIKey returns the public half of the credentials. The WS API user
+// data stream subscription carries the key as a request param
+// (userDataStream.subscribe.signature) rather than the X-MBX-APIKEY
+// header, so the streamer needs read access — apiSecret stays private.
+func (c *Client) APIKey() string { return c.apiKey }
+
+// WSSubscribeParams builds the signed `params` object for a Binance
+// WebSocket API userDataStream.subscribe.signature request. It stamps a
+// clock-skew-corrected timestamp + recvWindow, HMAC-SHA256-signs the
+// alphabetically-sorted query string with apiSecret, and returns the
+// JSON-ready params (apiKey, recvWindow, timestamp, signature).
+//
+// The signed payload uses the same canonical encoding as signed():
+// url.Values.Encode() sorts keys (apiKey < recvWindow < timestamp) and
+// URL-encodes values, matching what Binance reconstructs server-side.
+//
+// Iron rule 3: apiSecret never leaves this method.
+func (c *Client) WSSubscribeParams() (map[string]any, error) {
+	if c.apiKey == "" {
+		return nil, ErrEmptyAPIKey
+	}
+	if len(c.apiSecret) == 0 {
+		return nil, ErrEmptyAPISecret
+	}
+	tsMs := c.nowFn().UnixMilli() + c.serverOffsetMs.Load()
+
+	signed := url.Values{}
+	signed.Set("apiKey", c.apiKey)
+	signed.Set("recvWindow", strconv.Itoa(c.recvWindowMs))
+	signed.Set("timestamp", strconv.FormatInt(tsMs, 10))
+
+	mac := hmac.New(sha256.New, c.apiSecret)
+	mac.Write([]byte(signed.Encode()))
+	sig := hex.EncodeToString(mac.Sum(nil))
+
+	return map[string]any{
+		"apiKey":     c.apiKey,
+		"recvWindow": c.recvWindowMs,
+		"timestamp":  tsMs,
+		"signature":  sig,
+	}, nil
 }
 
 // do runs the HTTP exchange and normalises the response.

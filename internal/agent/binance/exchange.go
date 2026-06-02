@@ -71,9 +71,8 @@ type ExchangeOptions struct {
 	TimeSyncInterval time.Duration
 
 	// UDS configuration. Zero values are sensible defaults.
-	//   StreamBaseURL          — auto-derived from BaseURL when empty.
-	//   UDSKeepaliveInterval   — 30 minutes when zero (half of
-	//                            Binance's 60-minute listenKey TTL).
+	//   StreamBaseURL          — auto-derived from BaseURL when empty
+	//                            (the WS API endpoint).
 	//   UDSReconnectMin/Max    — backoff envelope on session failure.
 	//   UDSDialer              — test injection seam; production uses
 	//                            wsconn.Dial.
@@ -82,12 +81,11 @@ type ExchangeOptions struct {
 	//                            spawned. Use for ops scenarios where
 	//                            the operator wants market-only
 	//                            without UDS network traffic.
-	StreamBaseURL        string
-	UDSKeepaliveInterval time.Duration
-	UDSReconnectMin      time.Duration
-	UDSReconnectMax      time.Duration
-	UDSDialer            UDSDialer
-	UDSDisabled          bool
+	StreamBaseURL   string
+	UDSReconnectMin time.Duration
+	UDSReconnectMax time.Duration
+	UDSDialer       UDSDialer
+	UDSDisabled     bool
 
 	// Logger is used for ping success/failure structured logs.
 	// nil → slog.Default().
@@ -162,12 +160,11 @@ func NewExchange(apiKey, apiSecret string, opts ExchangeOptions) *Exchange {
 	}
 	if !opts.UDSDisabled {
 		ex.uds = newUDS(ex.client, udsOptions{
-			StreamBaseURL:     opts.StreamBaseURL,
-			KeepaliveInterval: opts.UDSKeepaliveInterval,
-			ReconnectMin:      opts.UDSReconnectMin,
-			ReconnectMax:      opts.UDSReconnectMax,
-			Dialer:            opts.UDSDialer,
-			Logger:            logger,
+			StreamBaseURL: opts.StreamBaseURL,
+			ReconnectMin:  opts.UDSReconnectMin,
+			ReconnectMax:  opts.UDSReconnectMax,
+			Dialer:        opts.UDSDialer,
+			Logger:        logger,
 		})
 	}
 	return ex

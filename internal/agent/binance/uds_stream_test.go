@@ -2,6 +2,7 @@ package binance
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,6 +89,25 @@ func TestDecodeExecutionReport_TRADE_Filled(t *testing.T) {
 	}
 	if ev.Side != "sell" {
 		t.Errorf("Side = %q, want 'sell'", ev.Side)
+	}
+}
+
+// TestDecodeExecutionReport_WithEventTime guards the case-insensitive
+// JSON collision: real Binance events carry both `e` (event type,
+// string) and `E` (event time, number). Without a dedicated `E` field
+// Go routes the number into the `e` field and the decode fails. This
+// frame mirrors the real wire shape.
+func TestDecodeExecutionReport_WithEventTime(t *testing.T) {
+	frame := []byte(`{
+		"e":"executionReport","E":1714000123456,"c":"COID-E","S":"BUY",
+		"x":"TRADE","X":"FILLED","i":42,"l":"1","L":"100","n":"0.1","N":"USDT","T":1,"z":"1"
+	}`)
+	ev, ok, err := decodeExecutionReport(frame)
+	if err != nil {
+		t.Fatalf("decodeExecutionReport with E field: %v", err)
+	}
+	if !ok || ev.ClientOrderID != "COID-E" || ev.Status != wire.OrderStatusFilled {
+		t.Errorf("ev = %+v, ok = %v", ev, ok)
 	}
 }
 
@@ -187,9 +207,9 @@ func TestDefaultStreamBaseURL(t *testing.T) {
 	cases := []struct {
 		rest, want string
 	}{
-		{BaseURLMainnet, StreamBaseURLMainnet},
-		{BaseURLTestnet, StreamBaseURLTestnet},
-		{"", StreamBaseURLMainnet}, // empty REST → fall back to mainnet stream
+		{BaseURLMainnet, WSAPIBaseURLMainnet},
+		{BaseURLTestnet, WSAPIBaseURLTestnet},
+		{"", WSAPIBaseURLMainnet}, // empty REST → fall back to mainnet WS API
 		{"http://my-mirror.example", ""},
 	}
 	for _, tc := range cases {
@@ -225,19 +245,20 @@ func TestUDS_Dispatch_NilCallbackNoop(t *testing.T) {
 
 // ===== WS integration test =====
 
-// wsTestServer wraps an httptest.Server that serves both:
-//   - /api/v3/userDataStream  (REST listenKey lifecycle)
-//   - /ws/<listenKey>         (WebSocket frames)
+// wsTestServer emulates the Binance WS API user data stream: it
+// upgrades at /ws-api/v3, reads the userDataStream.subscribe.signature
+// request, replies with a 200 ack, then writes synthetic events from
+// the frames channel — each wrapped in the {"subscriptionId":0,
+// "event":…} envelope the WS API uses.
 //
-// The frames channel lets the test push synthetic Binance events; the
-// closed channel signals server-initiated disconnect.
+// The frames channel carries the INNER event JSON (e.g.
+// {"e":"executionReport",…}); the server wraps it. The disconnect
+// channel signals server-initiated teardown.
 type wsTestServer struct {
-	srv         *httptest.Server
-	frames      chan string
-	disconnect  chan struct{}
-	listenKey   string
-	createCount atomic.Int32
-	putCount    atomic.Int32
+	srv            *httptest.Server
+	frames         chan string
+	disconnect     chan struct{}
+	subscribeCount atomic.Int32
 
 	connWG sync.WaitGroup
 
@@ -248,28 +269,14 @@ type wsTestServer struct {
 	closing bool
 }
 
-func newWSTestServer(t *testing.T, listenKey string) *wsTestServer {
+func newWSTestServer(t *testing.T) *wsTestServer {
 	t.Helper()
 	w := &wsTestServer{
 		frames:     make(chan string, 16),
 		disconnect: make(chan struct{}),
-		listenKey:  listenKey,
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v3/userDataStream", func(rw http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			w.createCount.Add(1)
-			rw.Header().Set("Content-Type", "application/json")
-			_, _ = rw.Write([]byte(`{"listenKey":"` + listenKey + `"}`))
-		case http.MethodPut:
-			w.putCount.Add(1)
-			_, _ = rw.Write([]byte(`{}`))
-		case http.MethodDelete:
-			_, _ = rw.Write([]byte(`{}`))
-		}
-	})
-	mux.HandleFunc("/ws/"+listenKey, func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/ws-api/v3", func(rw http.ResponseWriter, r *http.Request) {
 		up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 		conn, err := up.Upgrade(rw, r, nil)
 		if err != nil {
@@ -286,10 +293,31 @@ func newWSTestServer(t *testing.T, listenKey string) *wsTestServer {
 		w.mu.Unlock()
 		defer w.connWG.Done()
 		defer conn.Close()
+
+		// Read the subscribe request and ack it before streaming events.
+		_, reqBytes, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var req struct {
+			ID     string `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(reqBytes, &req)
+		if req.Method != wsMethodSubscribeSignature {
+			t.Errorf("subscribe method = %q, want %q", req.Method, wsMethodSubscribeSignature)
+		}
+		w.subscribeCount.Add(1)
+		ack := `{"id":"` + req.ID + `","status":200,"result":{"subscriptionId":0}}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(ack)); err != nil {
+			return
+		}
+
 		for {
 			select {
 			case frame := <-w.frames:
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				wrapped := `{"subscriptionId":0,"event":` + frame + `}`
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(wrapped)); err != nil {
 					return
 				}
 			case <-w.disconnect:
@@ -310,19 +338,15 @@ func newWSTestServer(t *testing.T, listenKey string) *wsTestServer {
 	return w
 }
 
-func (w *wsTestServer) restURL() string { return w.srv.URL }
-func (w *wsTestServer) wsBaseURL() string {
-	return "ws" + strings.TrimPrefix(w.srv.URL, "http")
+func (w *wsTestServer) wsURL() string {
+	return "ws" + strings.TrimPrefix(w.srv.URL, "http") + "/ws-api/v3"
 }
 
 func TestUDS_EndToEnd_ExecutionReportReachesCallback(t *testing.T) {
-	srv := newWSTestServer(t, "lk-001")
-	c := NewClient("PUBKEY", "SECRET", Options{
-		BaseURL:    srv.restURL(),
-		HTTPClient: srv.srv.Client(),
-	})
+	srv := newWSTestServer(t)
+	c := NewClient("PUBKEY", "SECRET", Options{})
 	u := newUDS(c, udsOptions{
-		StreamBaseURL: srv.wsBaseURL(),
+		StreamBaseURL: srv.wsURL(),
 		ReconnectMin:  10 * time.Millisecond,
 		ReconnectMax:  20 * time.Millisecond,
 	})
@@ -334,10 +358,10 @@ func TestUDS_EndToEnd_ExecutionReportReachesCallback(t *testing.T) {
 	u.Start(ctx)
 	t.Cleanup(func() { u.Close(); u.Wait() })
 
-	// Wait for the server to record a successful listenKey creation
-	// (means dial + REST round-trip done).
-	if !waitInt32(&srv.createCount, 1, 1*time.Second) {
-		t.Fatal("CreateListenKey never observed")
+	// Wait for the server to record a successful subscribe (means dial
+	// + signed subscribe round-trip done).
+	if !waitInt32(&srv.subscribeCount, 1, 1*time.Second) {
+		t.Fatal("subscribe never observed")
 	}
 
 	srv.frames <- `{
@@ -366,12 +390,10 @@ func TestUDS_EndToEnd_ExecutionReportReachesCallback(t *testing.T) {
 }
 
 func TestUDS_EndToEnd_UnknownEventDoesNotKillStream(t *testing.T) {
-	srv := newWSTestServer(t, "lk-002")
-	c := NewClient("PUBKEY", "SECRET", Options{
-		BaseURL: srv.restURL(), HTTPClient: srv.srv.Client(),
-	})
+	srv := newWSTestServer(t)
+	c := NewClient("PUBKEY", "SECRET", Options{})
 	u := newUDS(c, udsOptions{
-		StreamBaseURL: srv.wsBaseURL(),
+		StreamBaseURL: srv.wsURL(),
 		ReconnectMin:  10 * time.Millisecond,
 		ReconnectMax:  20 * time.Millisecond,
 	})
@@ -383,7 +405,7 @@ func TestUDS_EndToEnd_UnknownEventDoesNotKillStream(t *testing.T) {
 	u.Start(ctx)
 	t.Cleanup(func() { u.Close(); u.Wait() })
 
-	waitInt32(&srv.createCount, 1, 1*time.Second)
+	waitInt32(&srv.subscribeCount, 1, 1*time.Second)
 	// Unknown event type — must be ignored.
 	srv.frames <- `{"e":"outboundAccountPosition","a":[]}`
 	// Then a real event — verifies the read loop kept running.
@@ -400,12 +422,10 @@ func TestUDS_EndToEnd_UnknownEventDoesNotKillStream(t *testing.T) {
 }
 
 func TestUDS_EndToEnd_ReconnectsAfterDisconnect(t *testing.T) {
-	srv := newWSTestServer(t, "lk-003")
-	c := NewClient("PUBKEY", "SECRET", Options{
-		BaseURL: srv.restURL(), HTTPClient: srv.srv.Client(),
-	})
+	srv := newWSTestServer(t)
+	c := NewClient("PUBKEY", "SECRET", Options{})
 	u := newUDS(c, udsOptions{
-		StreamBaseURL: srv.wsBaseURL(),
+		StreamBaseURL: srv.wsURL(),
 		ReconnectMin:  10 * time.Millisecond,
 		ReconnectMax:  30 * time.Millisecond,
 	})
@@ -415,40 +435,30 @@ func TestUDS_EndToEnd_ReconnectsAfterDisconnect(t *testing.T) {
 	t.Cleanup(func() { u.Close(); u.Wait() })
 
 	// First connection.
-	if !waitInt32(&srv.createCount, 1, 1*time.Second) {
-		t.Fatal("first CreateListenKey never observed")
+	if !waitInt32(&srv.subscribeCount, 1, 1*time.Second) {
+		t.Fatal("first subscribe never observed")
 	}
-	// Simulate server-side disconnect: close the existing WS by
-	// switching to a new server. Instead — issue a close from server
-	// side. The simplest way: re-open a fresh server (skip).
-	// Reuse: signal the active conn to close by pushing a corrupt
-	// frame and then closing via disconnect chan would interrupt the
-	// frame channel for the next conn. We need to close just THIS
-	// session.
-	//
-	// Easier: push a listenKeyExpired event — the read loop returns
-	// errListenKeyExpired which triggers the reconnect path.
-	srv.frames <- `{"e":"listenKeyExpired"}`
+	// Push a serverShutdown event — the read loop returns
+	// errServerShutdown, which triggers the reconnect path.
+	srv.frames <- `{"e":"serverShutdown","E":1}`
 
-	// Wait for a SECOND CreateListenKey call (proof of reconnect).
-	if !waitInt32(&srv.createCount, 2, 2*time.Second) {
-		t.Fatalf("second CreateListenKey never observed; got %d", srv.createCount.Load())
+	// Wait for a SECOND subscribe call (proof of reconnect).
+	if !waitInt32(&srv.subscribeCount, 2, 2*time.Second) {
+		t.Fatalf("second subscribe never observed; got %d", srv.subscribeCount.Load())
 	}
 }
 
 func TestUDS_Close_StopsRun(t *testing.T) {
-	srv := newWSTestServer(t, "lk-004")
-	c := NewClient("PUBKEY", "SECRET", Options{
-		BaseURL: srv.restURL(), HTTPClient: srv.srv.Client(),
-	})
+	srv := newWSTestServer(t)
+	c := NewClient("PUBKEY", "SECRET", Options{})
 	u := newUDS(c, udsOptions{
-		StreamBaseURL: srv.wsBaseURL(),
+		StreamBaseURL: srv.wsURL(),
 		ReconnectMin:  10 * time.Millisecond,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	u.Start(ctx)
-	waitInt32(&srv.createCount, 1, 1*time.Second)
+	waitInt32(&srv.subscribeCount, 1, 1*time.Second)
 	u.Close()
 
 	doneCh := make(chan struct{})
@@ -498,13 +508,13 @@ func TestExchange_UDSDisabled_SubscribeStillSafe(t *testing.T) {
 func TestExchange_SubscribeBeforeStartReplayedOnStart(t *testing.T) {
 	// Subscribe lands while uds.run is not yet active; Start must
 	// re-Subscribe so the first event isn't dropped.
-	srv := newWSTestServer(t, "lk-pre")
+	srv := newWSTestServer(t)
 	ex := NewExchange("PUBKEY", "SECRET", ExchangeOptions{
-		BaseURL:         srv.restURL(),
-		HTTPClient:      srv.srv.Client(),
-		StreamBaseURL:   srv.wsBaseURL(),
-		PingInterval:    10 * time.Hour,
-		UDSReconnectMin: 10 * time.Millisecond,
+		HTTPClient:       srv.srv.Client(),
+		StreamBaseURL:    srv.wsURL(),
+		PingInterval:     10 * time.Hour,
+		TimeSyncInterval: -1, // disable periodic resync; no REST backend in this test
+		UDSReconnectMin:  10 * time.Millisecond,
 	})
 	events := make(chan agent.OrderEvent, 1)
 	ex.Subscribe(func(ev agent.OrderEvent) { events <- ev })
@@ -514,8 +524,8 @@ func TestExchange_SubscribeBeforeStartReplayedOnStart(t *testing.T) {
 	ex.Start(ctx)
 	t.Cleanup(func() { _ = ex.Close() })
 
-	if !waitInt32(&srv.createCount, 1, 1*time.Second) {
-		t.Fatal("CreateListenKey never observed")
+	if !waitInt32(&srv.subscribeCount, 1, 1*time.Second) {
+		t.Fatal("subscribe never observed")
 	}
 	srv.frames <- `{"e":"executionReport","c":"COID-PRE","S":"BUY","x":"TRADE","X":"FILLED","i":1,"l":"1","L":"1","n":"0","N":"U","T":1,"z":"1"}`
 

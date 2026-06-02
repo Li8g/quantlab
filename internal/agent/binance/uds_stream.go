@@ -3,16 +3,20 @@
 // Agent's Client type-asserts at startup (see internal/agent/events.go).
 //
 // Goroutine model: one persistent goroutine driven by Exchange.Start.
-// Lifecycle per session:
+// Lifecycle per session (WS API signature subscription — see
+// userdatastream.go for why listenKey is gone):
 //
-//  1. Client.CreateListenKey()  (REST)
-//  2. wsconn.Dial(streamBaseURL + "/ws/" + listenKey)
-//  3. spawn keepalive ticker — Client.KeepaliveListenKey() every
-//     UDSKeepaliveInterval (default 30min)
-//  4. read frames; decode `e` field; dispatch executionReport →
-//     callback registered via Subscribe
-//  5. on disconnect / listenKeyExpired event / decode error → close
-//     conn + sleep with exponential backoff + go to step 1
+//  1. wsconn.Dial(streamBaseURL)            — the WS API endpoint
+//  2. WriteFrame(userDataStream.subscribe.signature) + read+verify ack
+//  3. read event frames; unwrap envelope; decode `e` field; dispatch
+//     executionReport → callback registered via Subscribe
+//  4. on disconnect / serverShutdown event / decode error → close conn
+//     + sleep with exponential backoff + go to step 1
+//
+// No application-level keepalive is needed: the subscription lives with
+// the connection (closing the conn cancels it) and gorilla answers WS
+// pings automatically. Binance closes the connection at the 24h mark;
+// the reconnect loop re-subscribes transparently.
 //
 // REFACTOR HOOK — when adding outboundAccountPosition or balanceUpdate
 // streams, decode them in the same `switch eventType` block. Surface
@@ -22,6 +26,8 @@ package binance
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -38,26 +44,23 @@ import (
 	"quantlab/internal/wsconn"
 )
 
-// Stream URL pairs for the two Binance Spot environments. Auto-derived
+// WS API endpoints for the two Binance Spot environments. Auto-derived
 // from BaseURL in NewExchange; callers can override via
 // ExchangeOptions.StreamBaseURL when running against a non-standard
 // gateway (proxies, regional mirrors).
 const (
-	StreamBaseURLMainnet = "wss://stream.binance.com:9443"
-	StreamBaseURLTestnet = "wss://stream.testnet.binance.vision"
+	WSAPIBaseURLMainnet = "wss://ws-api.binance.com/ws-api/v3"
+	WSAPIBaseURLTestnet = "wss://ws-api.testnet.binance.vision/ws-api/v3"
 )
 
 // Default UDS tunings.
 //
-//   - DefaultUDSKeepaliveInterval: half of Binance's 60-minute expiry
-//     ceiling so a single dropped keepalive doesn't kill the stream.
 //   - DefaultUDSReconnectMin/Max: same shape as the agent's main
 //     reconnect backoff. Capped at 60s — longer would mean stale
 //     fill state on the SaaS side.
 const (
-	DefaultUDSKeepaliveInterval = 30 * time.Minute
-	DefaultUDSReconnectMin      = 1 * time.Second
-	DefaultUDSReconnectMax      = 60 * time.Second
+	DefaultUDSReconnectMin = 1 * time.Second
+	DefaultUDSReconnectMax = 60 * time.Second
 )
 
 // UDSDialer abstracts the WS dial so tests can substitute a pipe
@@ -78,13 +81,12 @@ func (gorillaUDSDialer) Dial(ctx context.Context, url string, header http.Header
 // are not safe for concurrent use except as documented; the streamer
 // goroutine is the only writer/reader for most fields.
 type uds struct {
-	client            *Client
-	streamBaseURL     string
-	keepaliveInterval time.Duration
-	reconnectMin      time.Duration
-	reconnectMax      time.Duration
-	dialer            UDSDialer
-	logger            *slog.Logger
+	client        *Client
+	streamBaseURL string
+	reconnectMin  time.Duration
+	reconnectMax  time.Duration
+	dialer        UDSDialer
+	logger        *slog.Logger
 
 	// cbMu guards cb so Subscribe and dispatch can race. cb is
 	// last-wins replacement per the OrderEventStreamer contract.
@@ -108,10 +110,6 @@ func newUDS(client *Client, opts udsOptions) *uds {
 	if streamURL == "" {
 		streamURL = defaultStreamBaseURL(client.BaseURL())
 	}
-	keepalive := opts.KeepaliveInterval
-	if keepalive <= 0 {
-		keepalive = DefaultUDSKeepaliveInterval
-	}
 	rcMin := opts.ReconnectMin
 	if rcMin <= 0 {
 		rcMin = DefaultUDSReconnectMin
@@ -128,39 +126,37 @@ func newUDS(client *Client, opts udsOptions) *uds {
 		dialer = gorillaUDSDialer{}
 	}
 	return &uds{
-		client:            client,
-		streamBaseURL:     streamURL,
-		keepaliveInterval: keepalive,
-		reconnectMin:      rcMin,
-		reconnectMax:      rcMax,
-		dialer:            dialer,
-		logger:            logger,
-		stopCh:            make(chan struct{}),
-		doneCh:            make(chan struct{}),
+		client:        client,
+		streamBaseURL: streamURL,
+		reconnectMin:  rcMin,
+		reconnectMax:  rcMax,
+		dialer:        dialer,
+		logger:        logger,
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
 }
 
 // udsOptions captures the UDS-specific configuration. Held by the
 // parent Exchange and threaded through NewExchange.
 type udsOptions struct {
-	StreamBaseURL     string
-	KeepaliveInterval time.Duration
-	ReconnectMin      time.Duration
-	ReconnectMax      time.Duration
-	Dialer            UDSDialer
-	Logger            *slog.Logger
+	StreamBaseURL string
+	ReconnectMin  time.Duration
+	ReconnectMax  time.Duration
+	Dialer        UDSDialer
+	Logger        *slog.Logger
 }
 
-// defaultStreamBaseURL maps the REST base URL to its paired stream
-// host. Unknown hosts fall back to mainnet — better to fail loudly
+// defaultStreamBaseURL maps the REST base URL to its paired WS API
+// endpoint. Unknown hosts fall back to mainnet — better to fail loudly
 // against the production gateway than to silently mis-route to the
 // testnet.
 func defaultStreamBaseURL(restBase string) string {
 	switch restBase {
 	case BaseURLTestnet:
-		return StreamBaseURLTestnet
+		return WSAPIBaseURLTestnet
 	case BaseURLMainnet, "":
-		return StreamBaseURLMainnet
+		return WSAPIBaseURLMainnet
 	}
 	// Test fixtures (httptest.Server) and non-standard mirrors: leave
 	// untouched. NewExchange callers should set StreamBaseURL
@@ -188,10 +184,10 @@ func (u *uds) dispatch(ev agent.OrderEvent) {
 	cb(ev)
 }
 
-// Start launches the session loop. The loop dials, runs one session
-// until it errors or the stream signals listenKeyExpired, then
-// reconnects with exponential backoff. Exits when ctx is cancelled
-// or Close() is called.
+// Start launches the session loop. The loop dials, subscribes, runs one
+// session until it errors or the stream signals serverShutdown, then
+// reconnects with exponential backoff. Exits when ctx is cancelled or
+// Close() is called.
 func (u *uds) Start(ctx context.Context) {
 	go u.run(ctx)
 }
@@ -212,10 +208,9 @@ func (u *uds) Wait() { <-u.doneCh }
 // run is the main session loop. Implements:
 //
 //   - Backoff: starts at reconnectMin, doubles after each failure,
-//     capped at reconnectMax. Resets on successful Ready.
+//     capped at reconnectMax.
 //   - Cancellation: ctx.Done OR stopCh terminates immediately, even
 //     mid-session.
-//   - listenKey lifecycle: CloseListenKey on session end (best effort).
 func (u *uds) run(ctx context.Context) {
 	defer close(u.doneCh)
 
@@ -254,46 +249,35 @@ func (u *uds) run(ctx context.Context) {
 	}
 }
 
-// runSession runs one UDS session end-to-end. Returns nil only on
-// clean shutdown signal; any other return indicates the caller should
-// reconnect after backoff.
+// runSession runs one UDS session end-to-end: dial the WS API endpoint,
+// subscribe, then pump events. Returns nil only on clean shutdown
+// signal; any other return indicates the caller should reconnect after
+// backoff.
 func (u *uds) runSession(ctx context.Context) error {
-	listenKey, err := u.createKeyWithTimeout(ctx)
-	if err != nil {
-		return fmt.Errorf("createListenKey: %w", err)
-	}
-	defer u.closeKeyBestEffort(ctx, listenKey)
-
-	url := u.streamBaseURL + "/ws/" + listenKey
 	dialCtx, dialCancel := context.WithTimeout(ctx, 30*time.Second)
-	conn, err := u.dialer.Dial(dialCtx, url, nil)
+	conn, err := u.dialer.Dial(dialCtx, u.streamBaseURL, nil)
 	dialCancel()
 	if err != nil {
-		return fmt.Errorf("dial uds: %w", err)
+		return fmt.Errorf("dial ws-api: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	u.logger.Info("binance_uds_connected", "stream", u.streamBaseURL)
+	if err := u.subscribe(ctx, conn); err != nil {
+		return fmt.Errorf("subscribe: %w", err)
+	}
+	u.logger.Info("binance_uds_subscribed", "stream", u.streamBaseURL)
 
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
-	// Keepalive ticker. PUT failures bubble back as session restart —
-	// either the key has expired (Binance returns 400/404) or the
-	// edge is unreachable; both warrant a fresh listenKey.
-	keepaliveErrCh := make(chan error, 1)
-	go u.keepaliveLoop(sessionCtx, listenKey, keepaliveErrCh)
-
-	// Read pump runs in this goroutine. select-watch keepaliveErrCh
-	// AND stopCh AND a per-frame read result.
+	// Read pump runs in its own goroutine. select-watch readErrCh AND
+	// stopCh AND ctx.
 	readErrCh := make(chan error, 1)
 	go u.readLoop(sessionCtx, conn, readErrCh)
 
 	select {
 	case err := <-readErrCh:
 		return fmt.Errorf("read: %w", err)
-	case err := <-keepaliveErrCh:
-		return fmt.Errorf("keepalive: %w", err)
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-u.stopCh:
@@ -301,66 +285,64 @@ func (u *uds) runSession(ctx context.Context) error {
 	}
 }
 
-// createKeyWithTimeout wraps CreateListenKey with a 10s timeout. The
-// REST call usually completes in <100ms; 10s leaves room for cold
-// edges.
-func (u *uds) createKeyWithTimeout(ctx context.Context) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return u.client.CreateListenKey(cctx)
-}
-
-// closeKeyBestEffort calls CloseListenKey with a short timeout and
-// swallows errors. The key will time out on its own within 60min so
-// this is a hygiene measure, not a correctness one.
-func (u *uds) closeKeyBestEffort(ctx context.Context, listenKey string) {
-	cctx, cancel := context.WithTimeout(detach(ctx), 5*time.Second)
-	defer cancel()
-	if err := u.client.CloseListenKey(cctx, listenKey); err != nil {
-		u.logger.Debug("binance_uds_close_key_best_effort", "err", err)
+// subscribe sends a signed userDataStream.subscribe.signature request
+// and blocks for the ack frame, verifying status==200. Binance acks
+// before streaming any events, so a synchronous read of the ack here is
+// safe.
+func (u *uds) subscribe(ctx context.Context, conn wsconn.Conn) error {
+	req, err := u.client.buildSubscribeRequest(newWSRequestID())
+	if err != nil {
+		return err
 	}
-}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("encode subscribe: %w", err)
+	}
 
-// detach returns a fresh context with the parent's values but no
-// cancellation propagation — used so closeKeyBestEffort runs even
-// when ctx was the reason we're tearing down.
-func detach(ctx context.Context) context.Context {
-	return context.WithoutCancel(ctx)
-}
+	wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
+	err = conn.WriteFrame(wctx, raw)
+	wcancel()
+	if err != nil {
+		return fmt.Errorf("write subscribe: %w", err)
+	}
 
-// keepaliveLoop sends a PUT every keepaliveInterval. On the first
-// failure, it pushes the error onto errCh and returns; the session
-// loop will restart with a fresh listenKey.
-func (u *uds) keepaliveLoop(ctx context.Context, listenKey string, errCh chan<- error) {
-	t := time.NewTicker(u.keepaliveInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-u.stopCh:
-			return
-		case <-t.C:
-			kctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := u.client.KeepaliveListenKey(kctx, listenKey)
-			cancel()
-			if err != nil {
-				select {
-				case errCh <- err:
-				default:
-				}
-				return
-			}
+	rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
+	frame, err := conn.ReadFrame(rctx)
+	rcancel()
+	if err != nil {
+		return fmt.Errorf("read ack: %w", err)
+	}
+
+	var resp wsResponse
+	if err := json.Unmarshal(frame, &resp); err != nil {
+		return fmt.Errorf("decode ack: %w", err)
+	}
+	if resp.Status != 200 {
+		if resp.Error != nil {
+			return fmt.Errorf("subscribe rejected: status=%d code=%d msg=%q",
+				resp.Status, resp.Error.Code, resp.Error.Msg)
 		}
+		return fmt.Errorf("subscribe rejected: status=%d", resp.Status)
 	}
+	return nil
+}
+
+// newWSRequestID returns a random hex id for a WS API request. Binance
+// echoes it back in the matching response; uniqueness within a
+// connection is all that's required.
+func newWSRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is effectively impossible; fall back to a
+		// time-based id rather than panicking the streamer.
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // readLoop drains frames from the conn. Each text frame is one event
-// per Binance docs. Decode → dispatch. On unrecoverable errors (conn
-// closed, decode failures repeatedly), pushes onto errCh and returns.
-//
-// A listenKeyExpired event is treated as a normal disconnect (push a
-// sentinel error). Production callers see it via the logger.
+// envelope per Binance docs. Decode → dispatch. On unrecoverable errors
+// (conn closed, serverShutdown), pushes onto errCh and returns.
 func (u *uds) readLoop(ctx context.Context, conn wsconn.Conn, errCh chan<- error) {
 	for {
 		frame, err := conn.ReadFrame(ctx)
@@ -372,8 +354,8 @@ func (u *uds) readLoop(ctx context.Context, conn wsconn.Conn, errCh chan<- error
 			return
 		}
 		if err := u.handleFrame(frame); err != nil {
-			// listenKeyExpired isn't a decode failure — it's a normal
-			// terminal signal that we must rotate the key.
+			// serverShutdown isn't a decode failure — it's a normal
+			// terminal signal that we must reconnect.
 			select {
 			case errCh <- err:
 			default:
@@ -383,26 +365,45 @@ func (u *uds) readLoop(ctx context.Context, conn wsconn.Conn, errCh chan<- error
 	}
 }
 
-// errListenKeyExpired signals that Binance has rotated us off the
-// current listenKey. Caller restarts the session, which calls
-// CreateListenKey for a fresh one.
-var errListenKeyExpired = fmt.Errorf("listenKeyExpired")
+// errServerShutdown signals that Binance is closing the connection.
+// Caller restarts the session, which re-subscribes on a fresh conn.
+var errServerShutdown = fmt.Errorf("serverShutdown")
 
-// handleFrame decodes one raw frame and dispatches. Unknown event
-// types are logged at debug — Binance ships occasional new event
-// shapes that we don't need to surface (e.g. listStatus).
+// handleFrame unwraps one WS API frame and dispatches its inner event.
+// Frames without an `event` field (a late response/ack) are ignored.
 func (u *uds) handleFrame(frame []byte) error {
+	var env wsEventEnvelope
+	if err := json.Unmarshal(frame, &env); err != nil {
+		// Don't kill the stream on decode error — log + skip.
+		u.logger.Debug("binance_uds_decode_envelope_failed", "err", err)
+		return nil
+	}
+	if len(env.Event) == 0 {
+		u.logger.Debug("binance_uds_non_event_frame")
+		return nil
+	}
+	return u.handleEvent(env.Event)
+}
+
+// handleEvent decodes one inner event payload and dispatches. Unknown
+// event types are logged at debug — Binance ships occasional new event
+// shapes that we don't need to surface (e.g. listStatus).
+func (u *uds) handleEvent(payload []byte) error {
+	// EventTime (`E`) is decoded only to give it a home: Go's JSON field
+	// matching is case-insensitive, so without an `E` field the numeric
+	// event-time value collides with EventType (`e`) and fails the
+	// unmarshal. Real Binance events always carry `E`.
 	var head struct {
 		EventType string `json:"e"`
+		EventTime int64  `json:"E"`
 	}
-	if err := json.Unmarshal(frame, &head); err != nil {
-		// Don't kill the stream on decode error — log + skip.
+	if err := json.Unmarshal(payload, &head); err != nil {
 		u.logger.Debug("binance_uds_decode_head_failed", "err", err)
 		return nil
 	}
 	switch head.EventType {
 	case "executionReport":
-		ev, ok, err := decodeExecutionReport(frame)
+		ev, ok, err := decodeExecutionReport(payload)
 		if err != nil {
 			u.logger.Warn("binance_uds_execution_report_decode_failed", "err", err)
 			return nil
@@ -411,9 +412,9 @@ func (u *uds) handleFrame(frame []byte) error {
 			u.dispatch(ev)
 		}
 		return nil
-	case "listenKeyExpired":
-		u.logger.Info("binance_uds_listen_key_expired")
-		return errListenKeyExpired
+	case "serverShutdown":
+		u.logger.Info("binance_uds_server_shutdown")
+		return errServerShutdown
 	default:
 		u.logger.Debug("binance_uds_unhandled_event", "type", head.EventType)
 		return nil
@@ -424,7 +425,11 @@ func (u *uds) handleFrame(frame []byte) error {
 // agent surfaces. Binance ships many more (icebergQty, makerCommission,
 // quoteOrderQty, etc.) that we discard.
 type rawExecutionReport struct {
-	EventType       string `json:"e"`
+	EventType string `json:"e"`
+	// EventTime gives the numeric `E` field a home so it doesn't collide
+	// with EventType under Go's case-insensitive JSON matching (real
+	// Binance executionReport events always carry `E`). Unused otherwise.
+	EventTime       int64  `json:"E"`
 	Symbol          string `json:"s"`
 	ClientOrderID   string `json:"c"`
 	Side            string `json:"S"`

@@ -1,75 +1,72 @@
-// userdatastream.go — Binance Spot User Data Stream (UDS) listenKey
-// lifecycle. The three REST endpoints are USER_STREAM tier: only the
-// X-MBX-APIKEY header is required (no HMAC signing).
+// userdatastream.go — Binance Spot User Data Stream subscription over
+// the WebSocket API.
 //
-// Lifecycle per Binance docs:
+// Binance removed the listenKey REST endpoints (POST/PUT/DELETE
+// /api/v3/userDataStream) on 2026-02-20; they now return HTTP 410 Gone.
+// The replacement is a *signature subscription* sent on the WS API
+// connection itself:
 //
-//	POST   /api/v3/userDataStream                    → {"listenKey":"…"}
-//	PUT    /api/v3/userDataStream?listenKey=…        → {} (keepalive)
-//	DELETE /api/v3/userDataStream?listenKey=…        → {} (close)
+//	→ {"id":…,"method":"userDataStream.subscribe.signature",
+//	   "params":{apiKey,timestamp,recvWindow,signature}}
+//	← {"id":…,"status":200,"result":{"subscriptionId":N}}        (ack)
+//	← {"subscriptionId":N,"event":{"e":"executionReport",…}}     (events)
 //
-// A listenKey is valid for 60 minutes from creation or last
-// keepalive. The convention is to PUT every 30 minutes so a single
-// dropped keepalive (e.g. transient 5xx) doesn't expire the key.
+// HMAC keys are sufficient here — the Ed25519-only requirement applies
+// to session.logon (the authenticated-session variant), not to
+// userDataStream.subscribe.signature. The inner `event` payload is the
+// same shape the legacy raw stream delivered bare, so the
+// executionReport decoder is unchanged.
 package binance
 
-import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"net/http"
-	"net/url"
-)
+import "encoding/json"
 
-// CreateListenKey opens a new User Data Stream and returns its
-// listenKey. The key is opaque to callers; pass it verbatim to the
-// keepalive/close endpoints and to the stream WebSocket URL.
-func (c *Client) CreateListenKey(ctx context.Context) (string, error) {
-	body, err := c.withAPIKey(ctx, http.MethodPost, "/api/v3/userDataStream", nil)
+// wsMethodSubscribeSignature is the WS API method that opens a user
+// data stream using a per-request API-key signature (no prior
+// session.logon, so HMAC keys work).
+const wsMethodSubscribeSignature = "userDataStream.subscribe.signature"
+
+// wsRequest is one outbound WS API request envelope.
+type wsRequest struct {
+	ID     string         `json:"id"`
+	Method string         `json:"method"`
+	Params map[string]any `json:"params,omitempty"`
+}
+
+// wsResponse is the ack envelope for a WS API request. Status 200 means
+// success; result.subscriptionId identifies the subscription. On
+// failure Binance populates `error` and a non-200 status.
+type wsResponse struct {
+	ID     string `json:"id"`
+	Status int    `json:"status"`
+	Result struct {
+		SubscriptionID int64 `json:"subscriptionId"`
+	} `json:"result"`
+	Error *struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	} `json:"error"`
+}
+
+// wsEventEnvelope wraps a user data stream event on the WS API. The
+// inner Event payload is delivered verbatim to the executionReport
+// decoder. subscriptionId is absent on connection events (e.g.
+// serverShutdown), hence the pointer.
+type wsEventEnvelope struct {
+	SubscriptionID *int64          `json:"subscriptionId"`
+	Event          json.RawMessage `json:"event"`
+}
+
+// buildSubscribeRequest constructs a signed
+// userDataStream.subscribe.signature request. The signature is computed
+// inside Client so apiSecret never leaves it.
+func (c *Client) buildSubscribeRequest(id string) (wsRequest, error) {
+	params, err := c.WSSubscribeParams()
 	if err != nil {
-		return "", fmt.Errorf("binance.CreateListenKey: %w", err)
+		return wsRequest{}, err
 	}
-	var raw struct {
-		ListenKey string `json:"listenKey"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return "", fmt.Errorf("binance.CreateListenKey: decode: %w", err)
-	}
-	if raw.ListenKey == "" {
-		return "", fmt.Errorf("binance.CreateListenKey: empty listenKey in response: %s", string(body))
-	}
-	return raw.ListenKey, nil
-}
-
-// KeepaliveListenKey refreshes the 60-minute TTL on an existing
-// listenKey. Binance returns an empty JSON object on success. A 404
-// (or APIError code -2014/-1125) means the key has already expired
-// and the caller must Create a new one.
-func (c *Client) KeepaliveListenKey(ctx context.Context, listenKey string) error {
-	if listenKey == "" {
-		return errors.New("binance.KeepaliveListenKey: empty listenKey")
-	}
-	params := url.Values{}
-	params.Set("listenKey", listenKey)
-	if _, err := c.withAPIKey(ctx, http.MethodPut, "/api/v3/userDataStream", params); err != nil {
-		return fmt.Errorf("binance.KeepaliveListenKey: %w", err)
-	}
-	return nil
-}
-
-// CloseListenKey explicitly invalidates a listenKey. Called on
-// graceful shutdown so the next session doesn't accumulate dangling
-// streams against the same account. A failure here is non-fatal —
-// the key will expire on its own within 60 minutes.
-func (c *Client) CloseListenKey(ctx context.Context, listenKey string) error {
-	if listenKey == "" {
-		return errors.New("binance.CloseListenKey: empty listenKey")
-	}
-	params := url.Values{}
-	params.Set("listenKey", listenKey)
-	if _, err := c.withAPIKey(ctx, http.MethodDelete, "/api/v3/userDataStream", params); err != nil {
-		return fmt.Errorf("binance.CloseListenKey: %w", err)
-	}
-	return nil
+	return wsRequest{
+		ID:     id,
+		Method: wsMethodSubscribeSignature,
+		Params: params,
+	}, nil
 }
