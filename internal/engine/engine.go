@@ -214,7 +214,11 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		pop[i] = e.strat.Sample(masterRng)
 	}
 
-	numWorkers := runtime.NumCPU()
+	// GOMAXPROCS(0), not NumCPU(): under Go 1.25's cgroup-aware default a
+	// quota-limited container has GOMAXPROCS < NumCPU, and spawning NumCPU
+	// workers there over-subscribes the available P's. Bound to the actual
+	// scheduling parallelism instead.
+	numWorkers := runtime.GOMAXPROCS(0)
 	if numWorkers > e.cfg.PopSize {
 		numWorkers = e.cfg.PopSize
 	}
