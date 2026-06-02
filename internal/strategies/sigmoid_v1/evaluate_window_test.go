@@ -194,6 +194,102 @@ func TestEvaluateWindow_GapBarsProduceNoTrades(t *testing.T) {
 	}
 }
 
+// TestEvaluateWindow_NoLookaheadCorruptFutureBars is the permanent
+// look-ahead / data-leakage regression guard called out in the §6.3 code
+// review (docs/code-review-plan.md). The decision made at bar i must depend
+// only on closes ≤ i. The evaluator feeds the strategy an incrementally
+// grown trailing buffer (closesBuf), so future bars are structurally
+// unreachable today — but a future refactor (e.g. handing Step the full
+// window slice, or a full-sample statistic) could silently break that and
+// inflate every backtest. This test locks it in: corrupting every bar AFTER
+// a cutoff must leave the per-bar log-return series for bars ≤ cutoff
+// bit-identical. A positive control asserts the corruption DOES reach the
+// post-cutoff returns, so the prefix match can never pass vacuously.
+//
+// Why the per-bar log-return series and not the window score: bars after the
+// cutoff are legitimately in-sample for this window, so they legitimately
+// move the aggregate score. Leakage-freedom is strictly a per-bar property —
+// preNav at bar i ≤ cutoff marks the position (built from closes ≤ i) to
+// close_i, so each pre-cutoff return is a pure function of closes ≤ cutoff.
+func TestEvaluateWindow_NoLookaheadCorruptFutureBars(t *testing.T) {
+	s := windowTestSigmoid()
+	gene := stepTestGene()
+
+	// Flat warmup then a rising ramp so the strategy actually holds BTC —
+	// only then do close prices move preNav and the log-return series, which
+	// is what makes the guard sensitive to a leaked future close.
+	pre := flatBars(20, 100, windowTestRefMs)
+	post := rampBars(40, 100, 120, pre[len(pre)-1].OpenTime+barIntervalDays)
+	bars := append(pre, post...)
+
+	const warmup = 5
+	const cutoff = 40 // a scored bar comfortably inside the window
+	mkWindow := func(b []domain.Bar) domain.CrucibleWindow {
+		return domain.CrucibleWindow{
+			Name: resultpkg.Window6M, WarmupLen: warmup, Bars: b,
+			StartTS: b[0].OpenTime, EndTS: b[len(b)-1].OpenTime,
+		}
+	}
+
+	resClean, _, retsClean, err := evaluateWindow(
+		s, gene, mkWindow(bars), domain.FrictionParams{}, testFatalMDD, testInitialUSDT)
+	if err != nil {
+		t.Fatalf("clean run: %v", err)
+	}
+	if resClean.Score.Fatal {
+		t.Fatalf("clean run unexpectedly Fatal; fixture must be benign (res=%+v)", resClean)
+	}
+
+	// Corrupt every bar strictly after cutoff with a ×1000 price spike that,
+	// if the strategy could see it, would massively distort the signal at
+	// bars ≤ cutoff. Spiking upward (not down) keeps both runs non-Fatal so
+	// the full prefix is produced.
+	corrupt := make([]domain.Bar, len(bars))
+	copy(corrupt, bars)
+	for i := cutoff + 1; i < len(corrupt); i++ {
+		corrupt[i].Open *= 1000
+		corrupt[i].High *= 1000
+		corrupt[i].Low *= 1000
+		corrupt[i].Close *= 1000
+	}
+
+	resCorrupt, _, retsCorrupt, err := evaluateWindow(
+		s, gene, mkWindow(corrupt), domain.FrictionParams{}, testFatalMDD, testInitialUSDT)
+	if err != nil {
+		t.Fatalf("corrupt run: %v", err)
+	}
+	if resCorrupt.Score.Fatal {
+		t.Fatalf("corrupt run unexpectedly Fatal; an upward spike should not trip drawdown (res=%+v)", resCorrupt)
+	}
+
+	// Log-return entry j is produced at scored bar (warmup+1+j), so the
+	// entries for bars ≤ cutoff number exactly (cutoff - warmup) and are
+	// computed purely from closes ≤ cutoff.
+	prefix := cutoff - warmup
+	if prefix < 1 || prefix >= len(retsClean) || prefix >= len(retsCorrupt) {
+		t.Fatalf("bad prefix=%d (len clean=%d corrupt=%d) — adjust the fixture",
+			prefix, len(retsClean), len(retsCorrupt))
+	}
+
+	// Core invariant: pre-cutoff decisions are untouched by future bars.
+	for j := 0; j < prefix; j++ {
+		if retsClean[j] != retsCorrupt[j] {
+			t.Errorf("look-ahead leak: pre-cutoff log-return[%d] differs\n  clean   = %v\n  corrupt = %v",
+				j, retsClean[j], retsCorrupt[j])
+		}
+	}
+
+	// Positive control: the corruption must actually reach the computation,
+	// else the prefix equality above is meaningless. The first post-cutoff
+	// return (bar cutoff+1, which marks the held position to the spiked
+	// close) must differ.
+	if retsClean[prefix] == retsCorrupt[prefix] {
+		t.Errorf("positive control failed: post-cutoff log-return[%d] identical (%v) — "+
+			"corruption never reached preNav, so the prefix check is vacuous",
+			prefix, retsClean[prefix])
+	}
+}
+
 func TestEvaluateWindow_Deterministic(t *testing.T) {
 	s := windowTestSigmoid()
 	gene := stepTestGene()
