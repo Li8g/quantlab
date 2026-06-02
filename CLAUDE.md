@@ -103,6 +103,7 @@ The system is split at a strict interface boundary. **The engine layer must neve
 /api           # HTTP handlers: task create/query, Promote
 /tests         # All tests (priority list in §10.1 of framework doc)
 /research      # Python offline analysis scripts (never enters server path)
+/docs/learn    # Pedagogical explainers derived from the codebase (not normative specs)
 ```
 
 Package split for boundary types:
