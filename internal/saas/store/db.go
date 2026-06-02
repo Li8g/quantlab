@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -111,5 +112,64 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("store.NewDB: partial unique import_jobs: %w", err)
 	}
 
+	// Partial unique index on champion_history: at most one ACTIVE champion
+	// per (strategy_id, pair). "Active" = not retired AND not GORM-soft-
+	// deleted, matching ChampionRepo.Promote's count predicate so the DB
+	// agrees with the application's notion of "active". This is the DB-level
+	// backstop for the count-then-insert in Promote: under READ COMMITTED two
+	// concurrent promotes both read activeOther=0 and would otherwise both
+	// commit a second active row. The unique index makes the loser's INSERT
+	// fail at commit (Promote maps it to ErrActiveChampionExists). GORM tags
+	// can't express partial unique, so DDL explicitly.
+	//
+	// Precondition: no pre-existing duplicates (CREATE UNIQUE INDEX aborts on
+	// them). assertNoDuplicateActiveChampions surfaces an actionable error
+	// instead of Postgres's opaque one; scripts/preflight_champion_dup_check.sql
+	// is the standalone operator diagnostic.
+	if err := assertNoDuplicateActiveChampions(ctx, db); err != nil {
+		return nil, err
+	}
+	const championUniqueSQL = `CREATE UNIQUE INDEX IF NOT EXISTS uq_champion_active
+		ON champion_history (strategy_id, pair)
+		WHERE retired_at IS NULL AND deleted_at IS NULL`
+	if err := db.WithContext(ctx).Exec(championUniqueSQL).Error; err != nil {
+		return nil, fmt.Errorf("store.NewDB: partial unique champion_history: %w", err)
+	}
+
 	return db, nil
+}
+
+// assertNoDuplicateActiveChampions fails fast if champion_history already
+// holds more than one active row for any (strategy_id, pair). CREATE UNIQUE
+// INDEX over such duplicates aborts with an opaque "could not create unique
+// index" error; this turns that into a precise, operator-actionable message.
+// GORM's Model query auto-appends `deleted_at IS NULL` (soft-delete), so the
+// predicate here matches the index's WHERE clause.
+func assertNoDuplicateActiveChampions(ctx context.Context, db *gorm.DB) error {
+	type dupRow struct {
+		StrategyID  string
+		Pair        string
+		ActiveCount int64
+	}
+	var dups []dupRow
+	if err := db.WithContext(ctx).
+		Model(&ChampionHistory{}).
+		Select("strategy_id, pair, count(*) AS active_count").
+		Where("retired_at IS NULL").
+		Group("strategy_id, pair").
+		Having("count(*) > 1").
+		Scan(&dups).Error; err != nil {
+		return fmt.Errorf("store.NewDB: check duplicate active champions: %w", err)
+	}
+	if len(dups) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	for _, d := range dups {
+		fmt.Fprintf(&b, " (strategy_id=%q pair=%q: %d active)", d.StrategyID, d.Pair, d.ActiveCount)
+	}
+	return fmt.Errorf(
+		"store.NewDB: cannot create uq_champion_active — %d (strategy_id,pair) group(s) already have >1 active champion:%s; retire the stale ones (see scripts/preflight_champion_dup_check.sql) before restarting",
+		len(dups), b.String(),
+	)
 }

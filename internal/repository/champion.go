@@ -11,9 +11,12 @@
 //     promote/reject state; "retired" never appears on GeneRecord —
 //     it lives on ChampionHistory.RetiredAt.
 //
-// Both operations are wrapped in transactions so concurrent races
-// (double-Promote, Retire-while-Promoting) fail loudly rather than
-// silently corrupt state.
+// Both operations are wrapped in transactions, but the transaction alone
+// does NOT serialize concurrent promotes: under READ COMMITTED two promotes
+// for the same (strategy_id, pair) can both read activeOther=0. The DB-level
+// uq_champion_active partial unique index (store/db.go) is what makes the
+// loser fail loudly (mapped to ErrActiveChampionExists) instead of silently
+// creating a second active champion.
 package repository
 
 import (
@@ -85,6 +88,13 @@ func (r *ChampionRepo) Promote(ctx context.Context, challengerID string, req api
 			return fmt.Errorf("update gene_record: %w", err)
 		}
 		if err := tx.Create(&history).Error; err != nil {
+			// The activeOther count above is a READ COMMITTED snapshot, so a
+			// concurrent Promote for the same (strategy_id, pair) can slip
+			// past it. The uq_champion_active partial unique index is the
+			// real backstop: the loser's INSERT trips it here.
+			if isUniqueViolation(err) {
+				return api.ErrActiveChampionExists
+			}
 			return fmt.Errorf("create champion_history: %w", err)
 		}
 		return nil
