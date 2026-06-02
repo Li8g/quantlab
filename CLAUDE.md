@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Behavioral Guidelianes
+## Behavioral Guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -89,27 +89,43 @@ The system is split at a strict interface boundary. **The engine layer must neve
 - **Engine Layer** (`/engine`, `/fitness`, `/data`, `/repository`, `/api`): manages population lifecycle, window construction, fitness scheduling, result packaging, Promote workflow.
 - **Strategy Layer** (`/strategy`): implements `EvolvableStrategy` interface (14 verbs) and the `Adapter` interface. Defines gene semantics, Clamp/Validate/Crossover/Mutate/Fingerprint/Evaluate logic.
 
-### Planned Package Structure
+### Package Structure
 
+All Go packages live under `internal/` (the module is `quantlab`; nothing is exported as a public library). Entry points are under `cmd/`. Tests are **colocated** next to the code they cover (idiomatic Go `_test.go`) — the top-level `tests/` dir is an empty placeholder, do NOT add tests there.
+
+**Engine core (Tier 1):**
 ```
-/domain        # Gene, SegmentInfo, SpawnPoint, SliceScore, Bar, CrucibleWindow, EvaluablePlan
-/engine        # Epoch lifecycle, worker pool, convergence detection, population management
-/strategy      # EvolvableStrategy interface, Adapter interface
-/fitness       # Single-window scoring, DCA dual baseline, ScoreTotal aggregation, consistency penalty
-/verification  # OOS backtest, ReviewBacktest, DSR, stress tests
-/data          # K-line reading, Gap detection, EvaluablePlan construction
-/repository    # DB access, result package persistence, SharpeBank
-/report        # Challenger report generation, diagnostics output
-/api           # HTTP handlers: task create/query, Promote
-/tests         # All tests (priority list in §10.1 of framework doc)
-/research      # Python offline analysis scripts (never enters server path)
-/docs/learn    # Pedagogical explainers derived from the codebase (not normative specs)
+internal/domain        # Gene, SegmentInfo, SpawnPoint, SliceScore, Bar, CrucibleWindow, EvaluablePlan
+internal/engine        # Epoch lifecycle, worker pool, convergence detection, population management
+internal/strategy      # EvolvableStrategy interface + Adapter interface (definitions only)
+internal/strategies    # Concrete strategy impls + their Adapters (sigmoid_v1, toy)
+internal/fitness       # Single-window scoring, DCA dual baseline, ScoreTotal aggregation, consistency penalty
+internal/verification  # OOS backtest, ReviewBacktest, DSR, stress tests
+internal/data          # K-line reading, Gap detection, EvaluablePlan construction
+internal/repository    # DB access, result package persistence, SharpeBank
+internal/report        # Challenger report generation, diagnostics output
+internal/api           # HTTP handlers: task create/query, challenger/champion, Promote/Retire
+internal/resultpkg     # Result package types/enums/versions/validate
+internal/quant         # canonical_json (bars_hash), closes, compare helpers
+internal/migrate       # One-off backfill harness (Filter+Transform skeleton)
 ```
 
-Package split for boundary types:
-- `api/types.go` — `CreateEvolutionTaskRequest`, `EvolutionTaskStatusResponse`, `PromoteChallengerRequest`, `RetireChampionRequest`
-- `resultpkg/types.go` — all result package structs (see struct doc)
-- `resultpkg/enums.go` — all shared enum constants
+**Tier 2 SaaS + live trading (Phases 6–9, shipped):**
+```
+internal/saas          # Tier2 server: store (GORM models/migrate), auth, agentauth, instance,
+                       #   wshub, epoch, cron, agentstatus, config
+internal/agent         # Live trading agent: Binance client, delta_report sender
+internal/wire          # Agent↔server WS message codec/protocol (ack, control, deltareport, errormsg)
+internal/wsconn        # WebSocket connection wrapper
+cmd/{saas,agent,datafeeder}  # Main entry points
+research               # Python offline analysis scripts (never enters server path)
+docs/learn             # Pedagogical explainers derived from the codebase (not normative specs)
+```
+
+Package split for boundary types (all under `internal/`):
+- `internal/api/types.go` — `CreateEvolutionTaskRequest`, `EvolutionTaskStatusResponse`, `PromoteChallengerRequest`, `RetireChampionRequest`
+- `internal/resultpkg/types.go` — all result package structs (see struct doc)
+- `internal/resultpkg/enums.go` — all shared enum constants
 - `internal/resultpkg/versions.go` — version constants (`SchemaVersionV533`, `FitnessVersionV1RawStd`, `FingerprintVersionV1`)
 - `internal/quant/canonical_json.go` — `bars_hash` serialization boundary (file-top comment is a frozen contract)
 
@@ -203,6 +219,7 @@ Challengers with different `fitness_version` must **not** be compared by score.
 
 ## HTTP API
 
+Engine / evolution:
 ```
 POST /api/v1/evolution/tasks
 GET  /api/v1/evolution/tasks/:task_id
@@ -210,12 +227,52 @@ GET  /api/v1/challengers/:challenger_id
 GET  /api/v1/challengers/:challenger_id/package
 POST /api/v1/challengers/:challenger_id/promote   (admin only)
 POST /api/v1/champions/:champion_id/retire        (admin only)
+GET  /api/v1/champions/history
+GET  /api/v1/genome/champion
+GET  /api/v1/ga/sharpebank/stats
 ```
 
-## Database Tables (Prototype)
+Auth (sudo-style step-up; default viewer 24h, admin explicit + 10min TTL):
+```
+POST /api/v1/auth/login
+```
 
-`evolution_tasks`, `challengers`, `challenger_result_packages` (JSON blob), `champion_history`, `sharpe_bank`
+Data import (async jobs, AppRole=saas gated + admin):
+```
+GET  /api/v1/data/coverage
+GET  /api/v1/data/gaps
+POST /api/v1/data/import
+GET  /api/v1/data/imports
+GET  /api/v1/data/import/:job_id
+POST /api/v1/data/import/:job_id/cancel
+```
 
-## Open Questions (Not Blocking Phase 1)
+Tier 2 live-trading fleet (instance-scoped; start/stop/deploy = operator, kill = admin):
+```
+GET  /api/v1/instances
+GET  /api/v1/instances/:instance_id
+GET  /api/v1/instances/:instance_id/live
+GET  /api/v1/instances/:instance_id/trades
+POST /api/v1/instances/:instance_id/start
+POST /api/v1/instances/:instance_id/stop
+POST /api/v1/instances/:instance_id/deploy-champion
+POST /api/v1/instances/:instance_id/kill          (kill-switch; manual admin trigger)
+```
 
-Tracked in schema doc Appendix B: `pair` type, `slice_score.reason` enumeration, `risk_bounds` struct, `alpha_breakdown`/`dsr_summary`/`stress_summary` formalization (Phase 2). Resolved in prototype: `score_raw` (`Σ weight·score`, consistency-penalty-free weighted sum — `fitness/aggregate.go`); `fatal_reason` (enumerated `mdd_exceeded`/`nav_non_positive` via `resultpkg.FatalReason` + `CrucibleResult.Validate` gate).
+Agent↔server traffic rides a WebSocket channel (see `docs/saas-ws-protocol-v1.md`), not REST.
+
+## Database Tables
+
+Postgres via GORM `AutoMigrate` (dev/lab; production `app_role=saas` uses Atlas migrations — see `internal/saas/store/db.go`). Canonical model list: `AllModels()` in `internal/saas/store/models.go` — keep it in sync when adding tables. Table names are GORM-default snake_case plural unless a `TableName()` override exists.
+
+**Tier 1 (engine / evolution):**
+`evolution_tasks`, `gene_records` (the challenger record — full result package JSON lives in its `full_package_json` column; there is **no** `challengers` or `challenger_result_packages` table), `evaluation_traces`, `klines`, `kline_gaps`, `sharpe_banks`, `champion_histories`.
+
+**Tier 2 (SaaS / live trading):**
+`users`, `strategy_templates`, `strategy_instances`, `portfolio_states`, `runtime_states`, `spot_lots`, `trade_records`, `spot_executions`, `audit_logs`, `agent_tokens`, `reconciliation_discrepancies`, `agent_errors`, `import_jobs`.
+
+Agent-side dedup uses a local SQLite `idempotency` table (`internal/agent/idempotency_sqlite.go`), not the Postgres schema.
+
+## Open Questions / Deferred
+
+Tracked in schema doc Appendix B. Still deferred: `pair` type, `slice_score.reason` enumeration, `risk_bounds` struct (spawn input, not a computed field), `dsr_summary` formalization. Resolved since the prototype: `stress_summary` (SBB Monte Carlo per framework doc §I-4.3, SHIPPED — `internal/verification`), `alpha_breakdown` (IS forward-filled, diagnostics-only), `score_raw` (`Σ weight·score`, consistency-penalty-free weighted sum — `internal/fitness/aggregate.go`); `fatal_reason` (enumerated `mdd_exceeded`/`nav_non_positive` via `resultpkg.FatalReason` + `CrucibleResult.Validate` gate).
