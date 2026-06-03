@@ -35,7 +35,8 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 **Touch only what you must. Clean up only your own mess.**
 
 When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
+- Don't "improve" adjacent code, comments, or formatting by hand (re-wrapping, renaming, reordering).
+- **Exception — canonical auto-formatters:** running `gofmt`/`goimports` on a file you're *already* editing is fine, even if it touches pre-existing drift; it's deterministic and zero-logic-risk, and the repo has no formatter gate so drift would otherwise accumulate. Keep it to a *separate* commit so the feature diff stays clean. A tree-wide format sweep is a deliberate standalone cleanup — flag it, don't fold it in silently.
 - Don't refactor things that aren't broken.
 - Match existing style, even if you'd do it differently.
 - If you notice unrelated dead code, mention it - don't delete it.
