@@ -111,6 +111,49 @@ func TestDecodeExecutionReport_WithEventTime(t *testing.T) {
 	}
 }
 
+// TestDecodeExecutionReport_FullFrameNoCollision feeds the canonical Binance
+// Spot executionReport payload (full field set) and asserts that every field
+// whose letter has an upper/lower-case twin survives intact. Binance sends
+// twins that case-fold onto our fields: O→o, C→c, I→i, t→T, Z→z. Without a
+// dedicated sink each twin either fails the unmarshal (O, a number, into the
+// string OrderType) or silently overwrites the real value (C/I/t/Z appear
+// after their lowercase counterparts and win). This frame mirrors the real
+// wire shape; the minimal frames in the other tests hid all of these.
+func TestDecodeExecutionReport_FullFrameNoCollision(t *testing.T) {
+	frame := []byte(`{
+		"e":"executionReport","E":1499405658658,"s":"ETHBTC",
+		"c":"REAL-CLIENT-ID","S":"BUY","o":"LIMIT","f":"GTC",
+		"q":"1.00000000","p":"0.10264410","P":"0.00000000","F":"0.00000000",
+		"g":-1,"C":"","x":"TRADE","X":"FILLED","r":"NONE","i":4293153,
+		"l":"0.50000000","z":"0.50000000","L":"0.10264410","n":"0.001",
+		"N":"BNB","T":1499405658657,"t":12345,"I":8641984,"w":true,
+		"m":false,"M":false,"O":1499405658650,"Z":"0.05132205",
+		"Y":"0.05132205","Q":"0.00000000"
+	}`)
+	ev, ok, err := decodeExecutionReport(frame)
+	if err != nil {
+		t.Fatalf("decode full frame: %v", err) // guards O→o (number into string)
+	}
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if ev.ClientOrderID != "REAL-CLIENT-ID" { // guards C→c clobber
+		t.Errorf("ClientOrderID = %q, want REAL-CLIENT-ID", ev.ClientOrderID)
+	}
+	if ev.ExchangeOrderID != "4293153" { // guards I→i clobber
+		t.Errorf("ExchangeOrderID = %q, want 4293153", ev.ExchangeOrderID)
+	}
+	if ev.Fill == nil {
+		t.Fatalf("Fill = nil, want populated")
+	}
+	if ev.Fill.FilledAtExchangeMs != 1499405658657 { // guards t→T clobber
+		t.Errorf("FilledAtExchangeMs = %d, want 1499405658657", ev.Fill.FilledAtExchangeMs)
+	}
+	if ev.CumulativeFillQuantity.String() != "0.5" { // guards Z→z clobber
+		t.Errorf("CumulativeFillQuantity = %s, want 0.5", ev.CumulativeFillQuantity)
+	}
+}
+
 func TestDecodeExecutionReport_CANCELED(t *testing.T) {
 	frame := []byte(`{"e":"executionReport","c":"COID-3","x":"CANCELED","X":"CANCELED","i":1,"S":"BUY"}`)
 	ev, ok, err := decodeExecutionReport(frame)

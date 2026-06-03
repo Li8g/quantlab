@@ -424,12 +424,16 @@ func (u *uds) handleEvent(payload []byte) error {
 // rawExecutionReport mirrors the subset of executionReport fields the
 // agent surfaces. Binance ships many more (icebergQty, makerCommission,
 // quoteOrderQty, etc.) that we discard.
+//
+// Sink fields (`_collision*`) exist only to give Binance's upper/lower-case
+// twin keys a home. Go's JSON matching is case-insensitive: a key with no
+// exact-match field falls back to a case-folded match and lands in its twin.
+// A number twin (`O`,`E`) then fails the unmarshal; a same-type twin
+// (`C`,`I`,`t`,`Z`) silently overwrites the real field with whichever key
+// appears later in the payload. Real Binance frames always carry all of
+// these, so every read field below whose letter has a twin needs a sink.
 type rawExecutionReport struct {
-	EventType string `json:"e"`
-	// EventTime gives the numeric `E` field a home so it doesn't collide
-	// with EventType under Go's case-insensitive JSON matching (real
-	// Binance executionReport events always carry `E`). Unused otherwise.
-	EventTime       int64  `json:"E"`
+	EventType       string `json:"e"`
 	Symbol          string `json:"s"`
 	ClientOrderID   string `json:"c"`
 	Side            string `json:"S"`
@@ -443,6 +447,16 @@ type rawExecutionReport struct {
 	CommissionAsset string `json:"N"`
 	TransactTime    int64  `json:"T"`
 	CumulativeQty   string `json:"z"`
+
+	// Collision sinks — exported so encoding/json will populate them
+	// (unexported fields are skipped, which would re-open the collision).
+	// Never read; each only diverts a twin key off the field it shadows.
+	EventTime          int64  `json:"E"` // would corrupt EventType (e)
+	OrderCreationTime  int64  `json:"O"` // would corrupt OrderType (o)
+	OrigClientOrderID  string `json:"C"` // would corrupt ClientOrderID (c)
+	ExecutionID        int64  `json:"I"` // would corrupt OrderID (i)
+	TradeID            int64  `json:"t"` // would corrupt TransactTime (T)
+	CumulativeQuoteQty string `json:"Z"` // would corrupt CumulativeQty (z)
 }
 
 // decodeExecutionReport maps one executionReport JSON to an
