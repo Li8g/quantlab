@@ -208,10 +208,9 @@ export interface AgentErrorView {
 }
 
 // Most recent kill_switch for the instance's account (Option 3 step 4).
-// Present ⇒ the account was killed and the agent latched frozen. v1 has no
-// resume signal, so this is the LAST kill event, not a live "still
-// frozen?" probe — after restarting the agent the banner is stale and can
-// be disregarded.
+// Present ⇒ the account is currently frozen: the backend derives this from
+// the latest kill/resume event (LatestKillOrResume), so a §5.13 v2 resume
+// clears it. This is a real "still frozen?" signal, not just the last kill.
 export interface KillStatusView {
   killed_at_ms: number
   actor: string // "user:<id>" | "system"
@@ -224,7 +223,7 @@ export interface KillStatusView {
 // omitted when unavailable; recent_trades is always present.
 // recent_discrepancies/recent_errors are omitted when the recon
 // collaborator is unwired (Tier L nil-skip). kill_status is present only
-// when the account has been killed.
+// while the account is currently frozen (cleared by a resume).
 export interface InstanceLiveResponse {
   instance: InstanceResponse
   portfolio?: PortfolioSnapshotView

@@ -20,9 +20,16 @@ import type {
   TradeRecordSummary,
 } from '../lib/types'
 
-// The three intervention verbs (場景② F2.3). All require operator+, so
-// each routes through a SudoModal step-up before hitting the endpoint.
-type ActionVerb = 'start' | 'stop' | 'deploy'
+// The intervention verbs. start/stop/deploy (場景② F2.3) require operator+;
+// resume (§5.13 v2 — lift the kill_switch freeze) is admin-only. Each
+// routes through a SudoModal step-up before hitting the endpoint; the role
+// it requests is derived from the verb (see sudoRoleForVerb).
+type ActionVerb = 'start' | 'stop' | 'deploy' | 'resume'
+
+// resume un-freezes a halted agent (admin); the rest are operator-level.
+function sudoRoleForVerb(verb: ActionVerb): 'admin' | 'operator' {
+  return verb === 'resume' ? 'admin' : 'operator'
+}
 
 // F2.2: per-instance live snapshot. Polled every 3s — the detail view is
 // the one place a tighter cadence pays off; the underlying tick is 1m so
@@ -71,7 +78,9 @@ export default function InstanceLivePage() {
         ? `Start live trading on ${tag}.`
         : verb === 'stop'
           ? `Pause ${tag}.`
-          : `Deploy champion ${deployId.trim()} to ${tag}.`
+          : verb === 'resume'
+            ? `Resume (un-freeze) the agent on ${tag}.`
+            : `Deploy champion ${deployId.trim()} to ${tag}.`
     setPending({ verb, desc })
   }
 
@@ -94,7 +103,9 @@ export default function InstanceLivePage() {
         </span>
       </div>
 
-      {data.kill_status && <KillBanner kill={data.kill_status} />}
+      {data.kill_status && (
+        <KillBanner kill={data.kill_status} onResume={() => requestAction('resume')} />
+      )}
 
       <ControlsCard
         status={instance.status}
@@ -116,7 +127,7 @@ export default function InstanceLivePage() {
 
       {pending && auth && (
         <SudoModal
-          role="operator"
+          role={sudoRoleForVerb(pending.verb)}
           action={pending.desc}
           email={auth.email}
           onClose={() => setPending(null)}
@@ -126,6 +137,8 @@ export default function InstanceLivePage() {
               await apiFetch(`${base}/start`, { method: 'POST', token })
             } else if (pending.verb === 'stop') {
               await apiFetch(`${base}/stop`, { method: 'POST', token })
+            } else if (pending.verb === 'resume') {
+              await apiFetch(`${base}/resume`, { method: 'POST', token })
             } else {
               await apiFetch(`${base}/deploy-champion`, {
                 method: 'POST',
@@ -355,21 +368,32 @@ function amountByAsset(asset: string, v: number) {
   return asset === 'USDT' ? formatUsd(v) : formatBtc(v)
 }
 
-// Frozen banner (Option 3 step 4): shown when the account has a
-// kill_switch on record. v1 has no resume signal, so this reflects the
-// last kill — after restarting the agent it is stale (noted inline).
-function KillBanner({ kill }: { kill: KillStatusView }) {
+// Frozen banner (Option 3 step 4): shown only while the account is
+// currently frozen — the backend surfaces kill_status from the latest
+// kill/resume event (LatestKillOrResume), so a resume clears this banner.
+// The Resume button issues the §5.13 v2 un-freeze (admin step-up); it
+// lifts the latch without a process restart.
+function KillBanner({ kill, onResume }: { kill: KillStatusView; onResume: () => void }) {
   const when = new Date(kill.killed_at_ms).toLocaleString()
   const how = kill.trigger === 'auto' ? 'Auto-frozen' : 'Manually killed'
   return (
     <div className="mb-4 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800">
-      <div className="font-semibold">⚠️ Agent frozen — kill_switch active</div>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="font-semibold">⚠️ Agent frozen — kill_switch active</div>
+        <button
+          type="button"
+          className="ml-auto rounded-md border border-red-400 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100"
+          onClick={onResume}
+        >
+          Resume agent
+        </button>
+      </div>
       <div className="mt-1">
         {how} · reason <span className="font-mono">{kill.reason}</span> · by{' '}
         <span className="font-mono">{kill.actor}</span> · {when}
       </div>
       <div className="mt-1 text-xs text-red-600">
-        New orders are rejected. Resume = restart the agent process (v1). 若已重启 agent 可忽略此提示。
+        New orders are rejected until the agent is resumed (admin).
       </div>
     </div>
   )
