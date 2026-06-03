@@ -39,9 +39,9 @@ func TestMaxFlaggedDriftBps(t *testing.T) {
 // while drift on a managed asset does.
 func TestMaxFlaggedDriftBps_ScopedToManaged(t *testing.T) {
 	drifts := []driftResult{
-		{Asset: "ACH", DriftBps: 10000, Flagged: true}, // faucet coin — unmanaged
+		{Asset: "ACH", DriftBps: 10000, Flagged: true},  // faucet coin — unmanaged
 		{Asset: "AEVO", DriftBps: 10000, Flagged: true}, // faucet coin — unmanaged
-		{Asset: "BTC", DriftBps: 120, Flagged: true},   // managed
+		{Asset: "BTC", DriftBps: 120, Flagged: true},    // managed
 	}
 	managed := managedSet("BTC", "USDT")
 	if got := maxFlaggedDriftBps(drifts, managed); got != 120 {
