@@ -181,7 +181,7 @@ go run ./cmd/agent --config config.agent.yaml
 
 ✅ 到此 **L1 达成** —— WS 链路 + delta_report 收发跑通。
 
-> 对账落库要 baseline:instance 至少 tick 过一次(有 portfolio 行)才会 reconcile,否则日志 `delta_report_reconcile_skipped_no_baseline`(正常,不是错)。baseline 在 L2 start 后产生。
+> **对账 baseline 来自首个 delta_report(commit 1eea27a 起)**:instance `funded_at_ms` 为 NULL 时,第一份 delta_report 会用交易所真实持仓**注资** baseline(SaaS 日志 `instance_funded_from_exchange`,seed `FloatBTC=交易所BTC, USDT=交易所USDT`),本轮不对账;**从第二份起**才 reconcile。不再需要先 tick 或先 L2 start。`delta_report_reconcile_skipped_no_baseline` 现在只在边缘情况出现(已注资但 portfolio 行缺失)。
 
 ---
 
