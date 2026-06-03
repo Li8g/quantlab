@@ -464,8 +464,16 @@ func (h *agentMessageHandler) reconcile(
 		}
 	}
 
-	// Auto-freeze (kill_switch Option 3): a sustained drift trips the kill.
-	h.maybeAutoFreeze(ctx, accountID, drifts)
+	// Auto-freeze (kill_switch Option 3): a sustained drift trips the kill,
+	// but only on the MANAGED assets — expected's keys, i.e. the account's
+	// instances' base assets + USDT. Unmanaged exchange balances (e.g. a
+	// testnet faucet's unrelated coins) are recorded above as discrepancies
+	// for the forensic trail but must not auto-halt a live agent.
+	managed := make(map[string]struct{}, len(expected))
+	for a := range expected {
+		managed[a] = struct{}{}
+	}
+	h.maybeAutoFreeze(ctx, accountID, drifts, managed)
 	return nil
 }
 
@@ -487,12 +495,22 @@ const freezeDebounceReports = 2
 // by restarting the process (§5.13); this sentinel just throttles repeats.
 const killedSentinel = -1
 
-// maxFlaggedDriftBps returns the largest flagged drift in bps (0 if none).
-// Only flagged drifts count — they already cleared the dust floor, so a
-// huge relative drift near zero can't trip the freeze.
-func maxFlaggedDriftBps(drifts []driftResult) float64 {
+// maxFlaggedDriftBps returns the largest flagged drift in bps among the
+// MANAGED assets (0 if none). `managed` scopes the auto-freeze decision to
+// the assets this account's instances actually track (their pair's base +
+// USDT). Exchange-only balances the ledger never managed — e.g. a testnet
+// faucet's hundreds of unrelated coins — are still recorded as
+// discrepancies for the forensic trail by reconcile(), but they must not
+// halt a live agent, so they don't count here. An empty `managed` set
+// yields 0 (nothing to freeze on). Only flagged drifts count — they already
+// cleared the dust floor, so a huge relative drift near zero can't trip
+// the freeze.
+func maxFlaggedDriftBps(drifts []driftResult, managed map[string]struct{}) float64 {
 	max := 0.0
 	for _, d := range drifts {
+		if _, ok := managed[d.Asset]; !ok {
+			continue
+		}
 		if d.Flagged && d.DriftBps > max {
 			max = d.DriftBps
 		}
@@ -516,11 +534,12 @@ func nextDriftStreak(maxBps float64, prev int) int {
 
 // maybeAutoFreeze advances the drift streak for accountID and, when it
 // reaches the debounce threshold, sends a discrepancy_detected kill_switch.
-// No-op when no killer is wired. On send success the streak latches to
-// killedSentinel (no repeats); on failure it stays armed so the next
-// report retries.
-func (h *agentMessageHandler) maybeAutoFreeze(ctx context.Context, accountID string, drifts []driftResult) {
-	maxBps := maxFlaggedDriftBps(drifts)
+// Only drift on `managed` assets (the account's instances' tracked assets)
+// arms the streak — see maxFlaggedDriftBps. No-op when no killer is wired.
+// On send success the streak latches to killedSentinel (no repeats); on
+// failure it stays armed so the next report retries.
+func (h *agentMessageHandler) maybeAutoFreeze(ctx context.Context, accountID string, drifts []driftResult, managed map[string]struct{}) {
+	maxBps := maxFlaggedDriftBps(drifts, managed)
 
 	h.freezeMu.Lock()
 	next := nextDriftStreak(maxBps, h.driftStreak[accountID])

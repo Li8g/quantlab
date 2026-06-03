@@ -121,9 +121,10 @@ func TestE2E_AutoFreezeHaltsAgent(t *testing.T) {
 	h.SetKillSwitchSender(hub)
 	h.auditor = fa
 	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}} // > 200bps freeze line
+	managed := managedSet("BTC")
 
-	h.maybeAutoFreeze(ctx, accountID, breach) // streak 1 — no fire
-	h.maybeAutoFreeze(ctx, accountID, breach) // streak 2 — fire → SendKillSwitch
+	h.maybeAutoFreeze(ctx, accountID, breach, managed) // streak 1 — no fire
+	h.maybeAutoFreeze(ctx, accountID, breach, managed) // streak 2 — fire → SendKillSwitch
 
 	// The kill is acked once the agent processes it; wait for that ack so
 	// the frozen latch is set before we dispatch.

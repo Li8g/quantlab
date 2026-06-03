@@ -9,17 +9,48 @@ import (
 	"quantlab/internal/wire"
 )
 
+// managedSet builds a managed-asset set for the scoped auto-freeze tests.
+func managedSet(assets ...string) map[string]struct{} {
+	m := make(map[string]struct{}, len(assets))
+	for _, a := range assets {
+		m[a] = struct{}{}
+	}
+	return m
+}
+
 func TestMaxFlaggedDriftBps(t *testing.T) {
 	drifts := []driftResult{
 		{Asset: "USDT", DriftBps: 999, Flagged: false}, // big but unflagged (dust) — ignored
 		{Asset: "BTC", DriftBps: 120, Flagged: true},
 		{Asset: "ETH", DriftBps: 340, Flagged: true},
 	}
-	if got := maxFlaggedDriftBps(drifts); got != 340 {
+	managed := managedSet("USDT", "BTC", "ETH")
+	if got := maxFlaggedDriftBps(drifts, managed); got != 340 {
 		t.Errorf("maxFlaggedDriftBps = %v, want 340 (largest flagged)", got)
 	}
-	if got := maxFlaggedDriftBps(nil); got != 0 {
+	if got := maxFlaggedDriftBps(nil, managed); got != 0 {
 		t.Errorf("maxFlaggedDriftBps(nil) = %v, want 0", got)
+	}
+}
+
+// TestMaxFlaggedDriftBps_ScopedToManaged is the core guard for the testnet
+// faucet false-positive: a huge flagged drift on an UNMANAGED asset (a
+// faucet coin the instance never trades) must NOT count toward the freeze,
+// while drift on a managed asset does.
+func TestMaxFlaggedDriftBps_ScopedToManaged(t *testing.T) {
+	drifts := []driftResult{
+		{Asset: "ACH", DriftBps: 10000, Flagged: true}, // faucet coin — unmanaged
+		{Asset: "AEVO", DriftBps: 10000, Flagged: true}, // faucet coin — unmanaged
+		{Asset: "BTC", DriftBps: 120, Flagged: true},   // managed
+	}
+	managed := managedSet("BTC", "USDT")
+	if got := maxFlaggedDriftBps(drifts, managed); got != 120 {
+		t.Errorf("maxFlaggedDriftBps = %v, want 120 (faucet coins must be ignored)", got)
+	}
+	// Nothing managed drifts → no freeze even with huge faucet drift.
+	onlyFaucet := []driftResult{{Asset: "ACH", DriftBps: 10000, Flagged: true}}
+	if got := maxFlaggedDriftBps(onlyFaucet, managed); got != 0 {
+		t.Errorf("maxFlaggedDriftBps = %v, want 0 (only unmanaged drift)", got)
 	}
 }
 
@@ -75,29 +106,30 @@ func TestMaybeAutoFreeze_DebouncesAndLatches(t *testing.T) {
 		logger:      slog.Default(),
 	}
 	const acct = "01HKACCT00000000000000000A"
+	managed := managedSet("BTC")
 	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}} // > 200 freeze line
 	clean := []driftResult{{Asset: "BTC", DriftBps: 10, Flagged: true}}   // < 200
 
-	h.maybeAutoFreeze(context.Background(), acct, breach) // streak 1 — no fire (debounce N=2)
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // streak 1 — no fire (debounce N=2)
 	if len(fk.calls) != 0 {
 		t.Fatalf("fired after 1 breach, want debounce; calls=%d", len(fk.calls))
 	}
-	h.maybeAutoFreeze(context.Background(), acct, breach) // streak 2 — FIRE
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // streak 2 — FIRE
 	if len(fk.calls) != 1 {
 		t.Fatalf("did not fire on 2nd consecutive breach; calls=%d", len(fk.calls))
 	}
 	if fk.calls[0].Reason != wire.KillSwitchDiscrepancyDetected {
 		t.Errorf("kill reason = %q, want discrepancy_detected", fk.calls[0].Reason)
 	}
-	h.maybeAutoFreeze(context.Background(), acct, breach) // sentinel — must NOT re-fire
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // sentinel — must NOT re-fire
 	if len(fk.calls) != 1 {
 		t.Errorf("re-fired while still drifting (no sentinel suppression); calls=%d", len(fk.calls))
 	}
 
 	// Drift clears, then recurs → must re-arm and fire again.
-	h.maybeAutoFreeze(context.Background(), acct, clean)  // reset
-	h.maybeAutoFreeze(context.Background(), acct, breach) // 1
-	h.maybeAutoFreeze(context.Background(), acct, breach) // 2 → fire
+	h.maybeAutoFreeze(context.Background(), acct, clean, managed)  // reset
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 1
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 2 → fire
 	if len(fk.calls) != 2 {
 		t.Errorf("did not re-arm after drift cleared; calls=%d, want 2", len(fk.calls))
 	}
@@ -118,6 +150,6 @@ func TestMaybeAutoFreeze_NoKillerIsNoop(t *testing.T) {
 	h := &agentMessageHandler{driftStreak: map[string]int{}, logger: slog.Default()} // killer nil
 	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}}
 	// Must not panic and must be harmless when auto-freeze is unwired.
-	h.maybeAutoFreeze(context.Background(), "acct", breach)
-	h.maybeAutoFreeze(context.Background(), "acct", breach)
+	h.maybeAutoFreeze(context.Background(), "acct", breach, managedSet("BTC"))
+	h.maybeAutoFreeze(context.Background(), "acct", breach, managedSet("BTC"))
 }
