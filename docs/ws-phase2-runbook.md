@@ -1,5 +1,23 @@
 # WS Phase 2 真 testnet 实跑手册
 
+## TL;DR — 一键脚本
+
+步骤 1–5 已折成幂等脚本 `scripts/run_testnet.sh`(已填好 testnet key 后):
+
+```bash
+scripts/run_testnet.sh                 # 起 SaaS+agent,连上后打印 status(按需提示 admin 密码)
+scripts/run_testnet.sh --clear-freeze  # 清旧的自动冻结(kill latch + drift 噪音),为干净重试
+scripts/run_testnet.sh --reseed-token  # 轮换 agent token 并改写 config.agent.yaml
+scripts/run_testnet.sh --stop          # 停掉脚本起的 SaaS+agent
+```
+
+幂等:已存在的 admin / token / instance 不重复建;只在登录时提示输入 admin 密码
+(或设 `ADMIN_PASSWORD` env 非交互)。连接成功(`agent_session_ready`)后打印
+status:instance/connection/portfolio/kill_status/discrepancies + `funded_at` + 日志尾。
+下面的分步手册仍是底层真相与排障参考。
+
+---
+
 ## 5 分钟速览
 
 **目标**: 在 Binance testnet 上跑通 `SaaS ⇄ Agent ⇄ Binance` 实盘链路,**不碰真钱**。
