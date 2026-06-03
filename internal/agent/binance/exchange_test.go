@@ -35,6 +35,10 @@ type exchangeHandler struct {
 
 func (h *exchangeHandler) handle(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/api/v3/exchangeInfo":
+		// Permissive BTCUSDT filter so the pre-submit LOT_SIZE check in
+		// Submit* passes for the 0.001-qty delegate fixtures.
+		exchangeInfoHandlerJSON(w, r)
 	case "/api/v3/ping":
 		h.pings.Add(1)
 		if h.pingReply != nil {

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -165,6 +166,13 @@ type Client struct {
 	// means "no observation yet" (e.g. before any request, or
 	// httptest backends that don't emit the header).
 	lastUsedWeight1m atomic.Int32
+
+	// filterCache memoises per-symbol order filters (LOT_SIZE step/min,
+	// PRICE_FILTER tick, NOTIONAL floor) fetched from exchangeInfo.
+	// Filters are effectively static for a trading pair, so an entry
+	// lives for the process lifetime. Guarded by filterMu.
+	filterMu    sync.RWMutex
+	filterCache map[string]*symbolFilter
 }
 
 // NewClient constructs a Client suitable for signed (account / order)
@@ -193,6 +201,7 @@ func NewClient(apiKey, apiSecret string, opts Options) *Client {
 	if c.nowFn == nil {
 		c.nowFn = time.Now
 	}
+	c.filterCache = make(map[string]*symbolFilter)
 	return c
 }
 

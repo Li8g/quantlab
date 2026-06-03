@@ -90,6 +90,18 @@ func (c *Client) SubmitMarket(ctx context.Context, order agent.ExchangeOrder) (*
 		marketRef = book.BidPrice
 	}
 
+	// Snap the quantity onto the symbol's LOT_SIZE grid (and validate
+	// minQty/minNotional against marketRef) so Binance doesn't reject it
+	// with -1013. A below-floor order is rejected locally here.
+	filter, err := c.symbolFilterFor(ctx, order.Symbol)
+	if err != nil {
+		return nil, fmt.Errorf("binance.SubmitMarket: %w", err)
+	}
+	order.Quantity, err = compliantQuantity(order.Quantity, marketRef, filter)
+	if err != nil {
+		return nil, err
+	}
+
 	params := url.Values{}
 	params.Set("symbol", order.Symbol)
 	params.Set("side", binSide)
@@ -218,6 +230,19 @@ func (c *Client) SubmitLimit(ctx context.Context, order agent.ExchangeOrder) (*a
 	}
 
 	binSide, err := mapSide(order.Side)
+	if err != nil {
+		return nil, err
+	}
+
+	// Snap price onto the PRICE_FILTER tick grid and quantity onto the
+	// LOT_SIZE grid (notional checked against the limit price) before
+	// submission, mirroring SubmitMarket's -1013 avoidance.
+	filter, err := c.symbolFilterFor(ctx, order.Symbol)
+	if err != nil {
+		return nil, fmt.Errorf("binance.SubmitLimit: %w", err)
+	}
+	order.LimitPrice = compliantPrice(order.LimitPrice, filter)
+	order.Quantity, err = compliantQuantity(order.Quantity, order.LimitPrice, filter)
 	if err != nil {
 		return nil, err
 	}

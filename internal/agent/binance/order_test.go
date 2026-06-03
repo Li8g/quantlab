@@ -28,6 +28,8 @@ type orderHandler struct {
 
 func (h *orderHandler) handle(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/api/v3/exchangeInfo":
+		exchangeInfoHandlerJSON(w, r)
 	case "/api/v3/ticker/bookTicker":
 		h.bookCalls.Add(1)
 		h.book(w, r)
@@ -37,6 +39,20 @@ func (h *orderHandler) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// exchangeInfoHandlerJSON serves a permissive BTCUSDT filter set so
+// SubmitMarket/SubmitLimit's pre-submit LOT_SIZE check passes for the
+// happy-path fixtures (qty 0.001 is on the 0.00001 grid; notional clears
+// the 5-USDT floor at test prices). Filter-specific behaviour is covered
+// by the pure-function tests in symbolfilters_test.go.
+func exchangeInfoHandlerJSON(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","filters":[
+		{"filterType":"PRICE_FILTER","tickSize":"0.01000000"},
+		{"filterType":"LOT_SIZE","stepSize":"0.00001000","minQty":"0.00001000"},
+		{"filterType":"NOTIONAL","minNotional":"5.00000000"}
+	]}]}`))
 }
 
 func newOrderTestClient(t *testing.T, h *orderHandler) (*Client, *httptest.Server) {
@@ -488,6 +504,8 @@ type orderLimitOnly struct {
 
 func (h *orderLimitOnly) handle(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/api/v3/exchangeInfo":
+		exchangeInfoHandlerJSON(w, r)
 	case "/api/v3/ticker/bookTicker":
 		h.t.Errorf("SubmitLimit must NOT call BookTicker (protocol §5.10 fixes MarketRef = limit_price)")
 		w.WriteHeader(500)
