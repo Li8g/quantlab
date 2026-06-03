@@ -282,7 +282,11 @@ type driftResult struct {
 // of assets on either side: an exchange asset SaaS doesn't track (or vice
 // versa) surfaces as drift against a zero baseline. [INVENTED v1:
 // free+locked summation, tolerance, dust floor]
-func reconcilePositions(expected map[string]float64, positions []wire.Position) ([]driftResult, error) {
+// parsePositions folds a delta_report's per-asset free+locked decimal
+// strings into an asset→total float map (the exchange-truth holdings).
+// Shared by reconcilePositions (drift math) and fundInstance (genesis
+// seeding) so both read the snapshot identically. [INVENTED v1: free+locked]
+func parsePositions(positions []wire.Position) (map[string]float64, error) {
 	actual := make(map[string]float64, len(positions))
 	for _, p := range positions {
 		free, err := strconv.ParseFloat(p.FreeDecimal, 64)
@@ -294,6 +298,14 @@ func reconcilePositions(expected map[string]float64, positions []wire.Position) 
 			return nil, fmt.Errorf("position %s locked_decimal=%q: %w", p.Symbol, p.LockedDecimal, err)
 		}
 		actual[p.Symbol] = free + locked
+	}
+	return actual, nil
+}
+
+func reconcilePositions(expected map[string]float64, positions []wire.Position) ([]driftResult, error) {
+	actual, err := parsePositions(positions)
+	if err != nil {
+		return nil, err
 	}
 
 	assetSet := make(map[string]struct{}, len(expected)+len(actual))
@@ -409,25 +421,46 @@ func (h *agentMessageHandler) recoverFills(ctx context.Context, accountID string
 
 // reconcile aggregates the SaaS-side expected holdings across the
 // account's instances' latest portfolio snapshots, diffs them against the
-// exchange-truth positions, and persists any flagged drift. Skips quietly
-// when there's no baseline yet (cold start, never ticked) so a fresh
-// instance doesn't false-positive its real exchange balance as drift.
+// exchange-truth positions, and persists any flagged drift. An instance not
+// yet funded (FundedAtMs NULL) is first anchored to the exchange snapshot
+// (fundInstance) and excluded from this round, so a fresh instance's $0
+// ledger never false-positives its real exchange balance as total drift.
 func (h *agentMessageHandler) reconcile(
 	ctx context.Context, accountID, instanceID string,
 	insts []store.StrategyInstance, dr *wire.DeltaReport,
 ) error {
+	// Exchange-truth holdings, parsed once: genesis funding seeds from it,
+	// reconcilePositions re-derives it for the drift math.
+	actual, err := parsePositions(dr.Positions)
+	if err != nil {
+		return fmt.Errorf("agentmsg: delta_report parse positions: %w", err)
+	}
+	now := time.Now().UnixMilli()
+
 	expected := map[string]float64{}
 	hasBaseline := false
 	for i := range insts {
-		ps, err := h.portfolios.Latest(ctx, insts[i].InstanceID)
+		inst := &insts[i]
+		// Genesis funding: an instance with no funded baseline yet anchors
+		// its SaaS ledger to the exchange snapshot instead of reconciling a
+		// $0 ledger against real holdings (the BTC/USDT baseline=0 trap).
+		// It contributes nothing to this report's drift — next report
+		// reconciles against the freshly seeded baseline.
+		if inst.FundedAtMs == nil {
+			if err := h.fundInstance(ctx, inst, actual, now); err != nil {
+				return err
+			}
+			continue
+		}
+		ps, err := h.portfolios.Latest(ctx, inst.InstanceID)
 		if err != nil {
 			return fmt.Errorf("agentmsg: delta_report portfolio latest: %w", err)
 		}
 		if ps == nil {
-			continue // instance never ticked — no baseline contribution
+			continue // funded flag set but seed row missing — skip this round
 		}
 		hasBaseline = true
-		base := strings.TrimSuffix(insts[i].Pair, "USDT") // [INVENTED v1] base asset from pair
+		base := strings.TrimSuffix(inst.Pair, "USDT") // [INVENTED v1] base asset from pair
 		expected[base] += ps.DeadBTC + ps.FloatBTC + ps.ColdSealedBTC
 		expected["USDT"] += ps.USDT
 	}
@@ -440,7 +473,6 @@ func (h *agentMessageHandler) reconcile(
 	if err != nil {
 		return fmt.Errorf("agentmsg: delta_report reconcile: %w", err)
 	}
-	now := time.Now().UnixMilli()
 	for _, d := range drifts {
 		if !d.Flagged {
 			continue
@@ -474,6 +506,46 @@ func (h *agentMessageHandler) reconcile(
 		managed[a] = struct{}{}
 	}
 	h.maybeAutoFreeze(ctx, accountID, drifts, managed)
+	return nil
+}
+
+// buildSeedPortfolio builds the genesis ledger row for a fresh instance from
+// the exchange-truth holdings. The exchange reports only raw assets, so the
+// three-state BTC split seeds everything into FloatBTC (the active trading
+// float); DeadBTC/ColdSealedBTC are SaaS-internal lifecycle buckets the
+// strategy grows into from here, genesis zero. LastProcessedBarTime stays 0 so
+// the next Tick loads the full trailing window. Pure (no DB/clock) for tests.
+// [INVENTED v1: whole-balance anchor; one instance per exchange account]
+func buildSeedPortfolio(inst *store.StrategyInstance, actual map[string]float64, nowMs int64) *store.PortfolioState {
+	base := strings.TrimSuffix(inst.Pair, "USDT")
+	return &store.PortfolioState{
+		InstanceID: inst.InstanceID,
+		NowMs:      nowMs,
+		FloatBTC:   actual[base],
+		USDT:       actual["USDT"],
+	}
+}
+
+// fundInstance anchors a fresh instance's SaaS ledger to the exchange's actual
+// holdings (the faucet/account balance) so reconciliation later compares like
+// with like instead of false-flagging a never-funded $0 ledger as total drift.
+// Seeds the portfolio first, then claims the funded flag (idempotent via the
+// NULL guard in MarkFunded); on the rare concurrent double-seed both rows carry
+// the same balance and Latest picks one. Mutates inst.FundedAtMs so the caller's
+// loop doesn't also reconcile it this round.
+func (h *agentMessageHandler) fundInstance(ctx context.Context, inst *store.StrategyInstance, actual map[string]float64, nowMs int64) error {
+	seed := buildSeedPortfolio(inst, actual, nowMs)
+	if err := h.portfolios.Append(ctx, seed); err != nil {
+		return fmt.Errorf("agentmsg: fund instance %s seed portfolio: %w", inst.InstanceID, err)
+	}
+	if err := h.instances.MarkFunded(ctx, inst.InstanceID, nowMs); err != nil {
+		return fmt.Errorf("agentmsg: mark instance %s funded: %w", inst.InstanceID, err)
+	}
+	inst.FundedAtMs = &nowMs
+	h.logger.Info("instance_funded_from_exchange",
+		"account_id", inst.AccountID, "instance_id", inst.InstanceID,
+		"base_asset", strings.TrimSuffix(inst.Pair, "USDT"),
+		"float_btc", seed.FloatBTC, "usdt", seed.USDT)
 	return nil
 }
 

@@ -336,6 +336,13 @@ type StrategyInstance struct {
 	Status           InstanceStatus `gorm:"type:varchar(16);default:'idle';index" json:"status"`
 	ActiveChampID    *string        `gorm:"type:varchar(64);index"                 json:"active_champion_id,omitempty"`
 	LastTickWallTime *time.Time     `json:"last_tick_wall_time,omitempty"` // wall clock for ops
+	// FundedAtMs anchors the genesis funding moment: NULL until the first
+	// exchange snapshot seeds the SaaS ledger from real holdings, set once
+	// thereafter. While NULL, reconciling the instance's $0 ledger against
+	// real balances would false-flag every holding as drift, so funding
+	// seeds the ledger first and flips this. See cmd/saas/agentmsg.go
+	// fundInstance. [INVENTED v1]
+	FundedAtMs *int64 `gorm:"index" json:"funded_at_ms,omitempty"`
 }
 
 // -------- C. PortfolioState + RuntimeState --------

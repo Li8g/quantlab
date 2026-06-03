@@ -94,6 +94,16 @@ func (r *InstanceRepo) SetLastTickWallTime(ctx context.Context, instanceID strin
 		Update("last_tick_wall_time", t).Error
 }
 
+// MarkFunded stamps the genesis funding time, but only while it is still
+// NULL (idempotent claim) so a fresh exchange snapshot anchors the ledger
+// exactly once even if two delta_reports race. See agentmsg.fundInstance.
+func (r *InstanceRepo) MarkFunded(ctx context.Context, instanceID string, ms int64) error {
+	return r.db.WithContext(ctx).
+		Model(&store.StrategyInstance{}).
+		Where("instance_id = ? AND funded_at_ms IS NULL", instanceID).
+		Update("funded_at_ms", ms).Error
+}
+
 // SetActiveChampion attaches a Champion (ChallengerID) to an instance.
 // Used by the Promote → Deploy split (B2 frozen): Promote alone does
 // not touch instances; an explicit deploy call comes through here.

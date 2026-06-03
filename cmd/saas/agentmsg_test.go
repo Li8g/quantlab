@@ -259,6 +259,38 @@ func TestReconcilePositions_BadDecimal(t *testing.T) {
 	}
 }
 
+func TestBuildSeedPortfolio_AnchorsBaseAndUSDT(t *testing.T) {
+	inst := &store.StrategyInstance{InstanceID: "inst1", Pair: "BTCUSDT"}
+	actual := map[string]float64{
+		"BTC":  0.5,
+		"USDT": 1000,
+		"ACH":  9999, // faucet junk — must NOT seed the ledger
+	}
+	seed := buildSeedPortfolio(inst, actual, 42)
+
+	if seed.InstanceID != "inst1" || seed.NowMs != 42 {
+		t.Fatalf("identity = %+v, want inst1/42", seed)
+	}
+	if seed.FloatBTC != 0.5 {
+		t.Errorf("FloatBTC = %v, want 0.5 (whole base balance into active float)", seed.FloatBTC)
+	}
+	if seed.USDT != 1000 {
+		t.Errorf("USDT = %v, want 1000", seed.USDT)
+	}
+	// Genesis: dead/cold/last-bar all zero; junk coins never enter the ledger.
+	if seed.DeadBTC != 0 || seed.ColdSealedBTC != 0 || seed.LastProcessedBarTime != 0 {
+		t.Errorf("genesis non-zero: dead=%v cold=%v lastBar=%v", seed.DeadBTC, seed.ColdSealedBTC, seed.LastProcessedBarTime)
+	}
+}
+
+func TestBuildSeedPortfolio_MissingPositionsSeedZero(t *testing.T) {
+	inst := &store.StrategyInstance{InstanceID: "inst2", Pair: "ETHUSDT"}
+	seed := buildSeedPortfolio(inst, map[string]float64{}, 7)
+	if seed.FloatBTC != 0 || seed.USDT != 0 {
+		t.Errorf("absent assets must seed zero, got float=%v usdt=%v", seed.FloatBTC, seed.USDT)
+	}
+}
+
 func TestBuildTradeRecord_LimitOrderCopiesPrice(t *testing.T) {
 	oi := strategy.OrderIntent{
 		Kind:          strategy.OrderKindMacro,
