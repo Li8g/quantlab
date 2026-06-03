@@ -81,11 +81,12 @@ type ReconReader interface {
 	ListAgentErrorsForInstance(ctx context.Context, instanceID string, limit int) ([]store.AgentError, error)
 }
 
-// KillStatusReader fetches the most recent instance.kill audit event for
-// an account (kill_switch Option 3 step 4). Backed by AuditRepo.
-// Nil-skippable: when nil, /live omits `kill_status`.
+// KillStatusReader fetches the most recent instance.kill OR
+// instance.resume audit event for an account (kill_switch Option 3 step 4
+// + §5.13 v2 resume). Backed by AuditRepo. Nil-skippable: when nil, /live
+// omits `kill_status`.
 type KillStatusReader interface {
-	LatestKill(ctx context.Context, accountID string) (*store.AuditLog, error)
+	LatestKillOrResume(ctx context.Context, accountID string) (*store.AuditLog, error)
 }
 
 // liveSnapshotReconRows is the reconciliation tail length folded into
@@ -227,16 +228,18 @@ func (h *Handlers) GetInstanceLive(c *gin.Context) {
 		}
 	}
 
-	// Kill status (Option 3 step 4) — most recent kill_switch for this
-	// account, surfaced as a frozen banner. Nil-skippable.
+	// Kill status (Option 3 step 4) — surfaced as a frozen banner. The
+	// reader returns the latest kill OR resume event; the banner shows only
+	// when the latest is a kill, so a resume (§5.13 v2) clears it.
+	// Nil-skippable.
 	if h.Kills != nil {
-		kill, err := h.Kills.LatestKill(c.Request.Context(), inst.AccountID)
+		ev, err := h.Kills.LatestKillOrResume(c.Request.Context(), inst.AccountID)
 		if err != nil {
 			writeError(c, http.StatusInternalServerError, err)
 			return
 		}
-		if kill != nil {
-			resp.KillStatus = toKillStatusView(*kill)
+		if ev != nil && ev.Action == store.AuditActionInstanceKill {
+			resp.KillStatus = toKillStatusView(*ev)
 		}
 	}
 
@@ -393,12 +396,10 @@ type InstanceLiveResponse struct {
 }
 
 // KillStatusView surfaces the most recent kill_switch for the instance's
-// account (Option 3 step 4). Present ⇒ the account was killed and the
-// agent latched frozen. v1 has no resume signal, so this reflects the
-// LAST kill event, not a live "still frozen?" probe — after the admin
-// restarts the agent process the latch clears but this banner persists
-// until a newer event supersedes it (the front-end notes "如已重启可忽略").
-// [INVENTED v1; resume message is v2, §5.13]
+// account (Option 3 step 4). Present ⇒ the account is currently frozen:
+// the caller only builds this when the latest kill/resume event is a kill,
+// so a resume (§5.13 v2) clears the banner. This is now a real "still
+// frozen?" signal, not just the last kill ever.
 type KillStatusView struct {
 	KilledAtMs     int64  `json:"killed_at_ms"`
 	Actor          string `json:"actor"`  // "user:<id>" | "system"

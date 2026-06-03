@@ -146,6 +146,37 @@ func TestMaybeAutoFreeze_DebouncesAndLatches(t *testing.T) {
 	}
 }
 
+// TestClearDriftStreak_ReArmsAutoFreeze proves the §5.13 v2 resume
+// re-arm: after a fire latches the killedSentinel, ClearDriftStreak lifts
+// it so a STILL-drifting account auto-freezes again WITHOUT needing a
+// clean report to intervene (which the sentinel would otherwise demand).
+func TestClearDriftStreak_ReArmsAutoFreeze(t *testing.T) {
+	fk := &fakeKiller{}
+	h := &agentMessageHandler{
+		driftStreak: map[string]int{},
+		killer:      fk,
+		logger:      slog.Default(),
+	}
+	const acct = "01HKACCT00000000000000000A"
+	managed := managedSet("BTC")
+	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}}
+
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 1
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 2 → fire (latches sentinel)
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // sentinel suppresses
+	if len(fk.calls) != 1 {
+		t.Fatalf("setup: calls=%d, want 1 (fired once, then suppressed)", len(fk.calls))
+	}
+
+	// Resume re-arms — no clean report in between.
+	h.ClearDriftStreak(acct)
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 1
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 2 → fire again
+	if len(fk.calls) != 2 {
+		t.Errorf("did not re-fire after ClearDriftStreak; calls=%d, want 2", len(fk.calls))
+	}
+}
+
 func TestMaybeAutoFreeze_NoKillerIsNoop(t *testing.T) {
 	h := &agentMessageHandler{driftStreak: map[string]int{}, logger: slog.Default()} // killer nil
 	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}}

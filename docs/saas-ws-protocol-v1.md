@@ -508,7 +508,9 @@ SaaS 发完此消息立即 close（500ms 内）。Agent 端收到 `invalid_token
 
 1. 立即 cancel 所有 open orders（best-effort）。
 2. 返回 `ack{status=accepted, exchange_order_id=""}`。
-3. 转入 `frozen` 状态：拒收任何后续 `trade_command`（回 `ack{status=rejected, reason=killed}`），直到 SaaS 端 push 一条 `kill_switch{reason=...,scope=all,symbol=resume}`（resume 协议 v1 不冻——重启 Agent 进程是 v1 解冻路径）。
+3. 转入 `frozen` 状态：拒收任何后续 `trade_command`（回 `ack{status=rejected, reason=killed}`），直到 SaaS 端 push 一条 `kill_switch{reason=...,scope=all,symbol=resume}` 解冻。
+
+**Resume（§5.13 v2，已实现）**：SaaS push `kill_switch{symbol=resume}`（复用本消息，非新类型），Agent 清除 `frozen` 硬闩、ack 接收、恢复接单——无需重启进程（v1 的解冻路径是重启 Agent，仍可用）。服务端 `POST /api/v1/instances/:id/resume`（admin-only）发出 resume，并同步：① 清 `driftStreak` 重新武装 auto-freeze（否则漂移仍在时安全网不会再触发），② 记 `instance.resume` 审计事件——`/live` 红 banner 据「最近一条 kill/resume 谁更新」判定，resume 后自动消失。
 
 ### 5.14 `graceful_shutdown`（SaaS → Agent）
 

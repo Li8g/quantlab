@@ -500,6 +500,7 @@ const (
 	AuditActionInstanceStop           AuditAction = "instance.stop"
 	AuditActionInstanceDeployChampion AuditAction = "instance.deploy_champion"
 	AuditActionInstanceKill           AuditAction = "instance.kill"
+	AuditActionInstanceResume         AuditAction = "instance.resume"
 	// Agent
 	AuditActionAgentConnect        AuditAction = "agent.connect"
 	AuditActionAgentDisconnect     AuditAction = "agent.disconnect"

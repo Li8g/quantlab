@@ -172,6 +172,127 @@ func TestE2E_AutoFreezeHaltsAgent(t *testing.T) {
 	}
 }
 
+// TestE2E_ResumeUnfreezesAgent is the §5.13 v2 resume chain over a real
+// WebSocket, no DB: auto-freeze halts the agent, then a resume kill_switch
+// (Symbol="resume") lifts the latch and a fresh order is accepted again —
+// proving un-freeze without a process restart.
+func TestE2E_ResumeUnfreezesAgent(t *testing.T) {
+	ctx := context.Background()
+
+	tokens := &e2eTokenStore{rows: map[string]*store.AgentToken{}}
+	authSvc := agentauth.NewService(tokens).WithBcryptCost(bcrypt.MinCost)
+	const accountID = "01HKE2ERESUMEACCT00000001"
+	created, err := authSvc.CreateToken(ctx, accountID, "e2e-resume-fixture")
+	if err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+
+	type captured struct {
+		t   wire.MessageType
+		env wire.Envelope
+	}
+	var capMu sync.Mutex
+	var caps []captured
+	captureFn := func(_ context.Context, _ string, env wire.Envelope) error {
+		capMu.Lock()
+		defer capMu.Unlock()
+		caps = append(caps, captured{env.Type, env})
+		return nil
+	}
+
+	hub := wshub.New(authSvc, wshub.Config{
+		PingInterval: time.Hour, PongTimeout: time.Hour, PingMisses: 3,
+		AuthTimeout: 5 * time.Second, StateSyncTimeout: 5 * time.Second,
+		WriteTimeout: 5 * time.Second, OnAgentMessage: captureFn,
+	})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/ws/agent", hub.ServeWS)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	wsURL := strings.Replace(srv.URL, "http://", "ws://", 1) + "/api/v1/ws/agent"
+
+	exchange := agent.NewMockExchange(map[string]decimal.Decimal{"BTCUSDT": decimal.NewFromInt(50000)})
+	exchange.SetPosition(agent.Position{Symbol: "USDT", Free: decimal.NewFromInt(100000), Locked: decimal.Zero})
+
+	cli := agent.NewClient(
+		agent.Config{
+			AgentID: created.AgentID, AccountID: accountID, SaaSURL: wsURL,
+			SaaSToken: created.Plaintext, Exchange: agent.ExchangeConfig{Name: "mock"},
+		},
+		exchange, agent.NewMemoryStore(),
+		agent.Options{Backoff: []time.Duration{5 * time.Millisecond}},
+	)
+	agentCtx, cancelAgent := context.WithCancel(context.Background())
+	agentDone := make(chan error, 1)
+	go func() { agentDone <- cli.Run(agentCtx) }()
+	defer func() {
+		cancelAgent()
+		select {
+		case <-agentDone:
+		case <-time.After(2 * time.Second):
+		}
+	}()
+
+	if !waitReady(hub, accountID, 3*time.Second) {
+		t.Fatalf("agent never reached Ready")
+	}
+
+	// Freeze the agent via the auto-trigger path.
+	h := newAgentMessageHandler(nil, nil, nil, nil, nil)
+	h.SetKillSwitchSender(hub)
+	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}}
+	managed := managedSet("BTC")
+	h.maybeAutoFreeze(ctx, accountID, breach, managed) // 1
+	h.maybeAutoFreeze(ctx, accountID, breach, managed) // 2 → fire
+	if !waitCaps(&capMu, &caps, 1, 3*time.Second) {
+		t.Fatalf("no kill ack within 3s")
+	}
+
+	// Resume: send a Symbol="resume" kill_switch through the same hub.
+	if err := hub.SendKillSwitch(accountID, wire.KillSwitch{
+		Reason: wire.KillSwitchManualAdminAction, Scope: wire.KillSwitchScopeAll,
+		Symbol: wire.KillSwitchSymbolResume,
+	}); err != nil {
+		t.Fatalf("SendKillSwitch(resume): %v", err)
+	}
+	if !waitCaps(&capMu, &caps, 2, 3*time.Second) {
+		t.Fatalf("no resume ack within 3s")
+	}
+
+	// A fresh order is now accepted (latch lifted).
+	const postResumeCOID = "01HKE2ERESUMECOID00000001"
+	orders := []strategy.OrderIntent{{
+		Kind: strategy.OrderKindMacro, Side: strategy.OrderSideBuy,
+		OrderType: strategy.OrderTypeMarket, QuantityUSD: 1000,
+		ClientOrderID: postResumeCOID, ValidUntilMs: time.Now().UnixMilli() + 60_000,
+	}}
+	if err := hub.Dispatch(ctx, "01HKINSTANCE0000000000000A", accountID, "BTCUSDT", 50000.0, orders); err != nil {
+		t.Fatalf("hub.Dispatch: %v", err)
+	}
+	if !waitCaps(&capMu, &caps, 3, 3*time.Second) {
+		t.Fatalf("no post-resume trade ack within 3s (got %d caps)", len(caps))
+	}
+
+	capMu.Lock()
+	defer capMu.Unlock()
+	var tradeAck *wire.Ack
+	for _, c := range caps {
+		if c.t != wire.TypeAck {
+			continue
+		}
+		if a, _ := wire.DecodePayload[wire.Ack](c.env); a.ClientOrderID == postResumeCOID {
+			tradeAck = a
+		}
+	}
+	if tradeAck == nil {
+		t.Fatal("no ack for the post-resume trade_command")
+	}
+	if tradeAck.Status != wire.AckStatusAccepted {
+		t.Errorf("post-resume trade ack.status = %q, want accepted; reason=%q", tradeAck.Status, tradeAck.RejectReason)
+	}
+}
+
 func waitReady(hub *wshub.Hub, accountID string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

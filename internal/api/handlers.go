@@ -248,6 +248,11 @@ type Handlers struct {
 	// Hub-backed impl.
 	Killer InstanceKiller
 
+	// Resumer enables POST /instances/:instance_id/resume (kill_switch
+	// resume, §5.13 v2 — the inverse of Killer). Admin-only. Nil ⇒ the
+	// route isn't registered; cmd/saas wires a Hub-backed impl.
+	Resumer InstanceResumer
+
 	// Login collaborators. Both must be non-nil for /auth/login to be
 	// registered — tests that don't exercise login leave them nil.
 	Users  UserAuthenticator
@@ -364,6 +369,15 @@ func (h *Handlers) Register(r gin.IRouter) {
 			inst.POST("/:instance_id/kill", h.RequireAdmin, h.KillInstance)
 		} else {
 			inst.POST("/:instance_id/kill", h.KillInstance)
+		}
+	}
+
+	// Resume (§5.13 v2) — admin only, same gating pattern as kill.
+	if h.Resumer != nil {
+		if h.RequireAdmin != nil {
+			inst.POST("/:instance_id/resume", h.RequireAdmin, h.ResumeInstance)
+		} else {
+			inst.POST("/:instance_id/resume", h.ResumeInstance)
 		}
 	}
 }

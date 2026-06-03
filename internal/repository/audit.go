@@ -23,13 +23,17 @@ func (r *AuditRepo) Insert(ctx context.Context, e *store.AuditLog) error {
 	return r.db.WithContext(ctx).Create(e).Error
 }
 
-// LatestKill returns the most recent instance.kill audit event for an
-// account (subject "account:<id>"), or (nil, nil) when the account was
-// never killed. Powers the /live frozen banner (Option 3 step 4).
-func (r *AuditRepo) LatestKill(ctx context.Context, accountID string) (*store.AuditLog, error) {
+// LatestKillOrResume returns the most recent instance.kill OR
+// instance.resume audit event for an account (subject "account:<id>"), or
+// (nil, nil) when neither ever happened. Powers the /live frozen banner
+// (Option 3 step 4): the caller shows the banner only when the latest
+// event is a kill, so a resume (§5.13 v2) clears it.
+func (r *AuditRepo) LatestKillOrResume(ctx context.Context, accountID string) (*store.AuditLog, error) {
 	var row store.AuditLog
 	err := r.db.WithContext(ctx).
-		Where("action = ? AND subject = ?", store.AuditActionInstanceKill, "account:"+accountID).
+		Where("action IN ? AND subject = ?",
+			[]store.AuditAction{store.AuditActionInstanceKill, store.AuditActionInstanceResume},
+			"account:"+accountID).
 		Order("created_at DESC").
 		First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {

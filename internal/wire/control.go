@@ -19,9 +19,16 @@ const (
 	KillSwitchScopeSymbol KillSwitchScope = "symbol"
 )
 
+// KillSwitchSymbolResume is the resume sentinel (§5.13 v2): a KillSwitch
+// carrying Symbol=="resume" is an UN-freeze — the Agent lifts its frozen
+// latch instead of setting it. Resume rides the existing kill_switch
+// message rather than a new type, per the frozen protocol.
+const KillSwitchSymbolResume = "resume"
+
 // KillSwitch tells the Agent to cancel all open orders and refuse new
-// TradeCommands until the process is restarted (§5.13). Agent acks then
-// enters a frozen state.
+// TradeCommands until it is un-frozen (§5.13). Agent acks then enters a
+// frozen state. The inverse — Symbol==KillSwitchSymbolResume — lifts the
+// latch (v2 resume); v1's only un-freeze was a process restart.
 type KillSwitch struct {
 	Reason         KillSwitchReason `json:"reason"`
 	OperatorUserID string           `json:"operator_user_id"`

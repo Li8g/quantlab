@@ -16,7 +16,7 @@ type fakeKillReader struct {
 	err error
 }
 
-func (f *fakeKillReader) LatestKill(_ context.Context, _ string) (*store.AuditLog, error) {
+func (f *fakeKillReader) LatestKillOrResume(_ context.Context, _ string) (*store.AuditLog, error) {
 	return f.row, f.err
 }
 
@@ -72,6 +72,24 @@ func TestGetInstanceLive_KillStatus(t *testing.T) {
 		h := &Handlers{Instances: seed(), Kills: &fakeKillReader{row: nil}}
 		if ks := get(t, h).KillStatus; ks != nil {
 			t.Errorf("kill_status = %+v, want nil (never killed)", *ks)
+		}
+	})
+
+	// §5.13 v2: when the latest event is a resume, the agent is un-frozen,
+	// so the banner must clear even though a kill happened earlier.
+	t.Run("resumed account clears kill_status", func(t *testing.T) {
+		h := &Handlers{
+			Instances: seed(),
+			Kills: &fakeKillReader{row: &store.AuditLog{
+				CreatedAt: time.UnixMilli(1700000100000),
+				Actor:     "user:7",
+				Action:    store.AuditActionInstanceResume,
+				Subject:   "account:acct-1",
+				DataJSON:  []byte(`{"reason":"manual_admin_action","trigger":"manual"}`),
+			}},
+		}
+		if ks := get(t, h).KillStatus; ks != nil {
+			t.Errorf("kill_status = %+v, want nil (latest event is resume)", *ks)
 		}
 	})
 }

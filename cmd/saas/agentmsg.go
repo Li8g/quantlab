@@ -643,3 +643,14 @@ func (h *agentMessageHandler) maybeAutoFreeze(ctx context.Context, accountID str
 	recordKillAudit(ctx, h.auditor, h.logger, "system", accountID, ks,
 		map[string]any{"trigger": "auto", "max_drift_bps": maxBps})
 }
+
+// ClearDriftStreak resets the auto-freeze debounce counter for accountID,
+// lifting any killedSentinel so a subsequent sustained drift can re-arm
+// and re-fire maybeAutoFreeze. Called on resume (§5.13 v2): without it a
+// resumed account whose drift persists would never auto-freeze again until
+// one clean report happened to intervene, defeating the safety net.
+func (h *agentMessageHandler) ClearDriftStreak(accountID string) {
+	h.freezeMu.Lock()
+	delete(h.driftStreak, accountID)
+	h.freezeMu.Unlock()
+}

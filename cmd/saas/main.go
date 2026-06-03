@@ -339,6 +339,9 @@ func main() {
 		// Manual kill_switch (Option 3 step 3b): reverse-map instance→
 		// account + Hub.SendKillSwitch. Admin-gated via RequireAdmin above.
 		Killer: &hubInstanceKiller{instances: instanceRepo, hub: hub, audit: auditRepo, logger: slog.Default()},
+		// Resume (§5.13 v2): the inverse — lift the latch + re-arm
+		// auto-freeze (streaks: agentMsgs.ClearDriftStreak). Admin-gated.
+		Resumer: &hubInstanceResumer{instances: instanceRepo, hub: hub, audit: auditRepo, streaks: agentMsgs, logger: slog.Default()},
 		// Sudo-style login: viewer-default JWTs with the long TTL,
 		// admin JWTs auto-expire on JWT.AdminTTL (cfg default 10min).
 		Users:  userRepo,

@@ -28,6 +28,27 @@ func recordKillAudit(
 	ctx context.Context, sink auditSink, logger *slog.Logger,
 	actor, accountID string, ks wire.KillSwitch, extra map[string]any,
 ) {
+	recordKillSwitchAudit(ctx, sink, logger, store.AuditActionInstanceKill, actor, accountID, ks, extra)
+}
+
+// recordResumeAudit appends one instance.resume AuditLog event — the
+// inverse trail of a kill (§5.13 v2). Same shape as recordKillAudit; the
+// distinct action lets the /live banner reader tell "frozen now" from
+// "was frozen, since resumed" (see AuditRepo.LatestKillOrResume).
+func recordResumeAudit(
+	ctx context.Context, sink auditSink, logger *slog.Logger,
+	actor, accountID string, ks wire.KillSwitch, extra map[string]any,
+) {
+	recordKillSwitchAudit(ctx, sink, logger, store.AuditActionInstanceResume, actor, accountID, ks, extra)
+}
+
+// recordKillSwitchAudit is the shared writer for kill/resume audit rows.
+// Best-effort: a sink error is logged but never blocks the action — the
+// kill_switch has already been sent.
+func recordKillSwitchAudit(
+	ctx context.Context, sink auditSink, logger *slog.Logger,
+	action store.AuditAction, actor, accountID string, ks wire.KillSwitch, extra map[string]any,
+) {
 	if sink == nil {
 		return
 	}
@@ -42,12 +63,12 @@ func recordKillAudit(
 	blob, _ := json.Marshal(data)
 	e := &store.AuditLog{
 		Actor:    actor,
-		Action:   store.AuditActionInstanceKill,
+		Action:   action,
 		Subject:  fmt.Sprintf("account:%s", accountID),
 		DataJSON: blob,
 	}
 	if err := sink.Insert(ctx, e); err != nil && logger != nil {
 		logger.Error("kill_audit_insert_failed",
-			"account_id", accountID, "actor", actor, "err", err)
+			"account_id", accountID, "actor", actor, "action", string(action), "err", err)
 	}
 }
