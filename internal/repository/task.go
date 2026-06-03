@@ -173,6 +173,35 @@ func (r *EvolutionTaskRepo) MarkFailed(ctx context.Context, taskID, reason strin
 	return nil
 }
 
+// SweepOrphans resets every task still in a non-terminal state
+// (queued or running) to failed, stamping a restart reason. Run once at
+// startup before the HTTP server accepts traffic.
+//
+// Unlike import jobs — which a background worker re-picks from queued —
+// epoch tasks are spawned by a detached goroutine at request time and
+// have no resume path: a queued row whose goroutine never reached
+// MarkStarted, and a running row whose goroutine died mid-epoch, are
+// both orphaned by a process exit. Sweeping both closes the "task stuck
+// running forever" invariant the in-process WaitGroup can't (it dies
+// with the process). Returns the number of rows reset.
+func (r *EvolutionTaskRepo) SweepOrphans(ctx context.Context) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Model(&store.EvolutionTask{}).
+		Where("status IN ?", []resultpkg.TaskStatus{
+			resultpkg.TaskStatusQueued,
+			resultpkg.TaskStatusRunning,
+		}).
+		Updates(map[string]interface{}{
+			"status":         resultpkg.TaskStatusFailed,
+			"finished_at":    time.Now().UTC(),
+			"failure_reason": "interrupted by server restart",
+		})
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
 // buildEvolutionTask is the pure-function mapper from api request to
 // store row. Extracted so unit tests can pin column population
 // without a DB. RequestedTakerFeeBPS / RequestedSlippageBPS preserve

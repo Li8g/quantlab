@@ -184,7 +184,7 @@ Adapter.Evaluate 零 goroutine + 串行累加;`*rand.Rand` 不跨 goroutine。
 | ID | severity | file:line | 条款 | 状态 | 修法 |
 |---|---|---|---|---|---|
 | M-1 | minor | `engine.go:217` | §4 bounded 并行度 | ✅ 已修 | `numWorkers` 由 `runtime.NumCPU()` 改 `runtime.GOMAXPROCS(0)`：Go 1.25 cgroup-aware GOMAXPROCS 下，限额容器 `GOMAXPROCS < NumCPU` 会超订 P。 |
-| M-2 | minor | `internal/saas/epoch/service.go:202` | §4 goroutine owner+cancel / Appendix A 优雅关闭 | ⏳ backlog | `go s.run(...)` 全 detached、用 `context.Background()`、无 shutdown 取消路径、无运行登记表。SIGTERM 中途退出会留 DB 任务行卡 `running`(永不 MarkFailed)；内存 `mu` 重启即丢。修法:(a) 注入 shutdown ctx 让 `executeEpoch` 可取消,或 (b) 启动 sweep 把孤儿 `running` 行重置为 failed。与 Appendix A(阶段 7)重叠。 |
+| M-2 | minor | `internal/saas/epoch/service.go:202` | §4 goroutine owner+cancel / Appendix A 优雅关闭 | ✅ 已修 | `go s.run(...)` 此前全 detached、用 `context.Background()`、无 shutdown 取消路径、无运行登记表;SIGTERM 中途退出会留 DB 任务行卡 `running`(永不 MarkFailed)、内存 `mu` 重启即丢。修法 **(a)+(b) 都做**(纵深防御):(a) `Service` 加生命周期 `baseCtx`/`stop`(CancelFunc)/`wg`(WaitGroup),`run()` 改跑 `baseCtx`、`defer wg.Done`,新增 `Shutdown(ctx)` 取消+按 deadline 等 `wg.Wait`;终止态 `MarkFailed`/panic 恢复改用全新 5s detached ctx(baseCtx 取消后已不能写 DB);`CreateAndRunTask` 在 `go s.run` 前 `wg.Add(1)`。`main.go` 在 `srv.Shutdown` **之后**调 `svc.Shutdown`(HTTP 先排空,杜绝 `wg.Add` 与 `wg.Wait` 竞态)。引擎 `RunEpoch` 逐 gene 查 `ctx.Err()`(`engine.go:406`),取消亚秒级生效。(b) `EvolutionTaskRepo.SweepOrphans` 启动时把 `queued`+`running` 重置为 `failed`(比 import 版多扫 `queued`——epoch 任务无 poller 续跑),`main.go` 在 `ListenAndServe` 前调用,兜底 kill -9。回归测试:`TestService_Shutdown_CancelsBaseCtxAndReturns` + `TestService_Shutdown_RespectsDeadlineWhenEpochHangs`(均 DB-free)。 |
 
 观察(不立项):某 worker 出错不取消 ctx,兄弟 worker 仍排空剩余 jobs(浪费算力,非 bug);
 errgroup 可免费拿取消,价值低。
@@ -273,4 +273,4 @@ agent 有完整 8 步指数退避 + jitter(`agent/config.go:113`、`client.go:ne
   一次性首次披露(类 AWS secret),预期且必要,非泄漏。
 - **agent fatal 双日志**:`client.go:241 agent_fatal_auth` + `main.go:87 agent_exited` 各加不同上下文
   (前者标因、后者标进程退出),可接受。
-- **M-2(§7 重叠)**:`epoch/service.go:202` detached goroutine 无 shutdown 取消已于阶段 2 立项。
+- **M-2(§7 重叠)**:`epoch/service.go:202` detached goroutine 无 shutdown 取消已于阶段 2 立项,**已修**(见阶段 2 findings 表:baseCtx/wg/Shutdown + 启动 SweepOrphans)。

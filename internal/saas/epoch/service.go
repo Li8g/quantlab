@@ -132,6 +132,16 @@ type Service struct {
 	buildMeta      BuildMeta
 	defaults       Defaults
 
+	// baseCtx is the lifecycle context for detached epoch goroutines. It
+	// is NOT a request context — an epoch outlives the HTTP request that
+	// spawned it — so run() derives from baseCtx, never from the request.
+	// Shutdown cancels it (via stop) to abort in-flight epochs; wg tracks
+	// live run() goroutines so Shutdown can wait for them to stamp a
+	// terminal status before the process exits.
+	baseCtx context.Context
+	stop    context.CancelFunc
+	wg      sync.WaitGroup
+
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex
 }
@@ -150,6 +160,7 @@ func New(
 	buildMeta BuildMeta,
 	defaults Defaults,
 ) *Service {
+	baseCtx, stop := context.WithCancel(context.Background())
 	return &Service{
 		db:             db,
 		taskRepo:       taskRepo,
@@ -159,7 +170,28 @@ func New(
 		registry:       registry,
 		buildMeta:      buildMeta,
 		defaults:       defaults,
+		baseCtx:        baseCtx,
+		stop:           stop,
 		locks:          map[string]*sync.Mutex{},
+	}
+}
+
+// Shutdown signals in-flight epochs to abort (by cancelling baseCtx) and
+// waits for their goroutines to stamp a terminal status, bounded by ctx's
+// deadline. Epochs that don't drain in time are abandoned; the startup
+// SweepOrphans on the next boot resets any task row left running. Call
+// once, after the HTTP server has stopped accepting requests (so no new
+// run() goroutine races wg.Add against wg.Wait).
+func (s *Service) Shutdown(ctx context.Context) {
+	s.stop()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -199,12 +231,14 @@ func (s *Service) CreateAndRunTask(
 		return "", fmt.Errorf("epoch: create task row: %w", err)
 	}
 
+	s.wg.Add(1)
 	go s.run(taskID, epochSeed, req, mu)
 	return taskID, nil
 }
 
-// run executes the Epoch on a detached goroutine. The lock is held for
-// the full duration and released by defer.
+// run executes the Epoch on a detached goroutine. The pipeline runs on
+// s.baseCtx so Shutdown can abort it; the per-tuple lock is held for the
+// full duration and released by defer, and wg.Done lets Shutdown wait.
 //
 // All errors funnel into MarkFailed with a human-readable reason. The
 // HTTP status endpoint surfaces FailureReason verbatim, so callers can
@@ -215,23 +249,32 @@ func (s *Service) run(
 	req api.CreateEvolutionTaskRequest,
 	mu *sync.Mutex,
 ) {
+	defer s.wg.Done()
 	defer mu.Unlock()
 
-	bgCtx := context.Background()
+	// Terminal status writes must survive a shutdown-cancelled baseCtx:
+	// when the epoch aborts *because* baseCtx was cancelled, baseCtx is
+	// no longer usable to stamp the failure. Use a fresh detached context
+	// with a short deadline for every Mark* on the failure/panic paths.
+	markFailed := func(reason string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.taskRepo.MarkFailed(ctx, taskID, reason)
+	}
+
 	defer func() {
 		if rec := recover(); rec != nil {
-			_ = s.taskRepo.MarkFailed(bgCtx, taskID, fmt.Sprintf("panic: %v", rec))
+			markFailed(fmt.Sprintf("panic: %v", rec))
 		}
 	}()
 
-	if err := s.taskRepo.MarkStarted(bgCtx, taskID); err != nil {
-		// Mark-failed will fail the same way; nothing better to do.
-		_ = s.taskRepo.MarkFailed(bgCtx, taskID, fmt.Sprintf("mark started: %v", err))
+	if err := s.taskRepo.MarkStarted(s.baseCtx, taskID); err != nil {
+		markFailed(fmt.Sprintf("mark started: %v", err))
 		return
 	}
 
-	if err := s.executeEpoch(bgCtx, taskID, epochSeed, req); err != nil {
-		_ = s.taskRepo.MarkFailed(bgCtx, taskID, err.Error())
+	if err := s.executeEpoch(s.baseCtx, taskID, epochSeed, req); err != nil {
+		markFailed(err.Error())
 		return
 	}
 }

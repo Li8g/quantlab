@@ -238,6 +238,17 @@ func main() {
 		epoch.DefaultDefaults(),
 	)
 
+	// Reset any epoch task left queued/running by a previous process exit
+	// to failed before we accept traffic — detached epoch goroutines have
+	// no resume path, so an orphaned row would otherwise stay running
+	// forever. Runs before srv.ListenAndServe so it can't sweep a task a
+	// fresh request just created.
+	if n, err := taskRepo.SweepOrphans(ctx); err != nil {
+		log.Printf("saas: epoch orphan sweep: %v", err)
+	} else if n > 0 {
+		log.Printf("saas: swept %d orphaned epoch task(s) → failed", n)
+	}
+
 	// Phase 6.3: auth + instance lifecycle + scheduler.
 	authSvc, err := auth.NewService(cfg.JWT)
 	if err != nil {
@@ -409,4 +420,10 @@ func main() {
 	if err := wsSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("saas: ws shutdown: %v", err)
 	}
+
+	// HTTP is drained (no new CreateAndRunTask can race wg.Add against
+	// wg.Wait), so it's safe to abort + wait for in-flight epochs. Any
+	// that don't finish within shutdownCtx are abandoned and swept on the
+	// next boot.
+	svc.Shutdown(shutdownCtx)
 }

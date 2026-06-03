@@ -1,8 +1,10 @@
 package epoch
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"quantlab/internal/api"
 	"quantlab/internal/fitness"
@@ -96,4 +98,45 @@ func TestService_lockFor_TryLockBehaviour(t *testing.T) {
 		t.Error("TryLock after Unlock should succeed")
 	}
 	mu.Unlock()
+}
+
+// Shutdown with no in-flight epochs must cancel baseCtx (so any future
+// run would abort) and return promptly.
+func TestService_Shutdown_CancelsBaseCtxAndReturns(t *testing.T) {
+	baseCtx, stop := context.WithCancel(context.Background())
+	s := &Service{baseCtx: baseCtx, stop: stop, locks: map[string]*sync.Mutex{}}
+	if s.baseCtx.Err() != nil {
+		t.Fatal("baseCtx must not be cancelled before Shutdown")
+	}
+
+	done := make(chan struct{})
+	go func() { s.Shutdown(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not return with no in-flight epochs")
+	}
+	if s.baseCtx.Err() == nil {
+		t.Error("Shutdown must cancel baseCtx")
+	}
+}
+
+// Shutdown must honor its ctx deadline and return even when an epoch
+// goroutine never finishes — the startup sweep is the backstop for the
+// abandoned task row.
+func TestService_Shutdown_RespectsDeadlineWhenEpochHangs(t *testing.T) {
+	baseCtx, stop := context.WithCancel(context.Background())
+	s := &Service{baseCtx: baseCtx, stop: stop, locks: map[string]*sync.Mutex{}}
+	s.wg.Add(1) // simulate a run() goroutine that never reaches wg.Done
+	defer s.wg.Done()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { s.Shutdown(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown ignored its deadline while an epoch was in-flight")
+	}
 }
