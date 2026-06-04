@@ -1,9 +1,15 @@
 # Schema migrations (goose)
 
-Versioned SQL migrations for the **production** schema (`app_role=saas`). Applied
-by `store.RunMigrations` (embedded via `//go:embed`, see `../migrate.go`); for
-dev/lab `store.NewDB` still uses GORM `AutoMigrate`. Decision record:
-`docs/saas-schema-migration-draft.md`.
+Versioned SQL migrations for the **production-faithful** schema. Applied by
+`store.RunMigrations` (embedded via `//go:embed`, see `../migrate.go`). Decision
+record: `docs/saas-schema-migration-draft.md`.
+
+`store.NewDB` picks goose vs `AutoMigrate` from `database.migration_mode`, a knob
+**independent of `app_role`** (which drives runtime behavior — import worker, gin
+mode — not the schema backend). Unset → derived from role: `saas`→goose,
+`lab`/`dev`→AutoMigrate. A lab/backtest cluster or paper-trading node sets
+`migration_mode: goose` to run this exact schema without `app_role=saas`'s other
+side effects; `saas` may not opt down to AutoMigrate.
 
 ## The two source-of-truth rule
 

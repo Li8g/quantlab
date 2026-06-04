@@ -55,6 +55,42 @@ type DatabaseConfig struct {
 	SSLMode      string `yaml:"ssl_mode"` // disable / require / verify-full
 	MaxOpenConns int    `yaml:"max_open_conns"`
 	MaxIdleConns int    `yaml:"max_idle_conns"`
+
+	// MigrationMode selects how store.NewDB provisions the schema,
+	// independently of AppRole. AppRole drives runtime behavior splits
+	// (import worker, gin mode, JWT length floor); the schema backend is a
+	// separate axis. Decoupling them lets a lab/backtest cluster or
+	// paper-trading node run the production-faithful goose schema without
+	// inheriting saas's other side effects.
+	//
+	// Values (see MigrationMode* constants):
+	//   "goose"       — apply versioned goose migrations (prod schema)
+	//   "automigrate" — GORM AutoMigrate + raw DDL (dev fast-iteration)
+	//   ""            — derive from AppRole: saas→goose, lab/dev→automigrate
+	//
+	// app_role=saas may not use "automigrate" (铁律 4); Validate rejects it.
+	// [INVENTED v1] field name + enum values.
+	MigrationMode string `yaml:"migration_mode"`
+}
+
+// Migration backend identifiers for DatabaseConfig.MigrationMode.
+const (
+	MigrationModeGoose       = "goose"
+	MigrationModeAutoMigrate = "automigrate"
+)
+
+// ResolveMigrationMode returns the effective schema-provisioning backend,
+// applying the AppRole-derived default when Database.MigrationMode is unset.
+// store.NewDB branches on this (not on AppRole directly) so the migration
+// engine is chosen independently of the runtime role.
+func (c *Config) ResolveMigrationMode() string {
+	if c.Database.MigrationMode != "" {
+		return c.Database.MigrationMode
+	}
+	if c.AppRole == AppRoleSaaS {
+		return MigrationModeGoose
+	}
+	return MigrationModeAutoMigrate
 }
 
 // DSN renders a libpq-style connection string for gorm.io/driver/postgres.
@@ -206,6 +242,17 @@ func (c *Config) Validate() error {
 	if c.AppRole == AppRoleSaaS && len(c.JWT.Secret) < jwtSecretMinBytesSaaS {
 		return fmt.Errorf("jwt.secret must be at least %d bytes when app_role=saas (HS256/RFC 7518); got %d",
 			jwtSecretMinBytesSaaS, len(c.JWT.Secret))
+	}
+	switch c.Database.MigrationMode {
+	case "", MigrationModeGoose, MigrationModeAutoMigrate:
+	default:
+		return fmt.Errorf("database.migration_mode must be %q or %q (or empty to derive from app_role); got %q",
+			MigrationModeGoose, MigrationModeAutoMigrate, c.Database.MigrationMode)
+	}
+	// 铁律 4: prod schema is goose-owned; AutoMigrate has no read-only mode
+	// and would silently mutate prod. saas may not opt down to automigrate.
+	if c.AppRole == AppRoleSaaS && c.Database.MigrationMode == MigrationModeAutoMigrate {
+		return errors.New("app_role=saas cannot use database.migration_mode=automigrate (prod schema is goose-owned; 铁律 4)")
 	}
 	return nil
 }
