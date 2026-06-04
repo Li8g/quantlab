@@ -107,6 +107,92 @@ jwt:
 	}
 }
 
+func TestResolveMigrationMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		role     AppRole
+		explicit string
+		want     string
+	}{
+		{"saas default goose", AppRoleSaaS, "", MigrationModeGoose},
+		{"lab default automigrate", AppRoleLab, "", MigrationModeAutoMigrate},
+		{"dev default automigrate", AppRoleDev, "", MigrationModeAutoMigrate},
+		{"lab explicit goose", AppRoleLab, MigrationModeGoose, MigrationModeGoose},
+		{"dev explicit goose", AppRoleDev, MigrationModeGoose, MigrationModeGoose},
+		{"explicit overrides saas default", AppRoleSaaS, MigrationModeGoose, MigrationModeGoose},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{AppRole: tc.role}
+			c.Database.MigrationMode = tc.explicit
+			if got := c.ResolveMigrationMode(); got != tc.want {
+				t.Errorf("ResolveMigrationMode()=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_RejectsBadMigrationMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+app_role: lab
+database:
+  host: localhost
+  database: q
+  migration_mode: gorm
+jwt:
+  secret: x
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("expected error for migration_mode=gorm, got nil")
+	}
+}
+
+func TestLoad_RejectsSaaSWithAutoMigrate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+app_role: saas
+database:
+  host: localhost
+  database: q
+  migration_mode: automigrate
+jwt:
+  secret: a-secret-of-at-least-thirty-two-bytes-long
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("expected error for app_role=saas + migration_mode=automigrate, got nil")
+	}
+}
+
+func TestLoad_AcceptsLabWithGoose(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+app_role: lab
+database:
+  host: localhost
+  database: q
+  migration_mode: goose
+jwt:
+  secret: x
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("lab + migration_mode=goose should load, got: %v", err)
+	}
+	if got := cfg.ResolveMigrationMode(); got != MigrationModeGoose {
+		t.Errorf("ResolveMigrationMode()=%q, want goose", got)
+	}
+}
+
 func TestDatabaseDSN(t *testing.T) {
 	d := DatabaseConfig{
 		Host: "h", Port: 5432, User: "u", Password: "p", Database: "db", SSLMode: "disable",

@@ -25,13 +25,16 @@ import (
 // is left to a deploy-time policy script per docs/agents/devops-expert.md;
 // Phase 13 will add it.
 //
-// 铁律 4 (enforced): AutoMigrate is for dev/lab only. For app_role=saas
-// (production) the schema is owned by versioned goose migrations
-// (internal/saas/store/migrations) — see docs/saas-schema-migration-draft.md.
-// AutoMigrate has no read-only mode, so leaving it in the prod path would
-// silently mutate the schema; it is therefore removed from the saas path
-// entirely (not kept as a "sanity check"). The drift between the goose
-// baseline and AutoMigrate's output is pinned by migrate_drift_test.go.
+// 铁律 4 (enforced): AutoMigrate has no read-only mode, so leaving it in the
+// prod path would silently mutate the schema. The schema backend is chosen by
+// cfg.ResolveMigrationMode() — goose (versioned migrations,
+// internal/saas/store/migrations) vs automigrate (GORM + raw DDL below) — a
+// separate axis from AppRole's runtime splits. app_role=saas always resolves
+// to goose and config.Validate forbids it opting down to automigrate; a
+// lab/backtest or paper-trading node can set migration_mode=goose to run the
+// production-faithful schema without inheriting saas's other behaviors. The
+// drift between the goose baseline and AutoMigrate's output is pinned by
+// migrate_drift_test.go. See docs/saas-schema-migration-draft.md.
 func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 	if cfg == nil {
 		return nil, errors.New("store.NewDB: cfg is nil")
@@ -69,11 +72,11 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
 	}
 
-	// Production: apply versioned goose migrations and return. The
+	// goose backend: apply versioned migrations and return. The
 	// CREATE EXTENSION + AutoMigrate + raw hypertable/partial-index DDL below
-	// is the dev/lab fast-iteration path only; every bit of it is reproduced
-	// in migrations/00001_baseline.sql.
-	if cfg.AppRole == config.AppRoleSaaS {
+	// is the automigrate fast-iteration path only; every bit of it is
+	// reproduced in migrations/00001_baseline.sql.
+	if cfg.ResolveMigrationMode() == config.MigrationModeGoose {
 		if err := runGooseMigrations(ctx, cfg); err != nil {
 			return nil, err
 		}

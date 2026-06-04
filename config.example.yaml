@@ -16,6 +16,14 @@ database:
   ssl_mode: disable
   max_open_conns: 50
   max_idle_conns: 10
+  # migration_mode selects the schema backend, independent of app_role:
+  #   goose       — versioned migrations (production-faithful schema)
+  #   automigrate — GORM AutoMigrate + raw DDL (dev fast-iteration)
+  #   (unset)     — derive from app_role: saas→goose, lab/dev→automigrate
+  # Set this to `goose` on a lab/backtest cluster or paper-trading node to
+  # run the prod schema without app_role=saas's other behaviors. app_role=saas
+  # may not set automigrate (prod schema is goose-owned).
+  migration_mode: ""
 
 # Redis publishes Agent online state (key `agent:{accountID}:status`)
 # per docs/saas-ws-protocol-v1.md §7.2. Empty addr skips the startup
