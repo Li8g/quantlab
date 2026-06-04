@@ -108,3 +108,173 @@ func TestTradeRepo_ListExecutionsForOrders(t *testing.T) {
 		t.Errorf("co-B fills = %d, want 1", byOrder["ti-co-B"])
 	}
 }
+
+// openTradeTestDB is the shared harness for the ledger-writeback (③/①)
+// integration tests below.
+func openTradeTestDB(t *testing.T) (*TradeRepo, context.Context) {
+	t.Helper()
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		t.Fatalf("load config %s: %v", *configPath, err)
+	}
+	db, err := store.NewDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, _ := db.DB()
+		if sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	})
+	cleanup := func() {
+		_ = db.Where("client_order_id LIKE ?", "nx-%").Delete(&store.SpotExecution{}).Error
+		_ = db.Where("client_order_id LIKE ?", "nx-%").Delete(&store.TradeRecord{}).Error
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	return NewTradeRepo(db), context.Background()
+}
+
+// TestTradeRepo_NewExecutionsForInstance proves the ③ writeback query:
+// it scopes fills to one instance (join via client_order_id), projects the
+// order Side, honors the `id > sinceID` watermark, and orders by id ASC.
+func TestTradeRepo_NewExecutionsForInstance(t *testing.T) {
+	repo, ctx := openTradeTestDB(t)
+
+	orders := []store.TradeRecord{
+		{ClientOrderID: "nx-co-A", InstanceID: "nx-inst-1", Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 100, NowMsAtSaaS: 1, ValidUntilMs: 2, Status: store.TradeStatusFilled},
+		{ClientOrderID: "nx-co-B", InstanceID: "nx-inst-1", Symbol: "BTCUSDT", Side: "sell", OrderType: "market", QuantityUSD: 50, NowMsAtSaaS: 1, ValidUntilMs: 2, Status: store.TradeStatusFilled},
+		{ClientOrderID: "nx-co-Z", InstanceID: "nx-inst-2", Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 10, NowMsAtSaaS: 1, ValidUntilMs: 2, Status: store.TradeStatusFilled},
+	}
+	for i := range orders {
+		if err := repo.InsertTradeRecord(ctx, &orders[i]); err != nil {
+			t.Fatalf("InsertTradeRecord %s: %v", orders[i].ClientOrderID, err)
+		}
+	}
+	// FillPrice keys each fill to its side so we can assert the projection.
+	fills := []store.SpotExecution{
+		{ClientOrderID: "nx-co-A", ExchangeOrderID: "nx-ex-A", FillQuantity: 0.1, FillPrice: 60000, FillFeeAsset: "USDT", FillFeeAmount: 0.1, FilledAtExchangeMs: 100},
+		{ClientOrderID: "nx-co-B", ExchangeOrderID: "nx-ex-B", FillQuantity: 0.2, FillPrice: 61000, FillFeeAsset: "USDT", FillFeeAmount: 0.1, FilledAtExchangeMs: 200},
+		{ClientOrderID: "nx-co-Z", ExchangeOrderID: "nx-ex-Z", FillQuantity: 0.9, FillPrice: 59000, FillFeeAsset: "USDT", FillFeeAmount: 0.4, FilledAtExchangeMs: 50},
+	}
+	for i := range fills {
+		if err := repo.InsertSpotExecution(ctx, &fills[i]); err != nil {
+			t.Fatalf("InsertSpotExecution %s: %v", fills[i].ExchangeOrderID, err)
+		}
+	}
+
+	// sinceID=0 → both inst-1 fills, none from inst-2, ordered by id ASC.
+	got, err := repo.NewExecutionsForInstance(ctx, "nx-inst-1", 0)
+	if err != nil {
+		t.Fatalf("NewExecutionsForInstance: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (inst-1 only); got %+v", len(got), got)
+	}
+	if got[0].ID >= got[1].ID {
+		t.Errorf("not ordered by id ASC: %d then %d", got[0].ID, got[1].ID)
+	}
+	for _, f := range got {
+		switch f.FillPrice {
+		case 60000:
+			if f.Side != "buy" {
+				t.Errorf("fill@60000 Side = %q, want buy", f.Side)
+			}
+		case 61000:
+			if f.Side != "sell" {
+				t.Errorf("fill@61000 Side = %q, want sell", f.Side)
+			}
+		default:
+			t.Errorf("unexpected fill price %v (inst-2 leaked?)", f.FillPrice)
+		}
+	}
+
+	// Watermark: querying since the first row's id returns only the second.
+	got2, err := repo.NewExecutionsForInstance(ctx, "nx-inst-1", got[0].ID)
+	if err != nil {
+		t.Fatalf("NewExecutionsForInstance(watermark): %v", err)
+	}
+	if len(got2) != 1 || got2[0].ID != got[1].ID {
+		t.Fatalf("watermark filter wrong: got %+v, want only id %d", got2, got[1].ID)
+	}
+}
+
+// TestTradeRepo_MaxExecutionIDForInstance proves the genesis watermark anchor:
+// the max exec id for an instance, and 0 for an instance with no fills.
+func TestTradeRepo_MaxExecutionIDForInstance(t *testing.T) {
+	repo, ctx := openTradeTestDB(t)
+
+	if err := repo.InsertTradeRecord(ctx, &store.TradeRecord{ClientOrderID: "nx-co-A", InstanceID: "nx-inst-1", Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 1, NowMsAtSaaS: 1, ValidUntilMs: 2, Status: store.TradeStatusFilled}); err != nil {
+		t.Fatalf("InsertTradeRecord: %v", err)
+	}
+	fills := []store.SpotExecution{
+		{ClientOrderID: "nx-co-A", ExchangeOrderID: "nx-ex-1", FillQuantity: 0.1, FillPrice: 60000, FillFeeAsset: "USDT", FillFeeAmount: 0.1, FilledAtExchangeMs: 100},
+		{ClientOrderID: "nx-co-A", ExchangeOrderID: "nx-ex-2", FillQuantity: 0.1, FillPrice: 60000, FillFeeAsset: "USDT", FillFeeAmount: 0.1, FilledAtExchangeMs: 200},
+	}
+	for i := range fills {
+		if err := repo.InsertSpotExecution(ctx, &fills[i]); err != nil {
+			t.Fatalf("InsertSpotExecution: %v", err)
+		}
+	}
+
+	all, err := repo.NewExecutionsForInstance(ctx, "nx-inst-1", 0)
+	if err != nil {
+		t.Fatalf("NewExecutionsForInstance: %v", err)
+	}
+	wantMax := all[len(all)-1].ID
+
+	maxID, err := repo.MaxExecutionIDForInstance(ctx, "nx-inst-1")
+	if err != nil {
+		t.Fatalf("MaxExecutionIDForInstance: %v", err)
+	}
+	if maxID != wantMax {
+		t.Errorf("max id = %d, want %d", maxID, wantMax)
+	}
+
+	zero, err := repo.MaxExecutionIDForInstance(ctx, "nx-inst-none")
+	if err != nil {
+		t.Fatalf("MaxExecutionIDForInstance(empty): %v", err)
+	}
+	if zero != 0 {
+		t.Errorf("max id for instance with no fills = %d, want 0", zero)
+	}
+}
+
+// TestTradeRepo_MarkPartialIfPending proves the ① guard: a pending order
+// advances to partial_filled; a non-pending order is left untouched.
+func TestTradeRepo_MarkPartialIfPending(t *testing.T) {
+	repo, ctx := openTradeTestDB(t)
+
+	orders := []store.TradeRecord{
+		{ClientOrderID: "nx-co-pending", InstanceID: "nx-inst-1", Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 1, NowMsAtSaaS: 1, ValidUntilMs: 2, Status: store.TradeStatusPending},
+		{ClientOrderID: "nx-co-filled", InstanceID: "nx-inst-1", Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 1, NowMsAtSaaS: 1, ValidUntilMs: 2, Status: store.TradeStatusFilled},
+	}
+	for i := range orders {
+		if err := repo.InsertTradeRecord(ctx, &orders[i]); err != nil {
+			t.Fatalf("InsertTradeRecord %s: %v", orders[i].ClientOrderID, err)
+		}
+	}
+
+	if err := repo.MarkPartialIfPending(ctx, "nx-co-pending"); err != nil {
+		t.Fatalf("MarkPartialIfPending(pending): %v", err)
+	}
+	if err := repo.MarkPartialIfPending(ctx, "nx-co-filled"); err != nil {
+		t.Fatalf("MarkPartialIfPending(filled): %v", err)
+	}
+
+	rows, err := repo.ListByInstance(ctx, "nx-inst-1", 0)
+	if err != nil {
+		t.Fatalf("ListByInstance: %v", err)
+	}
+	got := map[string]store.TradeStatus{}
+	for _, r := range rows {
+		got[r.ClientOrderID] = r.Status
+	}
+	if got["nx-co-pending"] != store.TradeStatusPartialFilled {
+		t.Errorf("pending order status = %q, want partial_filled", got["nx-co-pending"])
+	}
+	if got["nx-co-filled"] != store.TradeStatusFilled {
+		t.Errorf("filled order status = %q, want filled (untouched)", got["nx-co-filled"])
+	}
+}

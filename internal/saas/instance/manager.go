@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,16 @@ type InstanceStore interface {
 type PortfolioStore interface {
 	Latest(ctx context.Context, instanceID string) (*store.PortfolioState, error)
 	Append(ctx context.Context, ps *store.PortfolioState) error
+}
+
+// ExecutionStore supplies confirmed exchange fills not yet folded into the
+// ledger. The Tick reads fills with ID beyond the portfolio's watermark and
+// applies them to the balances so the strategy sees its real position next
+// cycle (③ — ledger absorbs fills). Read-only here: the Tick remains the
+// sole writer of PortfolioState, so this is race-free against the
+// fill-receive path that inserts the executions.
+type ExecutionStore interface {
+	NewExecutionsForInstance(ctx context.Context, instanceID string, sinceID uint) ([]store.InstanceFill, error)
 }
 
 type RuntimeStore interface {
@@ -112,6 +123,7 @@ func (d *LogDispatcher) Dispatch(_ context.Context, instanceID, accountID, symbo
 type Manager struct {
 	instances  InstanceStore
 	portfolios PortfolioStore
+	executions ExecutionStore
 	runtimes   RuntimeStore
 	bars       BarLoader
 	resolver   StrategyResolver
@@ -129,6 +141,7 @@ type Manager struct {
 func New(
 	instances InstanceStore,
 	portfolios PortfolioStore,
+	executions ExecutionStore,
 	runtimes RuntimeStore,
 	bars BarLoader,
 	resolver StrategyResolver,
@@ -145,6 +158,7 @@ func New(
 	return &Manager{
 		instances:  instances,
 		portfolios: portfolios,
+		executions: executions,
 		runtimes:   runtimes,
 		bars:       bars,
 		resolver:   resolver,
@@ -259,6 +273,7 @@ func (m *Manager) Tick(ctx context.Context, inst store.StrategyInstance) error {
 
 	portfolio := strategy.PortfolioSnapshot{}
 	lastBarTime := int64(0)
+	lastAppliedExecID := uint(0)
 	if ps != nil {
 		portfolio = strategy.PortfolioSnapshot{
 			DeadBTC:       ps.DeadBTC,
@@ -267,6 +282,23 @@ func (m *Manager) Tick(ctx context.Context, inst store.StrategyInstance) error {
 			USDT:          ps.USDT,
 		}
 		lastBarTime = ps.LastProcessedBarTime
+		lastAppliedExecID = ps.LastAppliedExecID
+	}
+
+	// Fold confirmed exchange fills into the ledger before Step() so the
+	// strategy decides against its REAL position, not a stale one (③). Without
+	// this the FloatBTC/USDT balances never move off the genesis seed, the
+	// strategy over-trades, and reconciliation auto-freezes the agent within
+	// two reports. Single-writer: only the Tick writes PortfolioState, so
+	// reading the executions here cannot race the fill-receive path.
+	base := strings.TrimSuffix(inst.Pair, "USDT")
+	fills, err := m.executions.NewExecutionsForInstance(ctx, inst.InstanceID, lastAppliedExecID)
+	if err != nil {
+		return fmt.Errorf("tick: load fills: %w", err)
+	}
+	portfolio, appliedExecID := applyFills(portfolio, fills, base)
+	if appliedExecID > lastAppliedExecID {
+		lastAppliedExecID = appliedExecID
 	}
 
 	var stateBlob json.RawMessage
@@ -317,6 +349,7 @@ func (m *Manager) Tick(ctx context.Context, inst store.StrategyInstance) error {
 		ColdSealedBTC:        nextPortfolio.ColdSealedBTC,
 		USDT:                 nextPortfolio.USDT,
 		LastProcessedBarTime: nextLastBarTime,
+		LastAppliedExecID:    lastAppliedExecID,
 	}
 	if err := m.portfolios.Append(ctx, nextPS); err != nil {
 		return fmt.Errorf("tick: append portfolio: %w", err)
@@ -346,6 +379,43 @@ func (m *Manager) Tick(ctx context.Context, inst store.StrategyInstance) error {
 	}
 
 	return nil
+}
+
+// applyFills folds confirmed exchange fills into the portfolio's active
+// trading float, returning the updated snapshot and the highest exec ID seen
+// (the new ledger watermark). A buy adds base and spends USDT; a sell removes
+// base and adds USDT; the fee is deducted from whichever asset it was charged
+// in. Fills always land in FloatBTC (the active bucket); DeadBTC/ColdSealedBTC
+// move only via ReleaseIntents. A fill in a fee asset other than base or USDT
+// (e.g. BNB) is untracked. An unknown Side is skipped but still advances the
+// watermark, so a malformed row can't wedge the ledger or be re-applied
+// forever. Pure (no DB/clock) for unit testing. [INVENTED v1: FloatBTC bucket,
+// fee handling, untracked non-base/USDT fee asset, skip-on-unknown-side]
+func applyFills(p strategy.PortfolioSnapshot, fills []store.InstanceFill, base string) (strategy.PortfolioSnapshot, uint) {
+	maxID := uint(0)
+	for _, f := range fills {
+		if f.ID > maxID {
+			maxID = f.ID
+		}
+		notional := f.FillQuantity * f.FillPrice
+		switch f.Side {
+		case "buy":
+			p.FloatBTC += f.FillQuantity
+			p.USDT -= notional
+		case "sell":
+			p.FloatBTC -= f.FillQuantity
+			p.USDT += notional
+		default:
+			continue // unknown side — don't corrupt balances
+		}
+		switch f.FillFeeAsset {
+		case base:
+			p.FloatBTC -= f.FillFeeAmount
+		case "USDT":
+			p.USDT -= f.FillFeeAmount
+		}
+	}
+	return p, maxID
 }
 
 func splitBars(bars []domain.Bar) (closes []float64, ts []int64) {

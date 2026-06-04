@@ -72,9 +72,9 @@ func TestBuildSpotExecution_DecimalParsing(t *testing.T) {
 		FilledAtExchangeMs:   1714000000000,
 		ActualSlippageBps:    2.5,
 	}
-	ex, err := buildSpotExecution(ou, f)
+	ex, err := buildSpotExecutionFrom(ou.ClientOrderID, ou.ExchangeOrderID, f)
 	if err != nil {
-		t.Fatalf("buildSpotExecution: %v", err)
+		t.Fatalf("buildSpotExecutionFrom: %v", err)
 	}
 	if ex.ClientOrderID != "01HKCOID000000000000000001" {
 		t.Errorf("ClientOrderID = %q", ex.ClientOrderID)
@@ -100,8 +100,7 @@ func TestBuildSpotExecution_DecimalParsing(t *testing.T) {
 }
 
 func TestBuildSpotExecution_BadDecimal(t *testing.T) {
-	ou := &wire.OrderUpdate{ClientOrderID: "x"}
-	_, err := buildSpotExecution(ou, wire.Fill{
+	_, err := buildSpotExecutionFrom("x", "", wire.Fill{
 		FillQuantityDecimal:  "not-a-number",
 		FillPriceDecimal:     "1",
 		FillFeeAmountDecimal: "0",

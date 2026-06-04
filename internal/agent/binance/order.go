@@ -36,12 +36,15 @@ type rawOrderResponse struct {
 
 // rawFill is one entry in rawOrderResponse.Fills. Binance does not
 // include a per-fill timestamp in the order response — all fills
-// inherit transactTime.
+// inherit transactTime — but it DOES carry a per-fill tradeId, which is
+// the canonical dedup key (multiple fills of one sweep share transactTime,
+// so the SaaS side must dedup on tradeId, not ms).
 type rawFill struct {
 	Price           string `json:"price"`
 	Qty             string `json:"qty"`
 	Commission      string `json:"commission"`
 	CommissionAsset string `json:"commissionAsset"`
+	TradeID         int64  `json:"tradeId"`
 }
 
 // SubmitMarket places a MARKET order on Binance Spot and returns the
@@ -184,6 +187,7 @@ func decodeFills(prefix string, raw []rawFill, transactTime int64) ([]agent.Exch
 			FillFeeAsset:       f.CommissionAsset,
 			FillFeeAmount:      fillFee,
 			FilledAtExchangeMs: transactTime,
+			TradeID:            f.TradeID,
 		})
 	}
 	return fills, nil

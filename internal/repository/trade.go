@@ -77,9 +77,11 @@ func (r *TradeRepo) ListByInstance(ctx context.Context, instanceID string, limit
 }
 
 // InsertSpotExecution appends one fill row. SpotExecution has no unique
-// index on (client_order_id, filled_at_exchange_ms) — duplicate Fills
-// on retried OrderUpdate frames are deduplicated at the caller via
-// msg_id replay protection (envelope-level).
+// index on (client_order_id, filled_at_exchange_ms): both fill channels
+// (order_update and delta_report) dedup at the caller via ExecutionExists
+// before inserting, since the exchange event stream is at-least-once and a
+// redelivered fill rides a fresh envelope msg_id that envelope-level replay
+// protection can't catch (see agentmsg.insertFillIfNew).
 func (r *TradeRepo) InsertSpotExecution(ctx context.Context, ex *store.SpotExecution) error {
 	if ex == nil {
 		return errors.New("repository.TradeRepo.InsertSpotExecution: nil execution")
@@ -90,13 +92,32 @@ func (r *TradeRepo) InsertSpotExecution(ctx context.Context, ex *store.SpotExecu
 	return r.db.WithContext(ctx).Create(ex).Error
 }
 
+// ExecutionExistsByTrade reports whether a fill with this (client_order_id,
+// trade_id) is already persisted. This is the canonical dedup key when the
+// exchange surfaces a per-trade id: it distinguishes the genuine multi-level
+// fills of one market sweep (which share filled_at_exchange_ms) while still
+// catching the same trade replayed across the order_update + delta_report
+// channels or by the at-least-once event stream. Callers use ExecutionExists
+// (the ms key) only as a fallback when trade_id is absent (MockExchange).
+func (r *TradeRepo) ExecutionExistsByTrade(ctx context.Context, clientOrderID string, tradeID int64) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&store.SpotExecution{}).
+		Where("client_order_id = ? AND trade_id = ?", clientOrderID, tradeID).
+		Limit(1).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // ExecutionExists reports whether a fill with this (client_order_id,
-// filled_at_exchange_ms) is already persisted. delta_report fills are a
-// fallback channel redundant with order_update (§5.11); the hot path
-// dedups via envelope msg_id replay protection, but delta_report fills
-// arrive on a different envelope, so they need content-level dedup before
-// insert to avoid double-counting. Cheap SELECT on the low-freq (~60s)
-// reconciliation path.
+// filled_at_exchange_ms) is already persisted. Both fill channels dedup
+// against it before inserting: order_update (hot path) because the exchange
+// event stream is at-least-once and replays rides a fresh envelope msg_id,
+// and delta_report (§5.11 fallback) because it is redundant with
+// order_update. Cheap SELECT; the hot path adds one per fill.
 func (r *TradeRepo) ExecutionExists(ctx context.Context, clientOrderID string, filledAtExchangeMs int64) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).
@@ -108,6 +129,74 @@ func (r *TradeRepo) ExecutionExists(ctx context.Context, clientOrderID string, f
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// NewExecutionsForInstance returns the instance's confirmed fills with
+// SpotExecution.ID > sinceID, oldest first. It joins spot_executions to
+// trade_records (on client_order_id) to recover the order Side and scope
+// the rows to one instance. The monotonic, collision-free ID watermark lets
+// the Tick fold each fill into the portfolio ledger exactly once (③).
+func (r *TradeRepo) NewExecutionsForInstance(ctx context.Context, instanceID string, sinceID uint) ([]store.InstanceFill, error) {
+	if instanceID == "" {
+		return nil, errors.New("repository.TradeRepo.NewExecutionsForInstance: empty instance_id")
+	}
+	var rows []store.InstanceFill
+	err := r.db.WithContext(ctx).
+		Model(&store.SpotExecution{}).
+		Select("spot_executions.id AS id, "+
+			"trade_records.side AS side, "+
+			"spot_executions.fill_quantity AS fill_quantity, "+
+			"spot_executions.fill_price AS fill_price, "+
+			"spot_executions.fill_fee_asset AS fill_fee_asset, "+
+			"spot_executions.fill_fee_amount AS fill_fee_amount").
+		Joins("JOIN trade_records ON trade_records.client_order_id = spot_executions.client_order_id").
+		Where("trade_records.instance_id = ? AND spot_executions.id > ?", instanceID, sinceID).
+		Order("spot_executions.id ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// MaxExecutionIDForInstance returns the highest SpotExecution.ID among the
+// instance's orders, or 0 if it has none. Used to set a freshly funded
+// instance's ledger watermark: the genesis balance already reflects every
+// pre-funding fill, so those must not be re-applied by the first Tick.
+func (r *TradeRepo) MaxExecutionIDForInstance(ctx context.Context, instanceID string) (uint, error) {
+	if instanceID == "" {
+		return 0, errors.New("repository.TradeRepo.MaxExecutionIDForInstance: empty instance_id")
+	}
+	var maxID *uint
+	err := r.db.WithContext(ctx).
+		Model(&store.SpotExecution{}).
+		Joins("JOIN trade_records ON trade_records.client_order_id = spot_executions.client_order_id").
+		Where("trade_records.instance_id = ?", instanceID).
+		Select("MAX(spot_executions.id)").
+		Scan(&maxID).Error
+	if err != nil {
+		return 0, err
+	}
+	if maxID == nil {
+		return 0, nil
+	}
+	return *maxID, nil
+}
+
+// MarkPartialIfPending advances a TradeRecord from pending → partial_filled,
+// and only then. Used by the delta_report recovery path (①): a recovered
+// fill proves the order executed at least partially, so a still-pending row
+// must not stay stuck. The authoritative terminal status (filled/cancelled)
+// remains the order_update channel's job; the WHERE guard ensures this never
+// downgrades a row order_update already moved. RowsAffected==0 (already
+// non-pending) is not an error.
+func (r *TradeRepo) MarkPartialIfPending(ctx context.Context, clientOrderID string) error {
+	if clientOrderID == "" {
+		return errors.New("repository.TradeRepo.MarkPartialIfPending: empty client_order_id")
+	}
+	return r.db.WithContext(ctx).Model(&store.TradeRecord{}).
+		Where("client_order_id = ? AND status = ?", clientOrderID, store.TradeStatusPending).
+		Update("status", store.TradeStatusPartialFilled).Error
 }
 
 // ListExecutionsForOrders returns every fill whose client_order_id is in

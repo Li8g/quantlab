@@ -366,6 +366,28 @@ type PortfolioState struct {
 	USDT          float64 `json:"usdt"`
 
 	LastProcessedBarTime int64 `json:"last_processed_bar_time"`
+
+	// LastAppliedExecID is the highest SpotExecution.ID whose confirmed
+	// fill has already been folded into these balances. The Tick applies
+	// only executions with a greater ID, so each fill updates the ledger
+	// exactly once. The auto-increment ID is a monotonic, collision-free
+	// watermark (unlike FilledAtExchangeMs, which repeats across the partial
+	// fills of one order). [INVENTED v1]
+	LastAppliedExecID uint `json:"last_applied_exec_id"`
+}
+
+// InstanceFill is one confirmed exchange fill attributed to an instance,
+// carrying the order Side (buy/sell) that the raw SpotExecution row lacks.
+// Side is recovered from the parent TradeRecord (joined on client_order_id).
+// It is a query projection, not a persisted table. Consumed by the Tick
+// ledger writeback (instance.applyFills). [INVENTED v1]
+type InstanceFill struct {
+	ID            uint
+	Side          string
+	FillQuantity  float64
+	FillPrice     float64
+	FillFeeAsset  string
+	FillFeeAmount float64
 }
 
 // RuntimeState is the strategy-private opaque blob (§5.2). Current-state
@@ -459,6 +481,14 @@ type SpotExecution struct {
 	FillFeeAmount      float64 `gorm:"not null"                          json:"fill_fee_amount"`
 	FilledAtExchangeMs int64   `gorm:"not null"                          json:"filled_at_exchange_ms"`
 	ActualSlippageBPS  float64 `json:"actual_slippage_bps"` // Agent-computed
+
+	// TradeID is the exchange's globally-unique trade id — the canonical
+	// fill-dedup key. Several fills of one market sweep share
+	// FilledAtExchangeMs, so dedup is keyed on (client_order_id, trade_id),
+	// not ms. 0 when the source has no per-trade id (MockExchange / legacy
+	// rows); those fall back to the (client_order_id, ms) dedup key.
+	// Indexed for the per-fill ExistsByTrade lookup on the hot path.
+	TradeID int64 `gorm:"index" json:"trade_id"`
 }
 
 // -------- F. AgentToken (added 2026-05-20 for Phase 7 Step 2) --------

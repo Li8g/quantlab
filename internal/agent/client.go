@@ -618,6 +618,7 @@ func (c *Client) onOrderEvent(ev OrderEvent) {
 			FillFeeAmountDecimal: formatDecimal(ev.Fill.FillFeeAmount),
 			FilledAtExchangeMs:   ev.Fill.FilledAtExchangeMs,
 			ActualSlippageBps:    slip,
+			TradeID:              ev.Fill.TradeID,
 		}
 		ou.Fills = append(ou.Fills, wf)
 		// Tee into the delta_report buffer with order identity attached

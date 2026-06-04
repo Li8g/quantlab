@@ -122,6 +122,7 @@ func TestTick_EndToEnd_AgainstRealDB(t *testing.T) {
 	mgr := instance.New(
 		instRepo,
 		repository.NewPortfolioRepo(db),
+		repository.NewTradeRepo(db),
 		repository.NewRuntimeRepo(db),
 		&instance.DefaultBarLoader{DB: db},
 		&itStrategyResolver{strat: newITStrategy()},

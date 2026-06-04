@@ -143,14 +143,19 @@ func (h *agentMessageHandler) handleAck(ctx context.Context, accountID string, a
 
 func (h *agentMessageHandler) handleOrderUpdate(ctx context.Context, accountID string, ou *wire.OrderUpdate) error {
 	// Persist fills first so even a status update failure leaves the
-	// execution rows in place for auditing.
+	// execution rows in place for auditing. Deduped: the exchange event
+	// stream is at-least-once (Binance WS API replays execution reports on
+	// resubscribe/reconnect) and each replay rides a fresh envelope msg_id,
+	// so envelope-level replay protection can't catch it — a content-level
+	// guard is what keeps a redelivered fill from inserting a second
+	// SpotExecution row, whose fresh auto-increment ID the Tick ledger-fold
+	// (③) would otherwise double-count into a position drift that
+	// auto-freezes the agent within two reports.
 	for i, f := range ou.Fills {
-		ex, err := buildSpotExecution(ou, f)
-		if err != nil {
+		// order_update fills carry no order id of their own — the enclosing
+		// OrderUpdate names the order (§5.10).
+		if _, err := h.insertFillIfNew(ctx, ou.ClientOrderID, ou.ExchangeOrderID, f); err != nil {
 			return fmt.Errorf("agentmsg: order_update fill[%d]: %w", i, err)
-		}
-		if err := h.trades.InsertSpotExecution(ctx, ex); err != nil {
-			return err
 		}
 	}
 
@@ -209,21 +214,14 @@ func orderUpdateToTradeStatus(s wire.OrderStatus) (store.TradeStatus, bool) {
 	return "", false
 }
 
-// buildSpotExecution turns a wire.Fill (decimal strings) into a
-// store.SpotExecution (float64 in SI precision). The decimal→float
-// cast is lossy but acceptable per docs/saas-ws-protocol-v1.md §2.2
-// "numeric exception": SaaS-side bookkeeping uses float64, the wire
-// uses strings only to avoid JSON float rounding.
-func buildSpotExecution(ou *wire.OrderUpdate, f wire.Fill) (*store.SpotExecution, error) {
-	// order_update fills carry no client/exchange order id of their own —
-	// the enclosing OrderUpdate names the order (§5.10).
-	return buildSpotExecutionFrom(ou.ClientOrderID, ou.ExchangeOrderID, f)
-}
-
-// buildSpotExecutionFrom is the order-id-explicit variant. delta_report
-// fills (§5.11) carry their own ClientOrderID/ExchangeOrderID, so the
-// reconciliation path passes them directly rather than from a parent
-// OrderUpdate.
+// buildSpotExecutionFrom turns a wire.Fill (decimal strings) into a
+// store.SpotExecution (float64 in SI precision), with the order identity
+// passed explicitly: order_update fills carry no order id of their own (the
+// enclosing OrderUpdate names the order, §5.10) while delta_report fills
+// (§5.11) carry their own ClientOrderID/ExchangeOrderID. The decimal→float
+// cast is lossy but acceptable per docs/saas-ws-protocol-v1.md §2.2 "numeric
+// exception": SaaS-side bookkeeping uses float64, the wire uses strings only
+// to avoid JSON float rounding.
 func buildSpotExecutionFrom(clientOrderID, exchangeOrderID string, f wire.Fill) (*store.SpotExecution, error) {
 	qty, err := strconv.ParseFloat(f.FillQuantityDecimal, 64)
 	if err != nil {
@@ -246,7 +244,50 @@ func buildSpotExecutionFrom(clientOrderID, exchangeOrderID string, f wire.Fill) 
 		FillFeeAmount:      fee,
 		FilledAtExchangeMs: f.FilledAtExchangeMs,
 		ActualSlippageBPS:  f.ActualSlippageBps,
+		TradeID:            f.TradeID,
 	}, nil
+}
+
+// insertFillIfNew persists a fill as a SpotExecution unless an equivalent one
+// is already stored, returning whether it actually inserted. Both fill
+// channels — order_update (hot path) and delta_report (fallback) — funnel
+// through this single chokepoint so the "exactly one row per fill" invariant
+// cannot be half-applied: a fill confirmed on one channel is skipped when it
+// also arrives on the other, and a stream-redelivered fill (Binance WS API is
+// at-least-once) is skipped on replay. The dedup is content-level because a
+// redelivered fill rides a fresh envelope msg_id, which envelope replay
+// protection cannot catch.
+//
+// Dedup identity: the exchange's per-trade id when present
+// (client_order_id, trade_id). This is the ONLY correct key — a single market
+// order sweeping a thin book produces several genuine fills that all share
+// filled_at_exchange_ms, so an ms key would collapse them into one row and
+// under-count the position into a reconciliation auto-freeze. When the backend
+// surfaces no trade id (trade_id==0: MockExchange, legacy rows) we fall back to
+// the (client_order_id, ms) key — acceptable there because those sources don't
+// produce same-ms multi-fills.
+func (h *agentMessageHandler) insertFillIfNew(ctx context.Context, clientOrderID, exchangeOrderID string, f wire.Fill) (bool, error) {
+	var exists bool
+	var err error
+	if f.TradeID != 0 {
+		exists, err = h.trades.ExecutionExistsByTrade(ctx, clientOrderID, f.TradeID)
+	} else {
+		exists, err = h.trades.ExecutionExists(ctx, clientOrderID, f.FilledAtExchangeMs)
+	}
+	if err != nil {
+		return false, fmt.Errorf("fill dedup check: %w", err)
+	}
+	if exists {
+		return false, nil
+	}
+	ex, err := buildSpotExecutionFrom(clientOrderID, exchangeOrderID, f)
+	if err != nil {
+		return false, err
+	}
+	if err := h.trades.InsertSpotExecution(ctx, ex); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // reconcileToleranceBps — relative drift beyond this (and beyond the
@@ -398,19 +439,20 @@ func (h *agentMessageHandler) recoverFills(ctx context.Context, accountID string
 				"account_id", accountID, "filled_at_exchange_ms", f.FilledAtExchangeMs)
 			continue
 		}
-		exists, err := h.trades.ExecutionExists(ctx, f.ClientOrderID, f.FilledAtExchangeMs)
-		if err != nil {
-			return fmt.Errorf("agentmsg: delta_report dedup check: %w", err)
-		}
-		if exists {
-			continue // already persisted via order_update — skip
-		}
-		ex, err := buildSpotExecutionFrom(f.ClientOrderID, f.ExchangeOrderID, f)
+		inserted, err := h.insertFillIfNew(ctx, f.ClientOrderID, f.ExchangeOrderID, f)
 		if err != nil {
 			return fmt.Errorf("agentmsg: delta_report fill[%d]: %w", i, err)
 		}
-		if err := h.trades.InsertSpotExecution(ctx, ex); err != nil {
-			return fmt.Errorf("agentmsg: delta_report insert recovered fill: %w", err)
+		if !inserted {
+			continue // already persisted via order_update — skip status bump + log
+		}
+		// ①: a recovered fill proves the order executed, so unstick a
+		// still-pending TradeRecord. delta_report fills carry no order-level
+		// status, so we can only assert partial_filled here; the authoritative
+		// terminal status (filled/cancelled) stays with the order_update
+		// channel, whose unconditional update overrides this if it arrives.
+		if err := h.trades.MarkPartialIfPending(ctx, f.ClientOrderID); err != nil {
+			return fmt.Errorf("agentmsg: delta_report advance status: %w", err)
 		}
 		h.logger.Warn("delta_report_recovered_fill",
 			"account_id", accountID, "client_order_id", f.ClientOrderID,
@@ -535,6 +577,14 @@ func buildSeedPortfolio(inst *store.StrategyInstance, actual map[string]float64,
 // loop doesn't also reconcile it this round.
 func (h *agentMessageHandler) fundInstance(ctx context.Context, inst *store.StrategyInstance, actual map[string]float64, nowMs int64) error {
 	seed := buildSeedPortfolio(inst, actual, nowMs)
+	// Anchor the ledger watermark to the latest existing fill: the genesis
+	// balance already reflects every pre-funding execution, so the first Tick
+	// must not double-count them when it folds fills into the ledger (③).
+	maxExecID, err := h.trades.MaxExecutionIDForInstance(ctx, inst.InstanceID)
+	if err != nil {
+		return fmt.Errorf("agentmsg: fund instance %s max exec id: %w", inst.InstanceID, err)
+	}
+	seed.LastAppliedExecID = maxExecID
 	if err := h.portfolios.Append(ctx, seed); err != nil {
 		return fmt.Errorf("agentmsg: fund instance %s seed portfolio: %w", inst.InstanceID, err)
 	}
