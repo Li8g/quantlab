@@ -8,6 +8,10 @@
 #
 # Usage:
 #   scripts/run_testnet.sh              # bring up SaaS + agent, show status
+#   scripts/run_testnet.sh --fresh      # clean-slate ②③ ledger e2e: retire the
+#                                       #   current instance, wipe forensic noise,
+#                                       #   top up K-lines, create a NEW instance +
+#                                       #   deploy/start the champion (dev-only)
 #   scripts/run_testnet.sh --reseed-token   # rotate the agent token + rewrite config.agent.yaml
 #   scripts/run_testnet.sh --stop       # stop the SaaS + agent started here
 #
@@ -89,6 +93,15 @@ fi
 RESEED_TOKEN=0
 [ "${1:-}" = "--reseed-token" ] && RESEED_TOKEN=1
 
+# --fresh: run the ②③ ledger e2e from a known-clean slate. The DEFAULT (no
+# flag) REUSES the existing instance on purpose — the continuous/dirty path is
+# exactly what surfaces ledger-accumulation bugs (② fill double-count, ③
+# watermark, retired-instance reconcile), so auto-resetting every run would
+# hide them. --fresh is opt-in, dev-only, and account-scoped. It is
+# test-harness hygiene, NOT a product feature.
+FRESH=0
+[ "${1:-}" = "--fresh" ] && FRESH=1
+
 # ---------------------------------------------------------------- preflight
 say "preflight"
 for t in go jq curl psql ss; do command -v "$t" >/dev/null || die "missing tool: $t"; done
@@ -96,6 +109,13 @@ for t in go jq curl psql ss; do command -v "$t" >/dev/null || die "missing tool:
 [ -f "$AGENT_CFG" ] || die "missing $AGENT_CFG (fill testnet api_key/secret first)"
 db "select 1" >/dev/null || die "cannot reach Postgres at $DB_HOST:$DB_PORT/$DB_NAME (check $SAAS_CFG database:)"
 ok "tools + Postgres reachable"
+
+# --fresh retires instances and deletes ledger forensic rows — refuse anywhere
+# but a dev DB so it can never wipe a real saas/prod ledger.
+if [ "$FRESH" = 1 ]; then
+  ROLE="$(yaml_top app_role "$SAAS_CFG")"
+  [ "$ROLE" = dev ] || die "--fresh refused: app_role=${ROLE:-?} (only 'dev'); it retires instances + deletes ledger forensic rows"
+fi
 
 # Testnet reachability — warned, not fatal: SaaS still comes up, but the
 # agent handshake needs exchange.Positions(), so L1 cannot complete while down.
@@ -108,6 +128,35 @@ say "building binaries"
 go build -o "$SAAS_BIN"  ./cmd/saas  || die "saas build failed"
 go build -o "$AGENT_BIN" ./cmd/agent || die "agent build failed"
 ok "built ql_saas + ql_agent"
+
+# ---------------------------------------------------------------- --fresh reset
+# DB ops only (no SaaS needed yet); the new instance is created later, via REST.
+if [ "$FRESH" = 1 ]; then
+  say "--fresh: resetting account=$ACCOUNT_ID to a clean slate ($STRATEGY_ID/$PAIR)"
+  # Retire the current instance (DB-direct — there is no instance-retire REST
+  # endpoint). Scoped to this account's strategy+pair so the new instance can
+  # claim the (strategy,pair,account) active-unique slot. The 🟡 fix already
+  # keeps retired ledgers out of reconcile; this just frees the unique slot and
+  # gives the new instance a clean watermark.
+  R="$(db "update strategy_instances set status='retired', updated_at=now() where account_id='$ACCOUNT_ID' and strategy_id='$STRATEGY_ID' and pair='$PAIR' and status<>'retired'; select 'ok'")"
+  [ "$R" = ok ] && ok "retired prior $STRATEGY_ID/$PAIR instance(s)" || warn "retire: $R"
+  # Wipe forensic noise so this run's drift/freeze signal is its own (cosmetic:
+  # the auto-freeze driftStreak is in-memory and resets on the SaaS restart
+  # below anyway).
+  db "delete from audit_logs where action='instance.kill' and subject='account:$ACCOUNT_ID'; delete from reconciliation_discrepancies where account_id='$ACCOUNT_ID';" >/dev/null \
+    && ok "cleared drift discrepancies + kill audit" || warn "forensic clear failed"
+  # Top up 1m K-lines (⑤): a fresh instance can't trade with a stale tail
+  # (empty trailing window ⇒ latestClose=0 ⇒ no orders). Best-effort — the
+  # testnet monthly archive lags, so the current month falls back to REST.
+  DATA_BIN="$LOG_DIR/ql_datafeeder"
+  if go build -o "$DATA_BIN" ./cmd/datafeeder 2>/dev/null; then
+    "$DATA_BIN" import --config "$SAAS_CFG" --symbol "$PAIR" --interval 1m \
+      --from "$(date -u -d yesterday +%F)" --to "$(date -u +%F)" >/dev/null 2>&1 \
+      && ok "1m K-lines topped up through today" || warn "K-line import failed (trading needs a fresh 1m tail)"
+  else
+    warn "datafeeder build failed — skipping K-line top-up"
+  fi
+fi
 
 # ---------------------------------------------------------------- SaaS
 if ss -ltn 2>/dev/null | grep -qE ":${WS_PORT}\b"; then
@@ -172,6 +221,21 @@ if [ -z "$INST" ]; then
   ok "instance created: $INST"
 else
   ok "instance exists: $INST"
+fi
+
+# --fresh: a brand-new instance is idle with no champion, so cron won't trade
+# it. Deploy the active champion + start so the ②③ ledger path actually runs.
+if [ "$FRESH" = 1 ]; then
+  CHAMP="$(db "select challenger_id from champion_histories where retired_at is null order by promoted_at desc limit 1")"
+  if [ -n "$CHAMP" ]; then
+    curl -s -X POST "$API/api/v1/instances/$INST/deploy-champion" -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg c "$CHAMP" '{challenger_id:$c}')" >/dev/null \
+      && ok "deployed champion $CHAMP" || warn "deploy-champion failed"
+    curl -s -X POST "$API/api/v1/instances/$INST/start" -H "Authorization: Bearer $JWT" >/dev/null \
+      && ok "instance started (live) — trades begin after the first delta_report funds it" || warn "start failed"
+  else
+    warn "no active champion in champion_histories — instance stays idle (L1 only)"
+  fi
 fi
 
 # ---------------------------------------------------------------- agent
