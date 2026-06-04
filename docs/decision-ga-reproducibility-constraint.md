@@ -120,9 +120,11 @@ bump expected on score-comparability grounds.
 ## 8. Action items
 
 1. **CLAUDE.md**: rewrite the implicit "scoring change → version bump" into the
-   §5 tolerance gate; record ε once calibrated. *(Deliberate normative edit —
-   not folded in silently.)*
-2. **Calibrate ε** from the live score distribution (§6).
+   §5 tolerance gate; record ε once calibrated. *(Done 2026-06-04 — see the
+   "Reproducibility gate" note under Version Constants.)*
+2. **Calibrate ε** from the live score distribution (§6). **Next week's priority
+   (week of 2026-06-08).** Until ε is set, treat scoring changes conservatively
+   (i.e. fall back to the old "bump when in doubt" behaviour).
 3. **When building #6**: thread the incremental seam through `EvaluateWindow`,
    then measure the **ScoreTotal** delta (not just signal) under both modes on
    the current champion; confirm < ε before deciding version vs no-version.

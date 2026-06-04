@@ -193,6 +193,20 @@ FingerprintVersion = "fp-v1"
 
 Challengers with different `fitness_version` must **not** be compared by score.
 
+**Reproducibility gate (tolerance, not bit-exact).** What forces a
+`fitness_version` bump is a **material** change to scoring, not any change to the
+float math. A change is a version event only when it moves replay `ScoreTotal`
+by more than ε (relative); a numerically-equivalent refactor (reassociated sums,
+incremental indicators, SoA) that stays within ε is **not** a version event.
+In-version determinism stays bit-exact (serial accumulation, `SliceStable`,
+single seed, complete `Reset`); `bars_hash` (inputs) and `fingerprint` (gene
+identity) stay exact. What is given up is cross-*implementation* trajectory
+portability (a champion is reproducible under its own version, which is enough
+for audit). Rationale + the worked #6 example + the measurement harness:
+`docs/decision-ga-reproducibility-constraint.md`. **ε is not yet calibrated —
+its calibration from the live score distribution is next week's priority work
+(week of 2026-06-08); until then treat scoring changes conservatively.**
+
 ## Key Invariants
 
 - `GAConfigSnapshot` stores **effective values**, not request mirrors: `test_mode=true → taker_fee_bps=0, slippage_bps=0`. User's original request intent goes to `EvolutionTask.requested_taker_fee_bps/slippage_bps` (DB only, never in result package).
