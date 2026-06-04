@@ -28,13 +28,13 @@ CI 跑在 **GitHub Actions** 上。理解 `ci.yml` 前,先认五个概念,自顶
 |---|---|---|
 | **Workflow(工作流)** | 一个 `.yml` 文件 = 一条完整流水线 | 整个 `ci.yml`,名字叫 `ci`(第 1 行 `name: ci`) |
 | **Trigger(触发器)** | 什么事件让流水线跑起来 | `on:` 块(`push` 到 main / 任何 `pull_request`) |
-| **Job(作业)** | 流水线里一个**独立、并行**的任务,各跑在自己的虚拟机上 | `test` 和 `lint-migrations` 两个 job,**并行跑** |
+| **Job(作业)** | 流水线里一个**独立、并行**的任务,各跑在自己的虚拟机上 | `test`、`lint-migrations`、`lint` **三个 job,并行跑** |
 | **Runner(运行器)** | 跑 job 的那台一次性虚拟机 | `runs-on: ubuntu-latest`,GitHub 临时分配,跑完销毁 |
 | **Step(步骤)** | job 里一条条按顺序执行的命令 | 每个 `- uses:` / `- name: ... run:` |
 | **Service(服务容器)** | job 旁边附带起的容器,通常是数据库 | `services.timescaledb`,给 `test` job 提供一个真 Postgres |
 
 关键直觉:
-- **两个 job 互不相干、并行跑**——`test` 红不影响 `lint-migrations` 继续,反之亦然。
+- **三个 job 互不相干、并行跑**——其中一个红,不影响另外两个继续跑(各自报各自的绿/红)。
 - **每个 job 都是从零开始的干净机器**:它不知道你本地装了什么,所有依赖(Go、pg_dump、squawk)都得在 step 里自己装。这就是为什么 ci.yml 里有一堆"安装 XXX"的步骤——不是啰嗦,是 runner 上**真的没有**。
 - **Service 容器跑完即弃**:那个 Postgres 里的数据不会留到下一次,所以测试可以随便建库、灌数据、不用清理。
 
@@ -60,7 +60,7 @@ on:
 GitHub 收到事件,匹配 ci.yml 的 on: 规则
         │
         ▼
-分配 runner(s) → 并行起 test 和 lint-migrations 两个 job
+分配 runner(s) → 并行起 test、lint-migrations、lint 三个 job
         │
         ▼
 结果回写到那次 commit / 那个 PR 的 "Checks" 区(绿勾 / 红叉)
@@ -90,8 +90,11 @@ CI 不是孤立的一个文件。围绕它有一组**互相引用**的文件,先
                            │                        ├─▶ store.NewDB (AutoMigrate 路径)
                            │                        └─▶ store.RunMigrations → migrate.go → migrations/*.sql
                            │
-                           └─ lint-migrations job ─ 读 ─▶ .squawk.toml           (lint 规则)
-                                                          └─ 作用于 ─▶ migrations/*.sql
+                           ├─ lint-migrations job ─ 读 ─▶ .squawk.toml           (lint 规则)
+                           │                              └─ 作用于 ─▶ migrations/*.sql
+                           │
+                           └─ lint job ─ 读 ─▶ go.mod(toolchain 版本)
+                                              └─ go run ─▶ gofmt / staticcheck@v0.7.0 / govulncheck@v1.3.0 (pin)
 ```
 
 一句话归类:
@@ -123,11 +126,13 @@ services:
 ### 4.2 装 Go(按 go.mod 的版本)
 
 ```yaml
-- uses: actions/setup-go@v5
+- uses: actions/setup-go@v6
   with: { go-version-file: go.mod }
 ```
 
-`go-version-file: go.mod` 意思是**别在 yml 里写死版本**,直接读 `go.mod` 里的 `go` 指令。好处:升级 Go 只改一处(go.mod),CI 自动跟上,不会两边版本漂移。
+`go-version-file: go.mod` 意思是**别在 yml 里写死版本**,直接读 `go.mod`(优先 `toolchain` 指令,没有才读 `go` 指令)。好处:升级 Go 只改一处(go.mod),CI 自动跟上,不会两边版本漂移。`lint` job 里的 govulncheck 就是靠这条吃到 `toolchain go1.25.11`(修了两个 stdlib 漏洞那次)。
+
+> 这里的 `@v6`(以及 checkout `@v6`)是有讲究的:早先用的 `@v4`/`@v5` 跑在 Node 20 上,GitHub 已宣告弃用,升到 `@v6`(node24 runtime)清掉了警告。**action 也是依赖,也要维护版本。**
 
 ### 4.3 装 PG17 的 `pg_dump`(最容易被忽略的一步)
 
@@ -263,8 +268,13 @@ GitHub 触发 ci.yml(pull_request 事件)
         │  (当前只有被豁免的 baseline → 绿)                    │
         └──────────────────────────────────────────────────────┘
         │
+        ├──────────── Job lint(runner C,并行)─────────────────┐
+        │  装 Go → gofmt -l 查格式 → staticcheck → govulncheck  │
+        │  (任一有问题 / 命中 called 漏洞 → 这里红 ✗)         │
+        └──────────────────────────────────────────────────────┘
+        │
         ▼
-两个 job 结果汇总到 PR 的 Checks:全绿才好合并
+三个 job 结果汇总到 PR 的 Checks:全绿才好合并
         │  合并进 main
         ▼
 push:[main] 再触发一次同样的 ci.yml(合并后代码的最终验证)
@@ -301,7 +311,11 @@ push:[main] 再触发一次同样的 ci.yml(合并后代码的最终验证)
 1. **Squawk 有盲区,不能全信。** 它不懂本仓的 TimescaleDB 特性:hypertable 上的 `ALTER` 会广播到所有 chunk、`create_hypertable` 语义、chunk interval、压缩策略——这些 `pg_dump --schema-only` 也看不到(所以漂移测试同样盲),需要人工查 `timescaledb_information.dimensions` 核对。详见 migrations/README 的"Squawk 盲区"小节。
 2. **漂移测试只比对 schema 结构,不比对数据、不比对 hypertable 的 chunk 配置。** 它证明"表长一样",不证明"分区策略一样"。
 3. **CI 用的是 `latest-pg17` 这个浮动 tag。** 哪天 TimescaleDB 发新的 pg17 镜像,CI 会悄悄换底座。要严格复现历史结果,得钉死具体版本——目前为了省事没钉。
-4. **没有 lint/格式门(gofmt/staticcheck/govulncheck)。** 当前 CI 只管"测试 + schema + 迁移 SQL",不管代码风格和静态检查。这些目前靠开发者本地自觉(见代码审阅 memory)。要加的话,就是往 `test` job 里再插几个 step,或开第三个 job。
+4. **`lint` job = Go 静态分析门(第三个 job)。** 三步硬门,任一失败即红:
+   - **gofmt** — `gofmt -l .` 有输出(= 有文件没按规范格式化)即 fail。仓库此前**没有任何格式门**,这是从 0 到 1。
+   - **staticcheck** — `go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...`,查未用变量、可疑写法等。
+   - **govulncheck** — `go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...`,查被**实际调用**的已知漏洞(只 import 没调用的不算)。
+   两个工具版本**pin 死**,这样某天工具发新版多了条规则,不会无故让你的 CI 变红——升不升是你主动决定的。但 govulncheck 还会查**实时 vuln DB**,所以即使你一行代码没改,一旦标准库爆出新 CVE 并被你的代码路径调用,这个 job 也会红——**那是信号"该升 Go patch 版本了"**。当初引入这道门时,govulncheck 正好命中两个 stdlib 漏洞,于是顺手把 `toolchain` 从 go1.25.10 升到 1.25.11 修掉,门才变绿(见 §4.2)。
 5. **`migration_mode`(⑤)之后,迁移路径不再等同于 `app_role`。** 但漂移测试仍用 `app_role=saas` 来**强制走 goose 路径**做比对——因为 `saas + 空 migration_mode` 默认解析成 goose。如果将来改了这个默认推导逻辑,记得回头看这个测试还成不成立。
 
 ---
