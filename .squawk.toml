@@ -1,0 +1,23 @@
+# Squawk — migration linter for internal/saas/store/migrations/*.sql.
+# Decided alongside goose; see docs/saas-schema-migration-draft.md §决策摘要 / D6.
+#
+# Squawk lints INCREMENTAL migrations (00002+) on a populated production table.
+# The baseline is exempt:
+
+# 00001_baseline.sql builds every table from an empty database, so Squawk's
+# populated-table rules (require-*-timeout, prefer-robust-stmts/IF NOT EXISTS,
+# ban-char-field on the existing varchar columns, …) are all false positives
+# there. It is the frozen, hand-curated dump whose fidelity is guaranteed by
+# migrate_drift_test.go, not by Squawk. Incremental migrations get the full
+# rule set.
+excluded_paths = ["*_baseline.sql"]
+
+# goose wraps each migration file in a transaction (unless it declares
+# `-- +goose NO TRANSACTION`), so Squawk should reason about statements as
+# running inside one. This relaxes rules that are only unsafe outside a txn and
+# tightens those (e.g. CREATE INDEX CONCURRENTLY) that cannot run inside one.
+assume_in_transaction = true
+
+# Minimum supported Postgres for prod (TimescaleDB pg17). Lets version-gated
+# rules (e.g. safe non-CONCURRENTLY operations on newer PG) judge correctly.
+pg_version = "17.0"

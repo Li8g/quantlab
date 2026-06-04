@@ -1,0 +1,16 @@
+# Config consumed ONLY by the integration tests in CI (.github/workflows/ci.yml).
+# Points at the throwaway TimescaleDB service the workflow spins up. Not for any
+# real deployment — credentials are the well-known CI service values.
+app_role: dev
+database:
+  host: localhost
+  port: 5432
+  user: ql
+  password: pw
+  database: quantlab
+  ssl_mode: disable
+jwt:
+  secret: ci-only-jwt-secret-at-least-thirty-two-bytes-long
+ga:
+  pop_size: 10
+  max_generations: 2

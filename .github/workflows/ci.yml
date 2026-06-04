@@ -1,0 +1,73 @@
+name: ci
+
+# Minimal CI landing alongside goose + Squawk (docs/saas-schema-migration-draft.md
+# §5.1 / D5). Two jobs:
+#   test            — unit tests + the schema drift guard (AutoMigrate vs goose)
+#   lint-migrations — Squawk over incremental migrations
+# The repo had no CI before this; keep it lean.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg17
+        env:
+          POSTGRES_USER: ql
+          POSTGRES_PASSWORD: pw
+          POSTGRES_DB: quantlab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ql"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The drift test shells out to pg_dump and compares it against the
+      # TimescaleDB service (pg17), so pg_dump must be >= the server version —
+      # the runner's default client is older. Install the PG17 client from PGDG.
+      - name: Install PostgreSQL 17 client (pg_dump)
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Unit tests
+        run: go test ./...
+
+      # Schema drift guard: builds one DB via AutoMigrate (dev) and one via the
+      # goose baseline (saas) and asserts byte-identical pg_dump output. This is
+      # the load-bearing wall that keeps the two schema sources from diverging.
+      - name: Integration tests (schema drift guard)
+        run: go test -tags=integration ./internal/saas/store/ -args -config="$GITHUB_WORKSPACE/.github/ci-config.yaml"
+
+  lint-migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Squawk
+        run: |
+          curl -fsSL -o /usr/local/bin/squawk \
+            https://github.com/sbdchd/squawk/releases/download/v2.56.0/squawk-linux-x64
+          chmod +x /usr/local/bin/squawk
+
+      # 00001_baseline.sql is excluded in .squawk.toml (from-empty file, fidelity
+      # owned by the drift test). --no-error-on-unmatched-pattern keeps this
+      # green while the baseline is the only migration; it lights up on 00002+.
+      - name: Lint migrations
+        run: squawk -c .squawk.toml --no-error-on-unmatched-pattern internal/saas/store/migrations/*.sql
