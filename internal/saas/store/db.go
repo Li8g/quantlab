@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver for the migration pool
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -23,10 +25,13 @@ import (
 // is left to a deploy-time policy script per docs/agents/devops-expert.md;
 // Phase 13 will add it.
 //
-// 铁律 4: AutoMigrate is for dev/lab only. For app_role=saas (production)
-// the deploy must run Atlas migrations and AutoMigrate becomes a sanity
-// check rather than the migration path — but enforcing that gate is the
-// concern of the cmd/saas startup sequence (Phase 10), not this helper.
+// 铁律 4 (enforced): AutoMigrate is for dev/lab only. For app_role=saas
+// (production) the schema is owned by versioned goose migrations
+// (internal/saas/store/migrations) — see docs/saas-schema-migration-draft.md.
+// AutoMigrate has no read-only mode, so leaving it in the prod path would
+// silently mutate the schema; it is therefore removed from the saas path
+// entirely (not kept as a "sanity check"). The drift between the goose
+// baseline and AutoMigrate's output is pinned by migrate_drift_test.go.
 func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 	if cfg == nil {
 		return nil, errors.New("store.NewDB: cfg is nil")
@@ -62,6 +67,17 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 	}
 	if cfg.Database.MaxIdleConns > 0 {
 		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
+	}
+
+	// Production: apply versioned goose migrations and return. The
+	// CREATE EXTENSION + AutoMigrate + raw hypertable/partial-index DDL below
+	// is the dev/lab fast-iteration path only; every bit of it is reproduced
+	// in migrations/00001_baseline.sql.
+	if cfg.AppRole == config.AppRoleSaaS {
+		if err := runGooseMigrations(ctx, cfg); err != nil {
+			return nil, err
+		}
+		return db, nil
 	}
 
 	if err := db.WithContext(ctx).
@@ -157,6 +173,23 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 	}
 
 	return db, nil
+}
+
+// runGooseMigrations applies the versioned goose migrations for app_role=saas.
+// It opens a connection pool dedicated to migrations — separate from the gorm
+// app pool — because RunMigrations pins it to a single connection so the
+// session-scoped SET lock_timeout sticks for every statement goose runs. The
+// "pgx" driver is registered by the blank import at the top of this file.
+func runGooseMigrations(ctx context.Context, cfg *config.Config) error {
+	migDB, err := sql.Open("pgx", cfg.Database.DSN())
+	if err != nil {
+		return fmt.Errorf("store.NewDB: open migration pool: %w", err)
+	}
+	defer migDB.Close()
+	if err := RunMigrations(ctx, migDB); err != nil {
+		return fmt.Errorf("store.NewDB: %w", err)
+	}
+	return nil
 }
 
 // assertNoDuplicateActiveChampions fails fast if champion_history already
