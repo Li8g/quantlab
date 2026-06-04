@@ -111,6 +111,10 @@ internal/quant         # canonical_json (bars_hash), closes, compare helpers
 internal/migrate       # One-off backfill harness (Filter+Transform skeleton)
 ```
 
+> **GA navigation:** for a source-file map of the Genetic Algorithm (engine-layer
+> loop vs strategy-layer gene operators) plus a recommended reading order, see
+> `docs/learn/LEARN-ga-source-map.md`.
+
 **Tier 2 SaaS + live trading (Phases 6–9, shipped):**
 ```
 internal/saas          # Tier2 server: store (GORM models/migrate), auth, agentauth, instance,
