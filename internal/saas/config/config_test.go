@@ -193,6 +193,60 @@ jwt:
 	}
 }
 
+func TestLoad_ReconcileDefaultsAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	// Defaults when section omitted.
+	def := filepath.Join(dir, "def.yaml")
+	if err := os.WriteFile(def, []byte(`
+app_role: dev
+database: { host: localhost, database: q }
+jwt: { secret: x }
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	c, err := Load(def)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Reconcile.FreezeToleranceBps != 200 || c.Reconcile.FreezeDebounceReports != 2 {
+		t.Errorf("defaults = %v/%d, want 200/2", c.Reconcile.FreezeToleranceBps, c.Reconcile.FreezeDebounceReports)
+	}
+
+	// Explicit override is preserved.
+	ovr := filepath.Join(dir, "ovr.yaml")
+	if err := os.WriteFile(ovr, []byte(`
+app_role: dev
+database: { host: localhost, database: q }
+jwt: { secret: x }
+reconcile: { freeze_tolerance_bps: 350, freeze_debounce_reports: 3 }
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	c2, err := Load(ovr)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c2.Reconcile.FreezeToleranceBps != 350 || c2.Reconcile.FreezeDebounceReports != 3 {
+		t.Errorf("override = %v/%d, want 350/3", c2.Reconcile.FreezeToleranceBps, c2.Reconcile.FreezeDebounceReports)
+	}
+}
+
+func TestLoad_RejectsNegativeReconcile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+app_role: dev
+database: { host: localhost, database: q }
+jwt: { secret: x }
+reconcile: { freeze_tolerance_bps: -1 }
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("expected error for negative freeze_tolerance_bps, got nil")
+	}
+}
+
 func TestDatabaseDSN(t *testing.T) {
 	d := DatabaseConfig{
 		Host: "h", Port: 5432, User: "u", Password: "p", Database: "db", SSLMode: "disable",

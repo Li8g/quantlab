@@ -36,14 +36,15 @@ func (r AppRole) IsValid() bool {
 
 // Config is the in-memory representation of config.yaml.
 type Config struct {
-	AppRole  AppRole        `yaml:"app_role"`
-	Database DatabaseConfig `yaml:"database"`
-	Redis    RedisConfig    `yaml:"redis"`
-	JWT      JWTConfig      `yaml:"jwt"`
-	Server   ServerConfig   `yaml:"server"`
-	Friction FrictionConfig `yaml:"friction"`
-	GA       GAConfig       `yaml:"ga"`
-	DataFeed DataFeedConfig `yaml:"data_feed"`
+	AppRole   AppRole         `yaml:"app_role"`
+	Database  DatabaseConfig  `yaml:"database"`
+	Redis     RedisConfig     `yaml:"redis"`
+	JWT       JWTConfig       `yaml:"jwt"`
+	Server    ServerConfig    `yaml:"server"`
+	Friction  FrictionConfig  `yaml:"friction"`
+	GA        GAConfig        `yaml:"ga"`
+	DataFeed  DataFeedConfig  `yaml:"data_feed"`
+	Reconcile ReconcileConfig `yaml:"reconcile"`
 }
 
 type DatabaseConfig struct {
@@ -152,6 +153,24 @@ type GAConfig struct {
 	SbbBlockLenFallback  int     `yaml:"sbb_block_len_fallback"`
 }
 
+// ReconcileConfig tunes the live-trading auto-freeze (kill_switch Option 3).
+// These were compile-time consts marked [INVENTED v1: tune as real drift data
+// arrives]; lifting them to config lets an operator retune from observed
+// `delta_report_reconcile_summary` logs without a redeploy. The right value
+// is coupled to trade speed: a faster strategy has more in-flight fills per
+// 60s delta_report window, so its *normal* transient drift is larger and the
+// freeze line must sit above it. Zero on either field → the default below.
+type ReconcileConfig struct {
+	// FreezeToleranceBps is the auto-freeze line in bps; a managed asset's
+	// drift above this (for FreezeDebounceReports consecutive reports) halts
+	// the agent. Strictly higher than the 50bps ledger/alert line. Default 200.
+	FreezeToleranceBps float64 `yaml:"freeze_tolerance_bps"`
+	// FreezeDebounceReports is how many CONSECUTIVE delta_reports must breach
+	// the line before the kill fires, so a single in-flight-fill blip at the
+	// 60s cadence doesn't halt the agent. Default 2.
+	FreezeDebounceReports int `yaml:"freeze_debounce_reports"`
+}
+
 // DataFeedConfig is the datafeeder defaults.
 type DataFeedConfig struct {
 	BinanceArchiveBaseURL string        `yaml:"binance_archive_base_url"`
@@ -217,6 +236,12 @@ func (c *Config) applyDefaults() {
 	if c.Server.ShutdownTimeout == 0 {
 		c.Server.ShutdownTimeout = 30 * time.Second
 	}
+	if c.Reconcile.FreezeToleranceBps == 0 {
+		c.Reconcile.FreezeToleranceBps = 200
+	}
+	if c.Reconcile.FreezeDebounceReports == 0 {
+		c.Reconcile.FreezeDebounceReports = 2
+	}
 }
 
 // jwtSecretMinBytesSaaS is the minimum jwt.secret length when
@@ -253,6 +278,12 @@ func (c *Config) Validate() error {
 	// and would silently mutate prod. saas may not opt down to automigrate.
 	if c.AppRole == AppRoleSaaS && c.Database.MigrationMode == MigrationModeAutoMigrate {
 		return errors.New("app_role=saas cannot use database.migration_mode=automigrate (prod schema is goose-owned; 铁律 4)")
+	}
+	if c.Reconcile.FreezeToleranceBps < 0 {
+		return errors.New("reconcile.freeze_tolerance_bps must be >= 0 (0 → default)")
+	}
+	if c.Reconcile.FreezeDebounceReports < 0 {
+		return errors.New("reconcile.freeze_debounce_reports must be >= 0 (0 → default)")
 	}
 	return nil
 }
