@@ -2,7 +2,7 @@ module quantlab
 
 go 1.25.7
 
-toolchain go1.25.10
+toolchain go1.25.11
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
