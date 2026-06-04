@@ -68,6 +68,18 @@ ga:
   fatal_audit_sample_rate: 0.05
   sbb_block_len_fallback: 12
 
+# Live-trading auto-freeze (kill_switch Option 3). The agent is halted when a
+# managed asset's reconciliation drift stays above freeze_tolerance_bps for
+# freeze_debounce_reports consecutive 60s delta_reports. These are deliberately
+# tunable, not hard-coded: the right freeze line is coupled to trade speed — a
+# faster strategy has more in-flight fills per window, so its *normal* transient
+# drift is larger and the line must sit above it. Tune from the observed
+# `delta_report_reconcile_summary` logs (max_managed_drift_bps vs window_fills).
+# Omit the section (or set 0) to use defaults: 200 bps / 2 reports.
+reconcile:
+  freeze_tolerance_bps: 200
+  freeze_debounce_reports: 2
+
 # Datafeeder defaults (Phase 1.5).
 data_feed:
   binance_archive_base_url: https://data.binance.vision

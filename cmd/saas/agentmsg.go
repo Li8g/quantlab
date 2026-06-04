@@ -55,6 +55,33 @@ type agentMessageHandler struct {
 	// auditor records the instance.kill action trail (Option 3 step 5).
 	// nil ⇒ no audit row (drift is still acted on). Set in main.go.
 	auditor auditSink
+
+	// freezeToleranceBps / freezeDebounceReports override the auto-freeze
+	// thresholds (config.ReconcileConfig); main.go sets them post-construction.
+	// Zero ⇒ the default* consts (see effFreezeToleranceBps /
+	// effFreezeDebounceReports), so directly-constructed test handlers keep
+	// the 200bps / N=2 behavior without wiring config.
+	freezeToleranceBps    float64
+	freezeDebounceReports int
+}
+
+// effFreezeToleranceBps is the configured auto-freeze line, or the default
+// when unset (≤0). Keeping the fallback here means tests that build the
+// handler struct literally don't have to set it.
+func (h *agentMessageHandler) effFreezeToleranceBps() float64 {
+	if h.freezeToleranceBps > 0 {
+		return h.freezeToleranceBps
+	}
+	return defaultFreezeToleranceBps
+}
+
+// effFreezeDebounceReports is the configured debounce count, or the default
+// when unset (<1).
+func (h *agentMessageHandler) effFreezeDebounceReports() int {
+	if h.freezeDebounceReports >= 1 {
+		return h.freezeDebounceReports
+	}
+	return defaultFreezeDebounceReports
 }
 
 // killSwitchSender is the narrow control-plane dependency for auto-freeze
@@ -547,6 +574,28 @@ func (h *agentMessageHandler) reconcile(
 	for a := range expected {
 		managed[a] = struct{}{}
 	}
+
+	// Observability for threshold tuning (可观测): one structured line per
+	// reconcile pairing the freeze-decision input (max_managed_drift_bps, the
+	// value compared against the line) with the trade-speed proxy for this
+	// window (window_fills) and the active thresholds. Charting drift vs fills
+	// across reports is how the [INVENTED v1] freeze line gets a data-backed
+	// value — a faster strategy's normal in-flight drift sits higher.
+	flaggedCount := 0
+	for _, d := range drifts {
+		if d.Flagged {
+			flaggedCount++
+		}
+	}
+	h.logger.Info("delta_report_reconcile_summary",
+		"account_id", accountID, "instance_id", instanceID,
+		"managed_assets", len(managed),
+		"max_managed_drift_bps", maxFlaggedDriftBps(drifts, managed),
+		"flagged_count", flaggedCount,
+		"window_fills", len(dr.SinceLastReport.Fills),
+		"freeze_line_bps", h.effFreezeToleranceBps(),
+		"debounce_reports", h.effFreezeDebounceReports())
+
 	h.maybeAutoFreeze(ctx, accountID, drifts, managed)
 	return nil
 }
@@ -599,17 +648,20 @@ func (h *agentMessageHandler) fundInstance(ctx context.Context, inst *store.Stra
 	return nil
 }
 
-// freezeToleranceBps is the auto-freeze (kill_switch) line — strictly
+// defaultFreezeToleranceBps is the auto-freeze (kill_switch) line — strictly
 // higher than reconcileToleranceBps (the 50bps ledger/alert line) because
-// auto-freezing halts a LIVE trading agent and a false positive is
-// expensive. [INVENTED v1: tune as real drift data arrives.]
-const freezeToleranceBps = 200.0
+// auto-freezing halts a LIVE trading agent and a false positive is expensive.
+// Overridable via config.ReconcileConfig.FreezeToleranceBps (see effFreeze*);
+// this const is the fallback when unset. [INVENTED v1: tune as real drift
+// data arrives — chart delta_report_reconcile_summary's max_managed_drift_bps
+// against window_fills to pick a line above normal in-flight drift.]
+const defaultFreezeToleranceBps = 200.0
 
-// freezeDebounceReports is how many CONSECUTIVE delta_reports must breach
-// the freeze line before the kill fires — a single in-flight-fill blip at
-// the 60s cadence must not halt the agent (Freqtrade-style debounce).
-// [INVENTED v1]
-const freezeDebounceReports = 2
+// defaultFreezeDebounceReports is how many CONSECUTIVE delta_reports must
+// breach the freeze line before the kill fires — a single in-flight-fill
+// blip at the 60s cadence must not halt the agent (Freqtrade-style debounce).
+// Overridable via config (see effFreeze*). [INVENTED v1]
+const defaultFreezeDebounceReports = 2
 
 // killedSentinel marks an account already auto-frozen this drift episode
 // so we don't re-fire every subsequent report. Cleared when drift falls
@@ -644,8 +696,8 @@ func maxFlaggedDriftBps(drifts []driftResult, managed map[string]struct{}) float
 // killedSentinel (already fired — suppress repeats). A report below the
 // freeze line resets to 0, which also lifts the sentinel so a recurrence
 // can re-arm.
-func nextDriftStreak(maxBps float64, prev int) int {
-	if maxBps < freezeToleranceBps {
+func nextDriftStreak(maxBps float64, prev int, freezeBps float64) int {
+	if maxBps < freezeBps {
 		return 0
 	}
 	if prev < 0 {
@@ -664,11 +716,11 @@ func (h *agentMessageHandler) maybeAutoFreeze(ctx context.Context, accountID str
 	maxBps := maxFlaggedDriftBps(drifts, managed)
 
 	h.freezeMu.Lock()
-	next := nextDriftStreak(maxBps, h.driftStreak[accountID])
+	next := nextDriftStreak(maxBps, h.driftStreak[accountID], h.effFreezeToleranceBps())
 	h.driftStreak[accountID] = next
 	h.freezeMu.Unlock()
 
-	if next < freezeDebounceReports || h.killer == nil {
+	if next < h.effFreezeDebounceReports() || h.killer == nil {
 		return
 	}
 
@@ -689,7 +741,7 @@ func (h *agentMessageHandler) maybeAutoFreeze(ctx context.Context, accountID str
 	h.freezeMu.Unlock()
 	h.logger.Warn("auto_freeze_triggered",
 		"account_id", accountID, "max_drift_bps", maxBps,
-		"debounce_reports", freezeDebounceReports)
+		"debounce_reports", h.effFreezeDebounceReports())
 	recordKillAudit(ctx, h.auditor, h.logger, "system", accountID, ks,
 		map[string]any{"trigger": "auto", "max_drift_bps": maxBps})
 }

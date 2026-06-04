@@ -263,6 +263,10 @@ func main() {
 	// `agent:{accountID}:status` per protocol §7.2.
 	agentAuthSvc := agentauth.NewService(agentauth.NewGormTokenStore(db))
 	agentMsgs := newAgentMessageHandler(tradeRepo, instanceRepo, portfolioRepo, reconRepo, nil)
+	// Auto-freeze thresholds from config (default 200bps / N=2); tunable per
+	// deployment as real drift data arrives (see config.ReconcileConfig).
+	agentMsgs.freezeToleranceBps = cfg.Reconcile.FreezeToleranceBps
+	agentMsgs.freezeDebounceReports = cfg.Reconcile.FreezeDebounceReports
 
 	var statusReporter agentstatus.Reporter = agentstatus.NopReporter{}
 	if cfg.Redis.Addr == "" {
