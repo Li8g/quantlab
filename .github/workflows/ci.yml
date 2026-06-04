@@ -71,3 +71,32 @@ jobs:
       # green while the baseline is the only migration; it lights up on 00002+.
       - name: Lint migrations
         run: squawk -c .squawk.toml --no-error-on-unmatched-pattern internal/saas/store/migrations/*.sql
+
+  # Go static analysis gate: formatting, staticcheck, and the stdlib/dep
+  # vulnerability scan. Tool versions are pinned so a new tool release can't
+  # turn CI red without an intentional bump; govulncheck still queries the
+  # live vuln DB, so a newly-disclosed stdlib CVE can flag here and prompt a
+  # toolchain bump (that is the point of the gate).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # gofmt -l lists files that differ from canonical formatting; any output
+      # means drift. The repo has no other formatter gate, so this is it.
+      - name: gofmt
+        run: |
+          drift=$(gofmt -l .)
+          if [ -n "$drift" ]; then
+            echo "::error::gofmt drift in:"; echo "$drift"; exit 1
+          fi
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
