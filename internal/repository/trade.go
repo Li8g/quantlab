@@ -199,6 +199,28 @@ func (r *TradeRepo) MarkPartialIfPending(ctx context.Context, clientOrderID stri
 		Update("status", store.TradeStatusPartialFilled).Error
 }
 
+// SweepOrphanPending cancels orphaned pending TradeRecords: rows that
+// recordingDispatcher pre-inserted (status=pending) but whose dispatch then
+// failed (agent offline / latestClose=0), so no Ack/OrderUpdate ever advanced
+// them. A row is an orphan only when its GTT window has lapsed
+// (valid_until_ms < nowMs, so it can never fill) AND it never executed (no
+// SpotExecution) — the latter guard keeps a real-but-status-stuck fill (the
+// order_update gap) from being wrongly cancelled. Marks matches
+// TradeStatusCancelled and returns the count. Startup-only backstop,
+// mirroring ImportJobRepo/EvolutionTaskRepo SweepOrphans. nowMs is injected
+// (not time.Now) for deterministic tests; callers pass time.Now().UnixMilli().
+func (r *TradeRepo) SweepOrphanPending(ctx context.Context, nowMs int64) (int64, error) {
+	noFill := r.db.Model(&store.SpotExecution{}).
+		Select("1").
+		Where("spot_executions.client_order_id = trade_records.client_order_id")
+	res := r.db.WithContext(ctx).Model(&store.TradeRecord{}).
+		Where("status = ?", store.TradeStatusPending).
+		Where("valid_until_ms < ?", nowMs).
+		Where("NOT EXISTS (?)", noFill).
+		Update("status", store.TradeStatusCancelled)
+	return res.RowsAffected, res.Error
+}
+
 // ListExecutionsForOrders returns every fill whose client_order_id is in
 // the supplied set, oldest fill first. Used by the live-monitor /live
 // snapshot to attach fill detail to the recent trade tail in a single

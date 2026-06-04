@@ -219,6 +219,17 @@ func main() {
 	reconRepo := repository.NewReconRepo(db)
 	importJobRepo := repository.NewImportJobRepo(db)
 
+	// Sweep orphaned pending trades left by a previous run: recordingDispatcher
+	// pre-inserts a pending TradeRecord, but if the dispatch then failed (agent
+	// offline / latestClose=0) it never got an Ack/OrderUpdate and is stuck
+	// pending. Cancel any whose GTT window has lapsed and that never executed.
+	// Startup-only backstop (cf. import/task SweepOrphans).
+	if n, err := tradeRepo.SweepOrphanPending(ctx, time.Now().UnixMilli()); err != nil {
+		log.Printf("saas: sweep orphan pending trades: %v", err)
+	} else if n > 0 {
+		log.Printf("saas: swept %d orphan pending trade(s) → cancelled", n)
+	}
+
 	registry := epoch.DefaultRegistry()
 	svc := epoch.New(
 		db,
