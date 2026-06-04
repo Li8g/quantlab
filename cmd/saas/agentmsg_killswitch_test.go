@@ -63,11 +63,11 @@ func TestNextDriftStreak(t *testing.T) {
 		{"below line resets", 50, 1, 0},
 		{"below line lifts sentinel", 50, killedSentinel, 0},
 		{"first breach", 300, 0, 1},
-		{"second breach reaches threshold", 300, 1, freezeDebounceReports},
+		{"second breach reaches threshold", 300, 1, defaultFreezeDebounceReports},
 		{"sentinel suppresses while drifting", 300, killedSentinel, killedSentinel},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nextDriftStreak(tc.maxBps, tc.prev); got != tc.want {
+			if got := nextDriftStreak(tc.maxBps, tc.prev, defaultFreezeToleranceBps); got != tc.want {
 				t.Errorf("nextDriftStreak(%v,%d) = %d, want %d", tc.maxBps, tc.prev, got, tc.want)
 			}
 		})
@@ -174,6 +174,27 @@ func TestClearDriftStreak_ReArmsAutoFreeze(t *testing.T) {
 	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 2 → fire again
 	if len(fk.calls) != 2 {
 		t.Errorf("did not re-fire after ClearDriftStreak; calls=%d, want 2", len(fk.calls))
+	}
+}
+
+// TestMaybeAutoFreeze_HonorsConfiguredThresholds proves the config overrides
+// (effFreeze*) take effect: a lower line + debounce=1 fires on the FIRST
+// breach at a drift the default 200bps/N=2 would not have frozen on.
+func TestMaybeAutoFreeze_HonorsConfiguredThresholds(t *testing.T) {
+	fk := &fakeKiller{}
+	h := &agentMessageHandler{
+		driftStreak:           map[string]int{},
+		killer:                fk,
+		logger:                slog.Default(),
+		freezeToleranceBps:    100, // below default 200
+		freezeDebounceReports: 1,   // fire immediately, no debounce
+	}
+	managed := managedSet("BTC")
+	breach := []driftResult{{Asset: "BTC", DriftBps: 150, Flagged: true}} // >100 line, <200 default
+
+	h.maybeAutoFreeze(context.Background(), "01HKACCT00000000000000000A", breach, managed)
+	if len(fk.calls) != 1 {
+		t.Fatalf("configured line=100/debounce=1 did not fire on first 150bps breach; calls=%d", len(fk.calls))
 	}
 }
 
