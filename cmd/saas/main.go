@@ -396,17 +396,32 @@ func main() {
 			log.Fatalf("saas: http server: %v", err)
 		}
 	}()
-	go func() {
-		log.Printf("saas: ws listening on %s", cfg.Server.WSListen)
-		if err := wsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("saas: ws server: %v", err)
-		}
-	}()
+	// WS Hub serves Agent connections (the live-trading control plane). Per
+	// the app_role matrix (docs/系统总体拓扑结构.md §2): saas + dev start the
+	// listener, lab (pure backtest, no agents) skips it. The hub object is
+	// still constructed either way so the API handlers (Presence/Killer/
+	// Resumer) stay wired — only the public :8081 listener is gated.
+	if cfg.AppRole != config.AppRoleLab {
+		go func() {
+			log.Printf("saas: ws listening on %s", cfg.Server.WSListen)
+			if err := wsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("saas: ws server: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("saas: app_role=lab — WS Hub listener disabled (no agents in backtest)")
+	}
 
-	// Cron Tick scheduler (Phase 6.2). Runs in-process; stops cleanly
-	// when ctx is cancelled. In-flight Ticks complete on their own
-	// (per-instance mutex in Manager).
-	go scheduler.Run(ctx)
+	// Cron Tick scheduler (Phase 6.2). It drives live-instance Step()s, so
+	// only saas runs it; lab (backtest) and dev have no live instances to
+	// tick (app_role matrix, docs/系统总体拓扑结构.md §2). Runs in-process;
+	// stops cleanly when ctx is cancelled. In-flight Ticks complete on their
+	// own (per-instance mutex in Manager).
+	if cfg.AppRole == config.AppRoleSaaS {
+		go scheduler.Run(ctx)
+	} else {
+		log.Printf("saas: app_role=%s — Cron Tick scheduler disabled (no live instances)", cfg.AppRole)
+	}
 
 	<-ctx.Done()
 	log.Printf("saas: shutdown signal received, draining within %s", cfg.Server.ShutdownTimeout)
