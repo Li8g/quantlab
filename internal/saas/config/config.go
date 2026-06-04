@@ -178,6 +178,14 @@ type DataFeedConfig struct {
 	APIRateInterval       time.Duration `yaml:"api_rate_interval"`
 	DefaultSymbol         string        `yaml:"default_symbol"`
 	DefaultInterval       string        `yaml:"default_interval"`
+	// MaxBarStaleness bounds how old the newest trailing 1m kline may be at
+	// Tick time before the live-trading manager skips trading for that cycle
+	// (no order dispatch) and warns. Stale klines would price orders off a
+	// wrong or zero close, which the LOT_SIZE/notional checks reject and the
+	// reconciler eventually auto-freezes on — far better to not trade until
+	// the feed catches up. Consumed by internal/saas/instance.Manager, NOT
+	// the datafeeder. Zero → instance.DefaultMaxBarStaleness.
+	MaxBarStaleness time.Duration `yaml:"max_bar_staleness"`
 }
 
 // Load reads, parses, and applies defaults to the YAML at path.
@@ -284,6 +292,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Reconcile.FreezeDebounceReports < 0 {
 		return errors.New("reconcile.freeze_debounce_reports must be >= 0 (0 → default)")
+	}
+	if c.DataFeed.MaxBarStaleness < 0 {
+		return errors.New("data_feed.max_bar_staleness must be >= 0 (0 → default)")
 	}
 	return nil
 }

@@ -198,6 +198,7 @@ func TestScheduler_LogsSentinelsAsExpectedClass(t *testing.T) {
 	}{
 		{"in_flight", instance.ErrTickInFlight, slog.LevelDebug},
 		{"no_champion", instance.ErrInstanceNoChampion, slog.LevelWarn},
+		{"stale_data", instance.ErrInstanceDataStale, slog.LevelWarn},
 		{"other", errors.New("boom"), slog.LevelError},
 	}
 	for _, tc := range tests {

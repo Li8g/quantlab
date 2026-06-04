@@ -315,6 +315,10 @@ func main() {
 		newRecordingDispatcher(hub, tradeRepo, nil), // TradeCommandDispatcher with pre-insert
 		nil, // logger: slog.Default
 	)
+	// ⑤ Don't trade on stale klines: if the datafeeder falls behind, the
+	// Tick skips dispatch rather than pricing orders off a stale close.
+	// Zero → instance.DefaultMaxBarStaleness.
+	tickManager.SetMaxBarStaleness(cfg.DataFeed.MaxBarStaleness)
 	scheduler := cron.New(instanceRepo, tickManager, cron.Config{})
 
 	gapRepo := repository.NewKLineGapRepo(db)

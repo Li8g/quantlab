@@ -23,9 +23,9 @@ type DefaultBarLoader struct {
 // the window, returns what's available (may be empty).
 //
 // Window: [nowMs - count*1m, nowMs] inclusive. Caller (Tick) treats an
-// empty result as "no fresh data" — Step still runs but with empty
-// closes; sigmoid_v1 and similar strategies short-circuit on
-// insufficient history via stepHistoryCap checks.
+// empty or too-stale newest bar as "no fresh data" and skips the cycle
+// before Step (see Manager.effMaxBarStalenessMs / ErrInstanceDataStale),
+// so the strategy never decides against a stale or zero close.
 func (l *DefaultBarLoader) LoadTrailing(ctx context.Context, pair string, count int, nowMs int64) ([]domain.Bar, error) {
 	if count <= 0 {
 		return nil, fmt.Errorf("bar loader: count must be > 0, got %d", count)
