@@ -278,3 +278,67 @@ func TestTradeRepo_MarkPartialIfPending(t *testing.T) {
 		t.Errorf("filled order status = %q, want filled (untouched)", got["nx-co-filled"])
 	}
 }
+
+// TestTradeRepo_SweepOrphanPending proves the ④ orphan sweep cancels only
+// the genuinely-orphaned pending rows: GTT lapsed AND never executed. The
+// three negative controls (still in GTT window / pending-but-has-a-fill /
+// already terminal) must be left untouched.
+func TestTradeRepo_SweepOrphanPending(t *testing.T) {
+	repo, ctx := openTradeTestDB(t)
+	const inst = "nx-sweep-inst"
+	const nowMs = 1000
+
+	orders := []store.TradeRecord{
+		// orphan: pending, GTT lapsed (500<1000), no fill → SWEPT.
+		{ClientOrderID: "nx-sw-orphan", InstanceID: inst, Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 100, NowMsAtSaaS: 1, ValidUntilMs: 500, Status: store.TradeStatusPending},
+		// live: pending but still inside GTT window (2000>1000) → KEEP.
+		{ClientOrderID: "nx-sw-live", InstanceID: inst, Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 100, NowMsAtSaaS: 1, ValidUntilMs: 2000, Status: store.TradeStatusPending},
+		// executed: pending + GTT lapsed but HAS a fill → KEEP (status-stuck, not orphan).
+		{ClientOrderID: "nx-sw-executed", InstanceID: inst, Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 100, NowMsAtSaaS: 1, ValidUntilMs: 500, Status: store.TradeStatusPending},
+		// terminal: already filled → KEEP (not pending).
+		{ClientOrderID: "nx-sw-filled", InstanceID: inst, Symbol: "BTCUSDT", Side: "buy", OrderType: "market", QuantityUSD: 100, NowMsAtSaaS: 1, ValidUntilMs: 500, Status: store.TradeStatusFilled},
+	}
+	for i := range orders {
+		if err := repo.InsertTradeRecord(ctx, &orders[i]); err != nil {
+			t.Fatalf("InsertTradeRecord %s: %v", orders[i].ClientOrderID, err)
+		}
+	}
+	exec := &store.SpotExecution{ClientOrderID: "nx-sw-executed", ExchangeOrderID: "nx-sw-ex1", FillQuantity: 0.1, FillPrice: 60000, FillFeeAsset: "USDT", FillFeeAmount: 0.1, FilledAtExchangeMs: 400}
+	if err := repo.InsertSpotExecution(ctx, exec); err != nil {
+		t.Fatalf("InsertSpotExecution: %v", err)
+	}
+
+	n, err := repo.SweepOrphanPending(ctx, nowMs)
+	if err != nil {
+		t.Fatalf("SweepOrphanPending: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("swept %d rows, want 1 (only nx-sw-orphan)", n)
+	}
+
+	rows, err := repo.ListByInstance(ctx, inst, 0)
+	if err != nil {
+		t.Fatalf("ListByInstance: %v", err)
+	}
+	got := map[string]store.TradeStatus{}
+	for _, r := range rows {
+		got[r.ClientOrderID] = r.Status
+	}
+	if got["nx-sw-orphan"] != store.TradeStatusCancelled {
+		t.Errorf("orphan status = %q, want cancelled", got["nx-sw-orphan"])
+	}
+	if got["nx-sw-live"] != store.TradeStatusPending {
+		t.Errorf("in-window order status = %q, want pending (still valid)", got["nx-sw-live"])
+	}
+	if got["nx-sw-executed"] != store.TradeStatusPending {
+		t.Errorf("executed-but-stuck order status = %q, want pending (has a fill, must not cancel)", got["nx-sw-executed"])
+	}
+	if got["nx-sw-filled"] != store.TradeStatusFilled {
+		t.Errorf("filled order status = %q, want filled (untouched)", got["nx-sw-filled"])
+	}
+
+	// Idempotent: a second sweep finds nothing (the orphan is now cancelled).
+	if n2, err := repo.SweepOrphanPending(ctx, nowMs); err != nil || n2 != 0 {
+		t.Errorf("second sweep = (%d, %v), want (0, nil)", n2, err)
+	}
+}
