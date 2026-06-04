@@ -21,9 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"quantlab/internal/wire"
 )
 
 // Config mirrors config.agent.yaml. Field tags match
@@ -45,6 +48,25 @@ type ExchangeConfig struct {
 	APIKey    string `yaml:"api_key"`    // never sent over WS
 	APISecret string `yaml:"api_secret"` // never sent over WS
 	BaseURL   string `yaml:"base_url"`
+}
+
+// Environment reports the trading environment this exchange config points
+// at, as one of the wire.Environment* constants, for the backlog ⑥
+// handshake consistency assertion. The mock exchange is its own
+// environment; otherwise it is inferred from base_url (testnet hosts
+// carry "testnet" in the domain). Empty when it cannot be determined —
+// the SaaS then skips the assertion.
+func (e ExchangeConfig) Environment() string {
+	if e.Name == "mock" {
+		return wire.EnvironmentMock
+	}
+	if strings.Contains(e.BaseURL, "testnet") {
+		return wire.EnvironmentTestnet
+	}
+	if strings.Contains(e.BaseURL, "binance.com") {
+		return wire.EnvironmentMainnet
+	}
+	return ""
 }
 
 type LogConfig struct {

@@ -22,6 +22,7 @@ func (c *Client) doHandshake(ctx context.Context, conn wsconn.Conn) error {
 		AccountID:     c.cfg.AccountID,
 		SchemaVersion: wire.SchemaVersion,
 		Exchange:      c.cfg.Exchange.Name,
+		Environment:   c.cfg.Exchange.Environment(),
 	}); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}

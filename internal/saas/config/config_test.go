@@ -247,6 +247,42 @@ reconcile: { freeze_tolerance_bps: -1 }
 	}
 }
 
+func TestLoad_RejectsBadExpectedEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+app_role: dev
+database: { host: localhost, database: q }
+jwt: { secret: x }
+live: { expected_environment: prod }
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("expected error for live.expected_environment=prod, got nil")
+	}
+}
+
+func TestLoad_AcceptsValidExpectedEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+app_role: dev
+database: { host: localhost, database: q }
+jwt: { secret: x }
+live: { expected_environment: testnet }
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Live.ExpectedEnvironment != "testnet" {
+		t.Errorf("ExpectedEnvironment = %q, want testnet", c.Live.ExpectedEnvironment)
+	}
+}
+
 func TestDatabaseDSN(t *testing.T) {
 	d := DatabaseConfig{
 		Host: "h", Port: 5432, User: "u", Password: "p", Database: "db", SSLMode: "disable",

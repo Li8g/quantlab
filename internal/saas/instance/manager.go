@@ -131,8 +131,29 @@ type Manager struct {
 	dispatcher TradeCommandDispatcher
 	logger     *slog.Logger
 
+	// maxBarStalenessMs bounds how old the newest trailing bar may be
+	// before Tick skips trading (⑤). Zero ⇒ DefaultMaxBarStaleness (see
+	// effMaxBarStalenessMs). Set post-construction via SetMaxBarStaleness.
+	maxBarStalenessMs int64
+
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex
+}
+
+// SetMaxBarStaleness overrides the trailing-bar staleness bound used by
+// the ⑤ freshness guard. A non-positive duration restores the default.
+// Wired from config.DataFeedConfig.MaxBarStaleness in cmd/saas.
+func (m *Manager) SetMaxBarStaleness(d time.Duration) {
+	m.maxBarStalenessMs = d.Milliseconds()
+}
+
+// effMaxBarStalenessMs is the configured staleness bound, or the default
+// when unset (≤ 0).
+func (m *Manager) effMaxBarStalenessMs() int64 {
+	if m.maxBarStalenessMs > 0 {
+		return m.maxBarStalenessMs
+	}
+	return DefaultMaxBarStaleness.Milliseconds()
 }
 
 // New constructs a Manager. All dependencies are required; nil
@@ -194,6 +215,21 @@ var ErrInstanceNoChampion = errors.New("instance has no ActiveChampID; deploy a 
 // caller (cron scheduler) silently skips, since a Tick is by
 // definition already underway.
 var ErrTickInFlight = errors.New("tick already in flight for this instance")
+
+// ErrInstanceDataStale signals the Tick was skipped because the newest
+// trailing 1m kline is older than the configured staleness bound (or no
+// bars were loaded at all). Pricing orders off a stale/zero close is the
+// ⑤ live-trading failure mode — the datafeeder fell behind, so we refuse
+// to trade this cycle rather than dispatch at a wrong price. Non-fatal:
+// the cron scheduler warns and the next healthy Tick resumes once the
+// feed catches up.
+var ErrInstanceDataStale = errors.New("trailing kline data is stale; skipping trade cycle")
+
+// DefaultMaxBarStaleness is the staleness bound applied when
+// config.DataFeedConfig.MaxBarStaleness is zero. Generous enough to
+// tolerate normal datafeeder import lag on 1m bars yet small enough to
+// catch a genuine feed outage.
+const DefaultMaxBarStaleness = 15 * time.Minute
 
 // Tick runs one decision cycle for instance `inst`. The 10 steps map
 // to the Phase 6 prompt:
@@ -270,6 +306,24 @@ func (m *Manager) Tick(ctx context.Context, inst store.StrategyInstance) error {
 		return fmt.Errorf("tick: load bars: %w", err)
 	}
 	closes, timestamps := splitBars(barRows)
+
+	// ⑤ Freshness guard: if the newest trailing bar is too old (or none
+	// loaded), the datafeeder has fallen behind. The latest close would
+	// price every OrderIntent off a stale/zero value — rejected by the
+	// exchange's LOT_SIZE/notional filters and eventually auto-frozen by
+	// the reconciler. Skip the whole cycle (no Step, no dispatch) and let
+	// the cron scheduler surface a warning. Bailing before applyFills is
+	// fine: the exec watermark is unchanged, so the next healthy Tick
+	// folds any pending fills with no double-count.
+	if staleMs, stale := barStaleness(timestamps, nowMs, m.effMaxBarStalenessMs()); stale {
+		m.logger.Warn("tick_skipped_stale_data",
+			"instance_id", inst.InstanceID,
+			"pair", inst.Pair,
+			"bars_loaded", len(timestamps),
+			"newest_bar_age_ms", staleMs,
+			"max_staleness_ms", m.effMaxBarStalenessMs())
+		return ErrInstanceDataStale
+	}
 
 	portfolio := strategy.PortfolioSnapshot{}
 	lastBarTime := int64(0)
@@ -426,4 +480,18 @@ func splitBars(bars []domain.Bar) (closes []float64, ts []int64) {
 		ts[i] = b.OpenTime
 	}
 	return closes, ts
+}
+
+// barStaleness reports whether the trailing bars are too stale to trade
+// on. timestamps is ascending (splitBars order), so the last element is
+// the newest bar. Returns the newest bar's age in ms and whether it
+// (or an empty load) breaches maxStalenessMs. An empty load is always
+// stale: there is no price to act on.
+func barStaleness(timestamps []int64, nowMs, maxStalenessMs int64) (ageMs int64, stale bool) {
+	n := len(timestamps)
+	if n == 0 {
+		return 0, true
+	}
+	ageMs = nowMs - timestamps[n-1]
+	return ageMs, ageMs > maxStalenessMs
 }

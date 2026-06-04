@@ -37,6 +37,14 @@ type Config struct {
 	StateSyncTimeout time.Duration
 	WriteTimeout     time.Duration
 
+	// ExpectedEnvironment, if non-empty, is asserted against
+	// Hello.Environment at handshake (backlog ⑥). RejectEnvMismatch makes
+	// a mismatch a hard auth_fail (prod, app_role=saas); otherwise a
+	// mismatch only warns and the connection proceeds (dev/lab testnet
+	// workflow). Empty ExpectedEnvironment skips the assertion.
+	ExpectedEnvironment string
+	RejectEnvMismatch   bool
+
 	// Logger; nil → slog.Default().
 	Logger *slog.Logger
 
@@ -104,6 +112,9 @@ type Hub struct {
 	stateSyncTimeout time.Duration
 	writeTimeout     time.Duration
 
+	expectedEnv       string
+	rejectEnvMismatch bool
+
 	onStateSync       func(ctx context.Context, accountID string, payload json.RawMessage) error
 	onStale           func(ctx context.Context, accountID string) error
 	onAgentMessage    func(ctx context.Context, accountID string, env wire.Envelope) error
@@ -125,6 +136,8 @@ func New(auth *agentauth.Service, cfg Config) *Hub {
 		authTimeout:       cfg.AuthTimeout,
 		stateSyncTimeout:  cfg.StateSyncTimeout,
 		writeTimeout:      cfg.WriteTimeout,
+		expectedEnv:       cfg.ExpectedEnvironment,
+		rejectEnvMismatch: cfg.RejectEnvMismatch,
 		onStateSync:       cfg.OnStateSync,
 		onStale:           cfg.OnStale,
 		onAgentMessage:    cfg.OnAgentMessage,

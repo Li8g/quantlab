@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"quantlab/internal/wire"
 )
 
 // AppRole is the runtime-mode switch.
@@ -45,6 +47,18 @@ type Config struct {
 	GA        GAConfig        `yaml:"ga"`
 	DataFeed  DataFeedConfig  `yaml:"data_feed"`
 	Reconcile ReconcileConfig `yaml:"reconcile"`
+	Live      LiveConfig      `yaml:"live"`
+}
+
+// LiveConfig tunes the live-trading fleet boundary.
+type LiveConfig struct {
+	// ExpectedEnvironment is the trading environment this deployment's
+	// agents must be on (mainnet/testnet/mock), asserted at the WS
+	// handshake against Hello.Environment (backlog ⑥). On app_role=saas a
+	// mismatch is a hard auth_fail; on dev/lab it is a warn-only so the
+	// intended testnet workflow (mainnet klines + testnet agent) keeps
+	// running. Empty → the assertion is skipped entirely.
+	ExpectedEnvironment string `yaml:"expected_environment"`
 }
 
 type DatabaseConfig struct {
@@ -178,6 +192,14 @@ type DataFeedConfig struct {
 	APIRateInterval       time.Duration `yaml:"api_rate_interval"`
 	DefaultSymbol         string        `yaml:"default_symbol"`
 	DefaultInterval       string        `yaml:"default_interval"`
+	// MaxBarStaleness bounds how old the newest trailing 1m kline may be at
+	// Tick time before the live-trading manager skips trading for that cycle
+	// (no order dispatch) and warns. Stale klines would price orders off a
+	// wrong or zero close, which the LOT_SIZE/notional checks reject and the
+	// reconciler eventually auto-freezes on — far better to not trade until
+	// the feed catches up. Consumed by internal/saas/instance.Manager, NOT
+	// the datafeeder. Zero → instance.DefaultMaxBarStaleness.
+	MaxBarStaleness time.Duration `yaml:"max_bar_staleness"`
 }
 
 // Load reads, parses, and applies defaults to the YAML at path.
@@ -284,6 +306,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Reconcile.FreezeDebounceReports < 0 {
 		return errors.New("reconcile.freeze_debounce_reports must be >= 0 (0 → default)")
+	}
+	if c.DataFeed.MaxBarStaleness < 0 {
+		return errors.New("data_feed.max_bar_staleness must be >= 0 (0 → default)")
+	}
+	switch c.Live.ExpectedEnvironment {
+	case "", wire.EnvironmentMainnet, wire.EnvironmentTestnet, wire.EnvironmentMock:
+	default:
+		return fmt.Errorf("live.expected_environment must be empty or one of mainnet/testnet/mock, got %q",
+			c.Live.ExpectedEnvironment)
 	}
 	return nil
 }

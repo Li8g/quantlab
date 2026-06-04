@@ -156,6 +156,8 @@ func (s *Scheduler) runTick(ctx context.Context, inst store.StrategyInstance) {
 		s.cfg.Logger.Debug("scheduler_tick_skipped_inflight", "instance_id", inst.InstanceID)
 	case errors.Is(err, instance.ErrInstanceNoChampion):
 		s.cfg.Logger.Warn("scheduler_tick_skipped_no_champion", "instance_id", inst.InstanceID)
+	case errors.Is(err, instance.ErrInstanceDataStale):
+		s.cfg.Logger.Warn("scheduler_tick_skipped_stale_data", "instance_id", inst.InstanceID)
 	default:
 		s.cfg.Logger.Error("scheduler_tick_failed",
 			"instance_id", inst.InstanceID,

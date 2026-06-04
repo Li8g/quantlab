@@ -298,6 +298,11 @@ func main() {
 	hub := wshub.New(agentAuthSvc, wshub.Config{
 		OnAgentMessage:    agentMsgs.Hook,
 		OnConnectionState: makeConnectionStateHook(statusReporter),
+		// backlog ⑥: reject a misconfigured agent (wrong env) at handshake.
+		// Hard-fail only on prod; dev/lab warns so the testnet workflow
+		// (mainnet klines + testnet agent) keeps running.
+		ExpectedEnvironment: cfg.Live.ExpectedEnvironment,
+		RejectEnvMismatch:   cfg.AppRole == config.AppRoleSaaS,
 	})
 	// Auto-freeze control plane (kill_switch Option 3): the delta_report
 	// drift detector reaches back through the hub to halt a drifting agent.
@@ -315,6 +320,10 @@ func main() {
 		newRecordingDispatcher(hub, tradeRepo, nil), // TradeCommandDispatcher with pre-insert
 		nil, // logger: slog.Default
 	)
+	// ⑤ Don't trade on stale klines: if the datafeeder falls behind, the
+	// Tick skips dispatch rather than pricing orders off a stale close.
+	// Zero → instance.DefaultMaxBarStaleness.
+	tickManager.SetMaxBarStaleness(cfg.DataFeed.MaxBarStaleness)
 	scheduler := cron.New(instanceRepo, tickManager, cron.Config{})
 
 	gapRepo := repository.NewKLineGapRepo(db)

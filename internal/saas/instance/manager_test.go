@@ -236,6 +236,10 @@ func newTickRig() (*Manager, *fakePortfolioStore, *fakeRuntimeStore, *recordingD
 		disp,
 		nil,
 	)
+	// The fixture bars use fixed 1970-era OpenTimes; disable the ⑤
+	// staleness guard so these Tick tests reach Step/dispatch. Tests that
+	// exercise the guard set their own bound (see TestTick_StaleDataSkips).
+	m.SetMaxBarStaleness(100 * 365 * 24 * time.Hour)
 	return m, ps, rs, disp, strat
 }
 
@@ -531,6 +535,94 @@ func TestTick_NoChampionReturnsSentinel(t *testing.T) {
 	}
 	if len(rs.upserts) != 0 {
 		t.Errorf("RuntimeState should NOT be written without champion, got %d", len(rs.upserts))
+	}
+}
+
+// TestTick_StaleDataSkips verifies the ⑤ freshness guard: when the
+// newest trailing bar is older than the staleness bound, Tick returns
+// ErrInstanceDataStale and runs no Step / persist / dispatch.
+func TestTick_StaleDataSkips(t *testing.T) {
+	m, ps, rs, disp, strat := newTickRig()
+	// Re-enable the guard with the default bound. The rig's fixture bars
+	// carry 1970-era OpenTimes, wildly stale against time.Now().
+	m.SetMaxBarStaleness(0) // 0 → DefaultMaxBarStaleness
+	strat.output = strategy.StrategyOutput{
+		MacroOrders: []strategy.OrderIntent{
+			{Kind: strategy.OrderKindMacro, Side: strategy.OrderSideBuy, OrderType: strategy.OrderTypeMarket, QuantityUSD: 500, ClientOrderID: "m-1"},
+		},
+	}
+
+	err := m.Tick(context.Background(), liveInstance("ch-001"))
+	if !errors.Is(err, ErrInstanceDataStale) {
+		t.Fatalf("err = %v, want ErrInstanceDataStale", err)
+	}
+	if len(strat.inputs) != 0 {
+		t.Errorf("Step should NOT run on stale data, got %d calls", len(strat.inputs))
+	}
+	if len(ps.appended) != 0 {
+		t.Errorf("PortfolioState should NOT be written on stale data, got %d", len(ps.appended))
+	}
+	if len(rs.upserts) != 0 {
+		t.Errorf("RuntimeState should NOT be written on stale data, got %d", len(rs.upserts))
+	}
+	if len(disp.calls) != 0 {
+		t.Errorf("orders should NOT dispatch on stale data, got %d", len(disp.calls))
+	}
+}
+
+// TestTick_FreshDataPassesGuard verifies a bar near nowMs clears the ⑤
+// guard so trading proceeds normally.
+func TestTick_FreshDataPassesGuard(t *testing.T) {
+	m, _, _, disp, strat := newTickRig()
+	now := time.Now().UnixMilli()
+	m.bars = &fakeBarLoader{bars: []domain.Bar{
+		{OpenTime: now - 120_000, Close: 100},
+		{OpenTime: now - 60_000, Close: 101},
+		{OpenTime: now, Close: 102},
+	}}
+	m.SetMaxBarStaleness(0) // default bound; bars are fresh
+	strat.output = strategy.StrategyOutput{
+		MacroOrders: []strategy.OrderIntent{
+			{Kind: strategy.OrderKindMacro, Side: strategy.OrderSideBuy, OrderType: strategy.OrderTypeMarket, QuantityUSD: 500, ClientOrderID: "m-1"},
+		},
+	}
+
+	if err := m.Tick(context.Background(), liveInstance("ch-001")); err != nil {
+		t.Fatalf("Tick on fresh data: %v", err)
+	}
+	if len(disp.calls) != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", len(disp.calls))
+	}
+	if got := disp.calls[0].latestClose; got != 102 {
+		t.Errorf("latestClose = %v, want 102 (newest fresh bar)", got)
+	}
+}
+
+func TestBarStaleness(t *testing.T) {
+	const now = int64(1_000_000_000)
+	const maxMs = int64(900_000) // 15m
+	tests := []struct {
+		name      string
+		ts        []int64
+		wantStale bool
+		wantAge   int64
+	}{
+		{"empty is always stale", nil, true, 0},
+		{"fresh within bound", []int64{now - 60_000}, false, 60_000},
+		{"exactly at bound is fresh", []int64{now - maxMs}, false, maxMs},
+		{"one ms past bound is stale", []int64{now - maxMs - 1}, true, maxMs + 1},
+		{"uses newest (last) bar", []int64{now - 10_000_000, now - 1_000}, false, 1_000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			age, stale := barStaleness(tc.ts, now, maxMs)
+			if stale != tc.wantStale {
+				t.Errorf("stale = %v, want %v", stale, tc.wantStale)
+			}
+			if age != tc.wantAge {
+				t.Errorf("age = %d, want %d", age, tc.wantAge)
+			}
+		})
 	}
 }
 

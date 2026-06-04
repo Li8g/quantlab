@@ -12,7 +12,21 @@ type Hello struct {
 	SchemaVersion string `json:"schema_version"`
 	Platform      string `json:"platform,omitempty"`
 	Exchange      string `json:"exchange,omitempty"`
+	// Environment is the trading environment the Agent's exchange is
+	// pointed at: one of the Environment* constants. The SaaS Hub asserts
+	// it against its expected environment at handshake (backlog ⑥
+	// consistency assertion) to catch a misconfigured agent before it
+	// trades. Additive/optional: empty → the assertion is skipped, so
+	// pre-⑥ agents stay compatible.
+	Environment string `json:"environment,omitempty"`
 }
+
+// Environment values for Hello.Environment (backlog ⑥).
+const (
+	EnvironmentMainnet = "mainnet"
+	EnvironmentTestnet = "testnet"
+	EnvironmentMock    = "mock"
+)
 
 // AuthRequired is the SaaS response to Hello, signaling the Agent to send
 // an Auth frame within 10s (§4.2 timeout). Payload is empty by design.
@@ -42,10 +56,11 @@ type AuthOK struct {
 type AuthFailCode string
 
 const (
-	AuthFailInvalidToken    AuthFailCode = "invalid_token"
-	AuthFailRevoked         AuthFailCode = "revoked"
-	AuthFailSchemaMismatch  AuthFailCode = "schema_mismatch"
-	AuthFailAccountMismatch AuthFailCode = "account_mismatch"
+	AuthFailInvalidToken        AuthFailCode = "invalid_token"
+	AuthFailRevoked             AuthFailCode = "revoked"
+	AuthFailSchemaMismatch      AuthFailCode = "schema_mismatch"
+	AuthFailAccountMismatch     AuthFailCode = "account_mismatch"
+	AuthFailEnvironmentMismatch AuthFailCode = "environment_mismatch"
 )
 
 // AuthFail is sent immediately before SaaS closes the connection (§5.5).
