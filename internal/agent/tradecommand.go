@@ -174,6 +174,7 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 				FillFeeAmountDecimal: formatDecimal(f.FillFeeAmount),
 				FilledAtExchangeMs:   f.FilledAtExchangeMs,
 				ActualSlippageBps:    slippageBps,
+				TradeID:              f.TradeID,
 			}
 			ou.Fills = append(ou.Fills, wf)
 			// Tee into the delta_report buffer (§5.11 fallback). Unlike

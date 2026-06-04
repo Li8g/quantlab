@@ -559,6 +559,7 @@ func buildFillFromExecution(raw rawExecutionReport) (agent.ExchangeFill, error) 
 		FillFeeAsset:       raw.CommissionAsset,
 		FillFeeAmount:      fee,
 		FilledAtExchangeMs: raw.TransactTime,
+		TradeID:            raw.TradeID,
 	}, nil
 }
 

@@ -60,14 +60,18 @@ func (r *InstanceRepo) ListLive(ctx context.Context) ([]store.StrategyInstance, 
 	return rows, nil
 }
 
-// ListByAccount returns every instance owned by an exchange account,
-// any status. delta_report reconciliation (Phase 8) uses it to resolve
-// the account-level position snapshot back to the SaaS-side portfolio(s):
-// 1 row → attribute the discrepancy to that instance; many → account-level.
+// ListByAccount returns the account's non-retired instances. delta_report
+// reconciliation (Phase 8) uses it to resolve the account-level position
+// snapshot back to the SaaS-side portfolio(s): 1 row → attribute the
+// discrepancy to that instance; many → account-level. Retired instances are
+// excluded: a retired instance is terminal (its positions were handed off),
+// so summing its stale ledger into the account's expected holdings would
+// fabricate drift against the real exchange snapshot and auto-freeze the
+// account. idle/paused instances still hold positions and stay in scope.
 func (r *InstanceRepo) ListByAccount(ctx context.Context, accountID string) ([]store.StrategyInstance, error) {
 	var rows []store.StrategyInstance
 	if err := r.db.WithContext(ctx).
-		Where("account_id = ?", accountID).
+		Where("account_id = ? AND status <> ?", accountID, store.InstanceStatusRetired).
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}

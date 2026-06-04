@@ -29,6 +29,18 @@ type Fill struct {
 	FilledAtExchangeMs   int64   `json:"filled_at_exchange_ms"`
 	ActualSlippageBps    float64 `json:"actual_slippage_bps"`
 
+	// TradeID is the exchange's globally-unique trade (fill) id — the
+	// canonical dedup identity. A single market order sweeping a thin book
+	// produces several fills that all share FilledAtExchangeMs (Binance
+	// stamps every fill of one execution with the same transactTime), so
+	// SaaS must dedup on (client_order_id, trade_id) and NOT on
+	// (client_order_id, ms): the ms key would collapse genuine multi-level
+	// fills into one and under-count the position. 0 when the backend
+	// doesn't surface a trade id (e.g. MockExchange) — SaaS then falls back
+	// to the (client_order_id, ms) key. Omitted from the wire when zero so
+	// the frozen v1 envelope is unchanged for legacy/mock fills.
+	TradeID int64 `json:"trade_id,omitempty"`
+
 	// ClientOrderID/ExchangeOrderID are only populated in delta_report
 	// since_last_fills, where individual fills need to be associated
 	// back to their order. In order_update.fills they are omitted because

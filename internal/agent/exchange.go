@@ -44,6 +44,10 @@ type ExchangeFill struct {
 	FillFeeAsset       string
 	FillFeeAmount      decimal.Decimal
 	FilledAtExchangeMs int64
+	// TradeID is the exchange's globally-unique trade id, carried to SaaS
+	// as the canonical fill-dedup key (see wire.Fill.TradeID). 0 when the
+	// backend has no per-trade id (MockExchange).
+	TradeID int64
 }
 
 // Position is one row of the Exchange.Positions() snapshot — input to

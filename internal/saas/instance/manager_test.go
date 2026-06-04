@@ -55,6 +55,27 @@ func (f *fakePortfolioStore) Append(_ context.Context, ps *store.PortfolioState)
 	return nil
 }
 
+type fakeExecutionStore struct {
+	fills   []store.InstanceFill
+	sinceID uint // captured from the last call (watermark passed by Tick)
+	err     error
+}
+
+func (f *fakeExecutionStore) NewExecutionsForInstance(_ context.Context, _ string, sinceID uint) ([]store.InstanceFill, error) {
+	f.sinceID = sinceID
+	if f.err != nil {
+		return nil, f.err
+	}
+	// Only return fills beyond the watermark (mirrors the SQL `id > sinceID`).
+	var out []store.InstanceFill
+	for _, fl := range f.fills {
+		if fl.ID > sinceID {
+			out = append(out, fl)
+		}
+	}
+	return out, nil
+}
+
 type fakeRuntimeStore struct {
 	current *store.RuntimeState
 	upserts []upsertCall
@@ -203,6 +224,7 @@ func newTickRig() (*Manager, *fakePortfolioStore, *fakeRuntimeStore, *recordingD
 	m := New(
 		&fakeInstanceStore{},
 		ps,
+		&fakeExecutionStore{}, // no fills by default; ③ tests override m.executions
 		rs,
 		&fakeBarLoader{bars: []domain.Bar{
 			{OpenTime: 1_000_000, Close: 100, IsGap: false},
@@ -329,6 +351,135 @@ func TestTick_ReleaseIntentsFlipDeadToFloat(t *testing.T) {
 	}
 	if len(disp.calls) != 0 {
 		t.Errorf("ReleaseIntent must NOT dispatch to Agent, got %d calls", len(disp.calls))
+	}
+}
+
+// TestApplyFills covers the pure ledger-writeback math (③): buy/sell
+// direction, fee deduction per asset, untracked fee asset, unknown side, and
+// the watermark advance.
+func TestApplyFills(t *testing.T) {
+	base := "BTC"
+	tests := []struct {
+		name          string
+		start         strategy.PortfolioSnapshot
+		fills         []store.InstanceFill
+		wantFloat     float64
+		wantUSDT      float64
+		wantWatermark uint
+	}{
+		{
+			name:  "buy adds base spends usdt",
+			start: strategy.PortfolioSnapshot{FloatBTC: 1, USDT: 10_000},
+			fills: []store.InstanceFill{
+				{ID: 3, Side: "buy", FillQuantity: 0.1, FillPrice: 50_000},
+			},
+			wantFloat: 1.1, wantUSDT: 5_000, wantWatermark: 3,
+		},
+		{
+			name:  "sell removes base adds usdt minus usdt fee",
+			start: strategy.PortfolioSnapshot{FloatBTC: 1, USDT: 10_000},
+			fills: []store.InstanceFill{
+				{ID: 5, Side: "sell", FillQuantity: 0.2, FillPrice: 50_000, FillFeeAsset: "USDT", FillFeeAmount: 2},
+			},
+			wantFloat: 0.8, wantUSDT: 19_998, wantWatermark: 5,
+		},
+		{
+			name:  "fee in base asset reduces float",
+			start: strategy.PortfolioSnapshot{FloatBTC: 1, USDT: 10_000},
+			fills: []store.InstanceFill{
+				{ID: 7, Side: "buy", FillQuantity: 0.1, FillPrice: 50_000, FillFeeAsset: "BTC", FillFeeAmount: 0.0001},
+			},
+			wantFloat: 1.0999, wantUSDT: 5_000, wantWatermark: 7,
+		},
+		{
+			name:  "fee in untracked asset ignored",
+			start: strategy.PortfolioSnapshot{FloatBTC: 1, USDT: 10_000},
+			fills: []store.InstanceFill{
+				{ID: 9, Side: "sell", FillQuantity: 0.1, FillPrice: 50_000, FillFeeAsset: "BNB", FillFeeAmount: 0.5},
+			},
+			wantFloat: 0.9, wantUSDT: 15_000, wantWatermark: 9,
+		},
+		{
+			name:  "unknown side skipped but advances watermark",
+			start: strategy.PortfolioSnapshot{FloatBTC: 1, USDT: 10_000},
+			fills: []store.InstanceFill{
+				{ID: 11, Side: "weird", FillQuantity: 0.1, FillPrice: 50_000},
+			},
+			wantFloat: 1, wantUSDT: 10_000, wantWatermark: 11,
+		},
+		{
+			name:  "multiple fills accumulate, watermark is max id",
+			start: strategy.PortfolioSnapshot{FloatBTC: 1, USDT: 10_000},
+			fills: []store.InstanceFill{
+				{ID: 4, Side: "sell", FillQuantity: 0.1, FillPrice: 50_000},
+				{ID: 8, Side: "sell", FillQuantity: 0.1, FillPrice: 60_000},
+			},
+			wantFloat: 0.8, wantUSDT: 21_000, wantWatermark: 8,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, wm := applyFills(tt.start, tt.fills, base)
+			if !floatNear(got.FloatBTC, tt.wantFloat) {
+				t.Errorf("FloatBTC = %v, want %v", got.FloatBTC, tt.wantFloat)
+			}
+			if !floatNear(got.USDT, tt.wantUSDT) {
+				t.Errorf("USDT = %v, want %v", got.USDT, tt.wantUSDT)
+			}
+			if wm != tt.wantWatermark {
+				t.Errorf("watermark = %d, want %d", wm, tt.wantWatermark)
+			}
+		})
+	}
+}
+
+func floatNear(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < 1e-9
+}
+
+// TestTick_AbsorbsConfirmedFills is the end-to-end ③ guard: a confirmed sell
+// fill must (a) be visible to Step() as a reduced position, (b) land in the
+// appended PortfolioState, and (c) advance LastAppliedExecID so it is not
+// double-applied next cycle. The watermark query must use the prior row's
+// LastAppliedExecID as its floor.
+func TestTick_AbsorbsConfirmedFills(t *testing.T) {
+	m, ps, _, _, strat := newTickRig()
+	ps.latest = &store.PortfolioState{
+		InstanceID:        "inst-001",
+		FloatBTC:          1.0,
+		USDT:              10_000,
+		LastAppliedExecID: 2, // two fills already folded in earlier
+	}
+	es := &fakeExecutionStore{fills: []store.InstanceFill{
+		{ID: 2, Side: "sell", FillQuantity: 99, FillPrice: 1}, // <= watermark, must be ignored
+		{ID: 6, Side: "sell", FillQuantity: 0.2, FillPrice: 50_000, FillFeeAsset: "USDT", FillFeeAmount: 2},
+	}}
+	m.executions = es
+	strat.output = strategy.StrategyOutput{}
+
+	if err := m.Tick(context.Background(), liveInstance("ch-001")); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if es.sinceID != 2 {
+		t.Errorf("executions queried since id %d, want prior watermark 2", es.sinceID)
+	}
+	// (a) Step() saw the absorbed position.
+	in := strat.inputs[0]
+	if !floatNear(in.Portfolio.FloatBTC, 0.8) || !floatNear(in.Portfolio.USDT, 19_998) {
+		t.Errorf("Step saw stale portfolio %+v, want FloatBTC=0.8 USDT=19998", in.Portfolio)
+	}
+	// (b)+(c) persisted ledger + advanced watermark.
+	got := ps.appended[0]
+	if !floatNear(got.FloatBTC, 0.8) || !floatNear(got.USDT, 19_998) {
+		t.Errorf("appended ledger %+v, want FloatBTC=0.8 USDT=19998", got)
+	}
+	if got.LastAppliedExecID != 6 {
+		t.Errorf("LastAppliedExecID = %d, want 6", got.LastAppliedExecID)
 	}
 }
 

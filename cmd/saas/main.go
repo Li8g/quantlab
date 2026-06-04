@@ -293,7 +293,7 @@ func main() {
 	agentMsgs.auditor = auditRepo
 
 	tickManager := instance.New(
-		instanceRepo, portfolioRepo, runtimeRepo,
+		instanceRepo, portfolioRepo, tradeRepo, runtimeRepo,
 		&instance.DefaultBarLoader{DB: db},
 		&instance.DefaultStrategyResolver{Registry: registry},
 		&instance.DefaultChampionGeneLoader{Challengers: challengerRepo},
