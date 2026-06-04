@@ -93,3 +93,13 @@ data_feed:
   # close would be rejected by the exchange and auto-frozen by the reconciler.
   # Set above your datafeeder import cadence + margin. Omit/0 → 15m default.
   max_bar_staleness: 15m
+
+# Live-trading fleet boundary.
+live:
+  # expected_environment: the trading environment this deployment's agents must
+  # be on (mainnet/testnet/mock), asserted at the WS handshake against the
+  # agent's reported environment (backlog ⑥, catches a misconfigured agent
+  # before it trades). On app_role=saas a mismatch is a hard auth_fail; on
+  # dev/lab it only warns (so the intended testnet workflow — mainnet klines +
+  # testnet agent — keeps running). Omit/empty → assertion disabled.
+  expected_environment: ""

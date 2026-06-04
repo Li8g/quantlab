@@ -394,6 +394,26 @@ func (c *Connection) doHandshake(ctx context.Context) error {
 	c.AgentID = verified.AgentID
 	c.AccountID = verified.AccountID
 
+	// backlog ⑥: environment-consistency assertion. If this deployment
+	// declares an expected environment and the agent reports a different
+	// one, the agent is misconfigured (e.g. a prod fleet pointed at
+	// testnet). Hard-fail on prod (RejectEnvMismatch); warn-only otherwise
+	// so the intended testnet workflow (mainnet klines + testnet agent)
+	// keeps running. Empty on either side → skip (pre-⑥ agents stay
+	// compatible).
+	if c.hub.expectedEnv != "" && hello.Environment != "" && hello.Environment != c.hub.expectedEnv {
+		if c.hub.rejectEnvMismatch {
+			c.sendAuthFail(ctx, wire.AuthFailEnvironmentMismatch,
+				"agent environment does not match deployment expectation")
+			return fmt.Errorf("environment_mismatch: hello=%q expected=%q",
+				hello.Environment, c.hub.expectedEnv)
+		}
+		c.hub.log.Warn("agent_environment_mismatch",
+			"account_id", verified.AccountID,
+			"agent_environment", hello.Environment,
+			"expected_environment", c.hub.expectedEnv)
+	}
+
 	// Step 5: send auth_ok
 	if err := c.sendTyped(ctx, wire.TypeAuthOK, wire.AuthOK{
 		ServerNowMs: c.hub.nowMs(),

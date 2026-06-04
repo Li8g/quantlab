@@ -289,11 +289,14 @@ type AgentToken struct {
   "account_id":    "01H...",
   "schema_version": "v5.3.3",
   "platform":      "linux/amd64",        // 可选 — 诊断用
-  "exchange":      "binance_spot"        // 可选 — 多交易所时区分；v1 单一时填 "binance_spot"
+  "exchange":      "binance_spot",       // 可选 — 多交易所时区分；v1 单一时填 "binance_spot"
+  "environment":   "mainnet"             // 可选[additive] — "mainnet" | "testnet" | "mock"；见下
 }
 ```
 
 `account_id` 在 envelope.account_id 与 payload 重复携带：envelope 用于 routing，payload 用于审计 / token mismatch 检测。
+
+`environment`（增量字段，backlog ⑥）：Agent 从 `exchange.base_url` 推导其交易环境。Hub 若配了 `live.expected_environment`，握手时比对：`app_role=saas` 不一致 → `auth_fail{code=environment_mismatch}` 硬拒；dev/lab 仅告警放行（保留 mainnet-klines + testnet-agent 的测试工作流）。字段缺省（pre-⑥ Agent）→ 跳过断言，向后兼容。
 
 ### 5.2 `auth_required`（SaaS → Agent）
 
@@ -318,12 +321,12 @@ type AgentToken struct {
 
 ```json
 {
-  "code":   "invalid_token" | "revoked" | "schema_mismatch" | "account_mismatch",
+  "code":   "invalid_token" | "revoked" | "schema_mismatch" | "account_mismatch" | "environment_mismatch",
   "reason": "human-readable"
 }
 ```
 
-SaaS 发完此消息立即 close（500ms 内）。Agent 端收到 `invalid_token` / `revoked` 不进入退避循环（无限重试无意义）——直接 fatal 告警。
+SaaS 发完此消息立即 close（500ms 内）。Agent 端收到 `invalid_token` / `revoked` 不进入退避循环（无限重试无意义）——直接 fatal 告警。`environment_mismatch`（增量，backlog ⑥）：仅 `app_role=saas` 在 `hello.environment` 与 `live.expected_environment` 不一致时发出（dev/lab 改为告警放行）。
 
 ### 5.6 `state_sync_request`（SaaS → Agent）
 

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"quantlab/internal/wire"
 )
 
 // AppRole is the runtime-mode switch.
@@ -45,6 +47,18 @@ type Config struct {
 	GA        GAConfig        `yaml:"ga"`
 	DataFeed  DataFeedConfig  `yaml:"data_feed"`
 	Reconcile ReconcileConfig `yaml:"reconcile"`
+	Live      LiveConfig      `yaml:"live"`
+}
+
+// LiveConfig tunes the live-trading fleet boundary.
+type LiveConfig struct {
+	// ExpectedEnvironment is the trading environment this deployment's
+	// agents must be on (mainnet/testnet/mock), asserted at the WS
+	// handshake against Hello.Environment (backlog ⑥). On app_role=saas a
+	// mismatch is a hard auth_fail; on dev/lab it is a warn-only so the
+	// intended testnet workflow (mainnet klines + testnet agent) keeps
+	// running. Empty → the assertion is skipped entirely.
+	ExpectedEnvironment string `yaml:"expected_environment"`
 }
 
 type DatabaseConfig struct {
@@ -295,6 +309,12 @@ func (c *Config) Validate() error {
 	}
 	if c.DataFeed.MaxBarStaleness < 0 {
 		return errors.New("data_feed.max_bar_staleness must be >= 0 (0 → default)")
+	}
+	switch c.Live.ExpectedEnvironment {
+	case "", wire.EnvironmentMainnet, wire.EnvironmentTestnet, wire.EnvironmentMock:
+	default:
+		return fmt.Errorf("live.expected_environment must be empty or one of mainnet/testnet/mock, got %q",
+			c.Live.ExpectedEnvironment)
 	}
 	return nil
 }
