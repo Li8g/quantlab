@@ -258,6 +258,22 @@ cascade,但 engine/verification 没有 fail-closed 地信任边界。
 - `toy` 仍按 `plan.Windows` 输出,不在 production `DefaultRegistry`,但作为 engine fixture 对 canonical order 的证明力弱。
 - 现有测试覆盖 happy path、adapter error、Crucible 三态;没有覆盖 engine/verification 对 invalid raw fail-closed 的负例。
 
+### 阶段 2D(Raw validation / GA boundary negative-test follow-up)— 2026-06-06 复审
+
+复审范围:`internal/engine/engine.go`, `internal/resultpkg/validate.go`, `internal/verification/review.go`,
+`internal/verification/oos.go`, `internal/verification/stress.go`;重点确认 fail-closed 与 Raw-level cascade
+负向测试是否已存在。结论:G2C-1/G2C-2/G2C-3 仍未修, G2C-4 仍是同类边界缺口;当前测试基线通过,
+但缺的负向测试仍不存在。未改源码。
+
+验证:`GOCACHE=/tmp/quantlab-go-cache go test ./internal/resultpkg ./internal/fitness ./internal/engine ./internal/verification ./internal/strategies/sigmoid_v1 ./internal/strategies/toy` 通过。
+
+| ID | severity | file:line | 状态 | 复审结论 / 缺失测试 |
+|---|---|---|---|---|
+| G2D-1 | major/high | `internal/engine/engine.go:310` + `internal/engine/engine.go:414` + `internal/engine/engine.go:419` | ⛔ 未修 | `evaluatePopulation` 仍在 `adapter.Evaluate` 后直接 `AggregateScoreTotal(raw.Windows, ...)`;若 adapter 返回 `raw == nil`,worker goroutine 会在访问 `raw.Windows` 时 panic;若返回 `Fatal=false, SkippedBy=nil, Value=nil` 这类 invalid raw,聚合器会把该 window 当缺失贡献跳过。best-gene re-evaluate 也只保存 `bestRaw`,不校验。缺失测试:fake adapter 返回 nil raw / invalid raw 时,RunEpoch hot loop 与 best re-evaluate 必须返回 error 而不是 panic 或 silent aggregate。 |
+| G2D-2 | major | `internal/resultpkg/validate.go:69` + `internal/resultpkg/enums.go:145` | ⛔ 未修 | `RawEvaluateResult.Validate()` 仍只检查 `Windows != nil` 和逐个 `CrucibleResult.Validate()`;它不拒绝 empty windows、重复 window、非 canonical 顺序、`WindowOOS` 混入 IS、Fatal 后续未 cascade skipped、`SkippedBy` 无真实 earlier Fatal。缺失测试:Raw-level table tests 覆盖上述每个 negative case,并保留合法 canonical cascade 正例。 |
+| G2D-3 | major | `internal/verification/review.go:126` + `internal/verification/review.go:130` | ⛔ 未修 | `RunReview` replay 后仍直接聚合 `raw.Windows`,没有把 strategy/adapter contract violation 作为 Go error。缺失测试:stub adapter replay 返回 invalid raw 时,`RunReview` 应返回 error,不得产出 `VerificationStatusMismatch` 或 silent OK。 |
+| G2D-4 | medium | `internal/verification/oos.go:154` + `internal/verification/oos.go:158` + `internal/verification/stress.go:53` + `internal/verification/stress.go:57` | ⛔ 未修 | `RunOOS` 只检查 `len(raw.Windows)==1`,且在 nil raw 时会 panic;`RunStress` 对 `raw == nil` 返回 `(nil,nil)`,对 invalid non-nil raw 也没有统一校验。缺失测试:OOS nil/invalid raw fail closed;stress 对 invalid non-nil raw 不得 silently skip。 |
+
 ### 阶段 3(quant-correctness，§3 / SKILL §6)— 2026-06-02
 
 核心结论:量化正确性扎实,无 blocker/major。**§6.1 可复现**(EpochSeed 显式+记录、rng 不跨 goroutine、
@@ -431,6 +447,45 @@ schema;改用 `./config.yaml` 后,以下命令提权通过:
 | D4B-3 | major | `internal/api/handlers.go:715` + `internal/api/handlers.go:735` + `internal/repository/instance.go:84` + `internal/repository/instance.go:114` | strategy_instances 状态转换 CAS | ⛔ 未修 | 复核 D-4/C-3 仍成立:`transitionInstance` handler 先读状态再算 next,`UpdateStatus` 只 `WHERE instance_id = ?`;`SetActiveChampion` 也只按 `instance_id` 写。旧读可把并发 terminal retired 覆盖回 `live/paused`,deploy 可改 retired instance。修法:repo 暴露条件转换 API,例如 `WHERE instance_id=? AND status IN (...)`;用 `RowsAffected` 区分 not found/非法转换/race;deploy 写入至少加 `status <> 'retired'`,并与 C-1 的 active/unretired champion 校验一起处理。 |
 | D4B-4 | medium | `cmd/saas/agentmsg.go:637` + `cmd/saas/agentmsg.go:640` + `internal/repository/instance.go:104` + `internal/repository/portfolio.go:44` | genesis funding claim ordering | ⚠️ 可修缮 | `fundInstance` 先 append genesis `PortfolioState`,再 `MarkFunded`;`MarkFunded` 有 `funded_at_ms IS NULL` guard,但不返回 `RowsAffected`,调用方无从知道自己是否赢得 funding claim。并发 delta_report 若用不同 `nowMs` 进入,可留下多条 seed portfolio;`Latest()` 后续按 `now_ms DESC` 选一条,baseline/audit 可能取决于哪个报告时间更新,而不是单一 funding claim。修法:先原子 claim 再 seed,或 claim+seed 放事务;`MarkFunded` 返回 `(claimed bool,error)` / `UPDATE ... RETURNING`;只有 winner append seed;补 concurrent double-funding regression。 |
 | D4B-5 | low | `internal/repository/import_job.go:78` + `internal/repository/import_job.go:97` + `cmd/saas/main.go:375` | import job claim scalability guard | ⚠️ 可修缮 | 当前注释和 wiring 是非 saas、单 background worker,所以不是现有生产 bug。但 DB 层没有 claim 保护:`NextQueued` 选 queued oldest 不加锁,`MarkRunning` 只按 `job_id` 更新;若以后多 worker/多副本启用 import,同一 queued job 可被多次执行。修法:扩容前改成 `UPDATE ... WHERE status='queued' ... RETURNING` 或 `SELECT FOR UPDATE SKIP LOCKED`;`MarkRunning` queued-only 并处理 `RowsAffected==0`;补多 worker claim 测试。 |
+
+### 阶段 4C(DeployChampion 状态一致性)— 2026-06-06 专项复查
+
+复查范围:`DeployChampion` / `SetActiveChampion` 是否能证明请求的 challenger 是目标 instance
+`(strategy_id,pair)` 的 active、unretired champion,以及是否禁止部署到 retired instance。结论:major 仍未修。
+`uq_champion_active` 能保证每个 `(strategy_id,pair)` 最多一个 active champion,但 deploy 路径没有读取并绑定这条 active row。
+
+验证:`GOCACHE=/tmp/quantlab-go-cache go test ./internal/api ./internal/repository ./internal/saas/instance` 通过。
+
+| ID | severity | file:line | 条款 | 状态 | 修法 |
+|---|---|---|---|---|---|
+| D4C-1 | major | `internal/api/validate.go:139` + `internal/api/handlers.go:697` + `internal/repository/instance.go:114` + `internal/repository/champion.go:191` + `internal/saas/store/db.go:171` + `internal/saas/instance/manager.go:298` + `internal/saas/instance/champion_loader.go:35` | DeployChampion 状态一致性 / active champion scope / retired instance guard | ⛔ 未修 | `DeployChampionRequest.Validate()` 只检查 `challenger_id` 非空,handler 不读取目标 instance 或 `champion_history`,直接调用 `SetActiveChampion`;repo 只 `WHERE instance_id = ?` 写 `active_champ_id`,没有 `status <> 'retired'` 条件。`ChampionRepo.GetActive` 和 `uq_champion_active` 虽能表达 active/unretired champion 概念,但 deploy 没用它们证明请求 challenger 等于目标 instance `(strategy_id,pair)` 的 active row。Tick 后续按 instance 的 `StrategyID` resolve 策略,却用 `active_champ_id` 直接加载 challenger blob。修法:deploy 前在同一事务/条件 SQL 中读取目标 instance,要求 status 非 retired,并要求 `champion_histories.challenger_id = req.ChallengerID AND strategy_id = inst.StrategyID AND pair = inst.Pair AND retired_at IS NULL`;`RowsAffected==0` 映射 404/422;补 retired instance、retired champion、wrong pair/strategy、never-promoted challenger 回归测试。 |
+
+### Regression test follow-up — 2026-06-06 专项复查
+
+复查范围:所有当前 active high/major finding 是否已有永久回归测试,重点覆盖 Raw validation fail-closed、
+Retire CAS、fill dedup concurrency、order terminal-status replay、多实例 account false-freeze。结论:现有测试基线通过,
+但多数 active high/major 只有正向或相邻覆盖,缺少能锁住修复的负向回归测试。
+
+验证:
+`GOCACHE=/tmp/quantlab-go-cache go test ./internal/resultpkg ./internal/engine ./internal/verification ./internal/repository ./internal/api ./internal/agent ./cmd/saas` 通过;
+`GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml` 通过。
+
+| finding(s) | severity | regression coverage status | evidence / missing permanent test |
+|---|---|---|---|
+| A-1 | major | ❌ 缺 CI/永久边界测试 | 只有手工 `rg`/`go list` 复查和 `ComputeSharpeStats` 功能测试;没有自动失败的 import-boundary guard 来禁止 `internal/strategies/sigmoid_v1 -> internal/verification`。 |
+| G2C-1 / G-1 | major/high | ❌ 缺负向 fail-closed 测试 | `internal/resultpkg/validate_test.go:16` 覆盖 `CrucibleResult` 三态互斥,`internal/engine/engine_test.go:186`/`:216` 覆盖 valid Raw 正向路径;没有 fake adapter 返回 `raw == nil` 或 invalid Raw 后 RunEpoch/best re-evaluate 返回 error 的测试。 |
+| G2C-2 / G-2 | major | ❌ 缺 Raw-level 序列测试 | 当前测试只逐个 `CrucibleResult.Validate()`,没有 empty windows、duplicate window、乱序、`WindowOOS` 混入 IS、Fatal 后续未 cascade skipped、`SkippedBy` 无真实 earlier Fatal 的 Raw-level negative cases。 |
+| G2C-3 | major | ❌ 缺 replay contract 测试 | `internal/verification/review_test.go:41`/`:68`/`:97` 覆盖 OK、score mismatch、hash/fingerprint short-circuit;没有 invalid replay Raw 应返回 Go error 而非 mismatch/silent match 的测试。 |
+| D-1 | major(已修) | ⚠️ 部分覆盖 | `internal/saas/store/db_integration_test.go:79` 验证 `uq_champion_active` DDL 落在正确表且有 partial predicate;仍缺真正插入两个 active champion 或并发 Promote 只允许一个成功的回归测试。 |
+| C-1 / D4C-1 | major | ❌ 缺 deploy 负向测试 | `internal/api/instance_handlers_test.go:240` 只测 happy path 写入 `active_champ_id`;没有 retired instance、retired champion、wrong pair/strategy、never-promoted challenger 的拒绝测试。 |
+| C-2 / D4B-1 / D-2 | major | ❌ 缺 DB CAS/并发测试 | `internal/repository/champion_test.go:145` 只测内存 `applyRetire` 已 retired 拒绝;没有 repository 层 `WHERE retired_at IS NULL` / `RowsAffected==0` 或双 Retire 并发归因测试。 |
+| C-3 / D4B-3 / D-4 | major | ⚠️ 部分覆盖 | `internal/api/instance_handlers_test.go:203` 只证明 handler 读到 retired 时 start 返回 422;没有 stale read 后 `UpdateStatus` 覆盖 terminal retired 的 repo/并发测试,也没有 deploy retired guard 测试。 |
+| L-1 / C-4 / B-2 | major | ❌ 缺多实例 false-freeze 负向测试 | `cmd/saas/genesis_funding_integration_test.go:47` 是单实例 genesis funding;`internal/repository/instance_integration_test.go:20` 反而证明同 account 可返回多个非 retired instance;没有两个 fresh instance 同账户从同一 snapshot funding 后不产生 false discrepancy/auto-freeze,或第二个非 retired instance 被拒绝的测试。 |
+| D4B-2 / D-3 | major | ⚠️ 部分覆盖 | `cmd/saas/agentmsg_dedup_integration_test.go:33` 覆盖顺序 replay、cross-channel duplicate、same-ms distinct trade_ids;`internal/repository/reconciliation_integration_test.go:22` 覆盖 `ExecutionExists`;但没有两个并发 writers 同时通过 check-then-insert 的测试,也没有 DB unique violation 被当幂等 no-op 的测试。 |
+| S5B-1 | critical | ⚠️ 部分覆盖 | `internal/agent/agent_test.go:409` 覆盖 immediate duplicate terminal;`internal/agent/agent_test.go:448` 覆盖 brand-new expired reject;`internal/agent/kill_switch_test.go:17` 覆盖 brand-new frozen reject。缺 filled/terminal `client_order_id` 在 expired 或 frozen 后 replay 仍返回 `duplicate_terminal` 的测试。 |
+| S5B-2 | critical | ❌ 缺 idempotency read-error submit-path 测试 | `internal/agent/idempotency_sqlite_test.go` 覆盖 normal Get/Put/upsert/status update,但没有 fake `IdempotencyStore.Get` error 下 `handleTradeCommand` fail closed 且不 submit、不 upsert pending 的测试。 |
+| S5B-3 | major | ❌ 缺 exchange-event read-error 测试 | `internal/agent/agent_test.go:681` 覆盖 unknown order drop,`:620` 附近覆盖 known filled event;没有 idempotency `Get` error 时不得按 unknown 丢弃 fill/order_update/delta_report 的测试。 |
+| S5B-4 / C-5 | major | ⚠️ 部分覆盖 | `cmd/saas/agentmsg_test.go:11` 覆盖 ack/status 映射且 duplicate_terminal no-op;`internal/repository/trade_integration_test.go:246` 覆盖 `MarkPartialIfPending` 不覆盖 filled;`:286` 覆盖 orphan sweep 不改 terminal。缺通用 `UpdateTradeStatus`/ack/order_update replay 将 `filled` 降级为 `partial_filled`/`cancelled`/`rejected` 的负向测试。 |
 
 ### 阶段 5(工程基础，§2/§3/§8/§10）+ §7 Appendix A 服务规则 — 2026-06-02
 

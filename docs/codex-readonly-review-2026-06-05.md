@@ -904,3 +904,135 @@ Suggested fix:
 Verification:
 
 - `GOCACHE=/tmp/quantlab-go-cache go test ./internal/repository ./internal/api ./cmd/saas ./internal/saas/store` passed.
+
+## 2026-06-06 Addendum — DeployChampion State Consistency
+
+Scope:
+
+- Re-reviewed whether `DeployChampion` / `SetActiveChampion` proves the requested challenger is the active, unretired champion for the target instance's `(strategy_id,pair)`.
+- Re-reviewed whether deploy can write `active_champ_id` on a retired instance.
+
+Conclusion:
+
+- The DeployChampion major remains open.
+- The issue has two coupled parts: missing active/unretired champion membership validation and missing retired-instance write guard.
+- No source code was changed in this pass.
+
+Evidence:
+
+- `internal/api/validate.go:139` only validates that `challenger_id` is non-empty.
+- `internal/api/handlers.go:697` passes that ID directly to `Instances.SetActiveChampion`; it does not fetch the target instance and does not consult `champion_history`.
+- `internal/repository/instance.go:114` updates `strategy_instances.active_champ_id` with `WHERE instance_id = ?` only.
+- `internal/saas/store/models.go:336` has a terminal `retired` instance status, and `internal/saas/store/models.go:337` stores `active_champion_id` as a plain indexed string.
+- `internal/repository/champion.go:191` and `internal/saas/store/db.go:171` define the active champion concept (`retired_at IS NULL`, with a partial unique index), but deploy does not use that active row to prove the requested challenger belongs to the instance's `(strategy_id,pair)`.
+- `internal/saas/instance/manager.go:298` resolves the strategy from the instance, then loads the gene for `inst.ActiveChampID`; `internal/saas/instance/champion_loader.go:35` loads the challenger package blob directly and does not check `champion_history`.
+- Existing deploy handler coverage only checks the happy path where `active_champ_id` is set; it does not cover retired instance, wrong pair/strategy, retired champion, or never-promoted challenger rejection.
+
+Impact:
+
+- A retired champion, a challenger for another pair/strategy, or a never-promoted challenger can be attached to an instance.
+- Deploy can still mutate a retired instance.
+- Tick can fail on load/decode or run a gene that was not promoted for the instance's strategy/pair.
+
+Suggested fix:
+
+- Replace the thin `SetActiveChampion(instanceID, challengerID)` write with a deploy operation that validates instance + champion_history together.
+- Require the target instance status to be non-retired.
+- Require `champion_histories.challenger_id = req.ChallengerID`, matching `strategy_id` and `pair`, and `retired_at IS NULL`.
+- Use a transaction or a single conditional SQL statement and map `RowsAffected == 0` / not found into 404 or 422.
+- Add regression tests for retired instance, retired champion, wrong pair/strategy, and never-promoted challenger deployment.
+
+Verification:
+
+- `GOCACHE=/tmp/quantlab-go-cache go test ./internal/api ./internal/repository ./internal/saas/instance` passed.
+
+## 2026-06-06 Addendum — Regression Test Follow-up
+
+Scope:
+
+- Re-reviewed whether every active high/major finding has a permanent regression test.
+- Priority checks: Raw validation fail-closed, Retire CAS, fill dedup concurrency, order terminal-status replay, and multi-instance account false-freeze.
+
+Conclusion:
+
+- The current test baseline passes, including the existing Postgres-backed integration tests.
+- Most active high/major findings still lack the negative regression tests that should accompany the eventual source fixes.
+- Several areas have useful adjacent coverage, but the existing tests would not fail on the specific bugs recorded in the review.
+
+Verification:
+
+- `GOCACHE=/tmp/quantlab-go-cache go test ./internal/resultpkg ./internal/engine ./internal/verification ./internal/repository ./internal/api ./internal/agent ./cmd/saas` passed.
+- `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml` passed.
+
+Coverage matrix:
+
+| Finding(s) | Coverage status | Evidence and missing regression |
+|---|---|---|
+| A-1 architecture boundary | Missing | `verification.ComputeSharpeStats` has function tests, and prior review used manual grep/go-list checks, but there is no CI-style import-boundary test that fails on `internal/strategies/sigmoid_v1 -> internal/verification`. |
+| G2C-1 / G-1 Raw fail-closed | Missing | `internal/resultpkg/validate_test.go:16` covers `CrucibleResult` state mutexes, and `internal/engine/engine_test.go:186` / `:216` cover valid Raw paths. No test injects `raw == nil` or invalid Raw from an adapter and asserts RunEpoch / best re-evaluate fails closed. |
+| G2C-2 Raw cascade contract | Missing | There are no Raw-level tests for empty windows, duplicate windows, non-canonical order, `WindowOOS` inside IS raw, invalid Fatal -> skipped cascade, or `SkippedBy` without a real earlier Fatal. |
+| G2C-3 verification replay boundary | Missing | `internal/verification/review_test.go` covers OK, mismatch, and hash/fingerprint short-circuit paths, but not invalid replay Raw returning a Go error before aggregation. |
+| D-1 active champion uniqueness | Partial | `internal/saas/store/db_integration_test.go:79` verifies the `uq_champion_active` index lands on the expected table and keeps the partial predicate. It does not try two active champion rows or concurrent Promote calls. |
+| C-1 / D4C-1 DeployChampion consistency | Missing | `internal/api/instance_handlers_test.go:240` only checks the happy path. There are no retired instance, retired champion, wrong pair/strategy, or never-promoted challenger rejection tests. |
+| C-2 / D4B-1 Retire CAS | Missing | `internal/repository/champion_test.go:145` only tests pure `applyRetire` with an already-retired in-memory row. There is no repository-level CAS / `RowsAffected==0` / double-Retire attribution test. |
+| C-3 / D4B-3 instance lifecycle CAS | Partial | `internal/api/instance_handlers_test.go:203` proves start refuses a currently retired instance. It does not prove stale start/stop reads cannot overwrite a concurrent retired state, and deploy still lacks a retired guard test. |
+| L-1 / C-4 multi-instance account false-freeze | Missing | `cmd/saas/genesis_funding_integration_test.go:47` is single-instance only. `internal/repository/instance_integration_test.go:20` proves multiple non-retired instances under one account are returned. No test proves two fresh same-account instances do not false-freeze after whole-account genesis funding, or that the second instance is rejected. |
+| D4B-2 fill dedup concurrency / DB backstop | Partial | `cmd/saas/agentmsg_dedup_integration_test.go:33` covers sequential order_update replay, cross-channel duplicate, and same-ms distinct trade IDs. `internal/repository/reconciliation_integration_test.go:22` covers the existence query. There is no concurrent check-then-insert test and no DB unique-violation-as-idempotent-no-op test. |
+| S5B-1 replay after terminal | Partial | `internal/agent/agent_test.go:409` covers immediate duplicate terminal. `internal/agent/agent_test.go:448` covers brand-new expired rejection, and `internal/agent/kill_switch_test.go:17` covers brand-new frozen rejection. Missing: a filled/terminal `client_order_id` replayed after expiry or while frozen must still return `duplicate_terminal`. |
+| S5B-2 submit-path idempotency read error | Missing | `internal/agent/idempotency_sqlite_test.go` covers normal Get/Put/upsert behavior. There is no fake-store read-error test proving `handleTradeCommand` fails closed without submit and without pending upsert. |
+| S5B-3 exchange-event idempotency read error | Missing | `internal/agent/agent_test.go:620` covers a known fill event, and `:681` covers unknown order drop. There is no read-error test proving a real fill is not treated as unknown and dropped before order_update / delta_report buffering. |
+| S5B-4 / C-5 terminal status monotonicity | Partial | `cmd/saas/agentmsg_test.go:11` covers status mapping and duplicate-terminal no-op; `internal/repository/trade_integration_test.go:246` covers `MarkPartialIfPending`, and `:286` covers orphan sweep not changing terminal rows. Missing: generic `UpdateTradeStatus` / ack / order_update replay cannot downgrade `filled` to `partial_filled`, `cancelled`, or `rejected`. |
+
+Recommended test order:
+
+1. Raw fail-closed and Raw cascade contract tests.
+2. Retire CAS and terminal-status monotonicity tests.
+3. Agent idempotency read-error and replay-after-terminal tests.
+4. Fill dedup DB uniqueness / concurrency tests.
+5. Multi-instance account false-freeze test.
+6. DeployChampion scope / retired guard tests.
+7. Import-boundary CI guard for A-1.
+
+## 2026-06-06 Addendum — Raw Validation / GA Boundary Follow-up
+
+Scope:
+
+- Re-reviewed `internal/engine/engine.go`, `internal/resultpkg/validate.go`, `internal/verification/review.go`, `internal/verification/oos.go`, and `internal/verification/stress.go`.
+- Rechecked whether fail-closed and Raw-level cascade negative tests now exist.
+
+Conclusion:
+
+- G2C-1 / G2C-2 / G2C-3 remain open; OOS/stress remain part of the same adapter-output boundary gap.
+- The current package tests pass, but they do not include the missing negative cases.
+- No source code was changed in this pass.
+
+Evidence:
+
+- `internal/engine/engine.go:414` calls `adapter.Evaluate`; `engine.go:419` immediately aggregates `raw.Windows`. There is no `raw == nil` or `raw.Validate()` guard.
+- `internal/engine/engine.go:310` re-evaluates the best gene and stores `bestRaw` without validation.
+- `internal/resultpkg/validate.go:69` only checks nil receiver, nil `Windows`, then each `CrucibleResult.Validate()`. It does not enforce Raw-level empty/duplicate/order/OOS/cascade invariants.
+- `internal/resultpkg/enums.go:145` still treats `WindowOOS` as a valid window name, so per-window validation alone cannot reject OOS inside IS raw.
+- `internal/verification/review.go:126` replays raw output, then `review.go:130` aggregates it directly.
+- `internal/verification/oos.go:154` reads raw output and `oos.go:158` immediately checks `len(raw.Windows)`, so nil raw is not fail-closed.
+- `internal/verification/stress.go:53` reads raw output and `stress.go:57` treats `raw == nil` as a no-series skip.
+
+Existing tests checked:
+
+- `internal/resultpkg/validate_test.go:16` covers `CrucibleResult` three-state mutexes, not Raw-level sequence invariants.
+- `internal/engine/engine_test.go:186` and `:216` cover valid best raw output and re-aggregation determinism.
+- `internal/verification/review_test.go:41`, `:68`, and `:97` cover OK/mismatch/hash gate paths.
+- `internal/verification/oos_test.go` covers insufficient data, OOS result colors, adapter reset, warmup, and NewAdapter error.
+- `internal/verification/stress_test.go` covers normal captured returns, no-series skip, and NewAdapter error.
+
+Missing permanent negative tests:
+
+- Engine adapter returns nil raw: RunEpoch must return an error, not panic in a worker.
+- Engine adapter returns invalid raw: RunEpoch and best-gene re-evaluate must fail before aggregation.
+- Raw validator rejects empty windows, duplicate windows, non-canonical order, `WindowOOS` in IS raw, invalid Fatal -> skipped cascade, and `SkippedBy` without an earlier Fatal.
+- RunReview invalid replay raw returns a Go error, not mismatch or OK.
+- RunOOS nil/invalid raw fails closed.
+- RunStress invalid non-nil raw does not silently skip.
+
+Verification:
+
+- `GOCACHE=/tmp/quantlab-go-cache go test ./internal/resultpkg ./internal/fitness ./internal/engine ./internal/verification ./internal/strategies/sigmoid_v1 ./internal/strategies/toy` passed.
