@@ -365,9 +365,9 @@ finding 仍未修。`test_mode`、OOS 不污染 IS、`decision_status` 不含 re
 
 | ID | severity | file:line | 条款 | 状态 | 修法 |
 |---|---|---|---|---|---|
-| C-1 | major | `internal/api/validate.go:139` + `internal/api/handlers.go:697` + `internal/repository/instance.go:114` + `internal/saas/instance/manager.go:298` + `internal/saas/instance/champion_loader.go:35` | DeployChampion / live Tick 状态一致性 | ⛔ 未修 | `DeployChampionRequest.Validate()` 只要求 `challenger_id` 非空,handler 直接调用 `SetActiveChampion`,repo 只按 `instance_id` 写 `active_champ_id`。Tick 后续按 instance 的 `StrategyID` resolve 策略,但用 `active_champ_id` 直接读 challenger blob,没有证明该 challenger 是目标实例 `(strategy_id,pair)` 的 active/unretired champion。可部署 retired champion、其它 pair/strategy 的 challenger、甚至 never-promoted challenger;轻则 Tick decode/load 失败,重则错误基因在当前 account/pair 下发订单。修法:deploy 前读取 instance + champion_history,要求 challenger 匹配 instance `(strategy_id,pair)` 且 `retired_at IS NULL`;写入加 `status <> 'retired'`;定义 Retire 对已部署实例是 block、detach 还是 pause;补 mismatch/retired deploy 回归测试。 |
-| C-2 | major | `internal/repository/champion.go:138` + `internal/repository/champion.go:145` | Retire CAS / audit attribution | ⛔ 未修 | 复核 B-1/D-2 仍成立:`Retire` 先读再 `WHERE id = ?` 更新,并发双退可覆盖审计字段。修法同 B-1。 |
-| C-3 | major | `internal/api/handlers.go:715` + `internal/repository/instance.go:84` + `internal/repository/instance.go:114` | instance lifecycle CAS | ⛔ 未修 | 复核 B-3/D-4 仍成立:start/stop 旧读可覆盖 terminal retired;deploy 也缺 retired guard。修法同 B-3,并与 C-1 的 active champion 校验合并处理。 |
+| C-1 | major | `internal/api/handlers.go:702` + `internal/repository/instance.go:123` + `internal/repository/instance.go:127` | DeployChampion / live Tick 状态一致性 | ✅ 已修(2026-06-06 第3项) | `SetActiveChampion` 现在以单条条件写入完成 deploy:目标 instance 必须非 retired,且 `EXISTS champion_histories` 中同 `challenger_id`、同 `(strategy_id,pair)`、`retired_at IS NULL`、`deleted_at IS NULL` 的 active row;`RowsAffected==0` 区分 not found 与 `ErrDeployChampionRefused`。新增 `TestInstanceRepo_SetActiveChampionRequiresMatchingActiveChampionAndLiveInstance` 覆盖 wrong pair、retired champion、retired instance 和 happy path。仍待产品决策:Retire 已部署 champion 时是 block、detach 还是 pause。 |
+| C-2 | major | `internal/repository/champion.go:145` + `internal/repository/champion.go:151` | Retire CAS / audit attribution | ✅ 已修(2026-06-06 第3项) | `Retire` 的后写入改为 `WHERE id = ? AND retired_at IS NULL`;`RowsAffected==0` 映射 `api.ErrAlreadyRetired`,不再允许 stale retire 覆盖 `retired_by/retire_note`。新增 `TestChampionRepo_RetireCASRejectsStaleHistory` 用 stale row 证明后写不会重写首次 retire 审计字段。 |
+| C-3 | major | `internal/api/handlers.go:740` + `internal/repository/instance.go:85` + `internal/repository/instance.go:88` | instance lifecycle CAS | ✅ 已修(2026-06-06 第3项) | `transitionInstance` 把 handler 读到的 `inst.Status` 作为 expected status 传入 repo;`UpdateStatus` 用 `WHERE instance_id=? AND status=?` CAS 写入,0 行时映射 not found 或 `ErrInstanceTransitionRefused`。新增 `TestInstanceRepo_UpdateStatusCASRejectsStaleState` 证明 stale idle->live 不能覆盖并发 retired。 |
 | C-4 | major | `internal/saas/store/db.go:134` + `internal/repository/instance.go:71` + `cmd/saas/agentmsg.go:511` + `cmd/saas/agentmsg.go:531` + `cmd/saas/agentmsg.go:610` | account-level reconciliation baseline | ⛔ 未修 | 复核 B-2 仍成立:partial unique 只限制同 user/strategy/pair/account,不同 pair/strategy 可共享 account;每个 fresh instance 用整账户 snapshot seed,后续 expected 聚合重复 portfolio,可能 false drift/auto-freeze。修法同 B-2。 |
 | C-5 | major | `cmd/saas/agentmsg.go:150` + `cmd/saas/agentmsg.go:189` + `internal/repository/trade.go:42` | order lifecycle monotonicity | ⛔ 未修 | 复核 Stage 5 订单状态问题仍成立:SaaS ack/order_update 将 rejected/expired/partial/cancelled 等状态无条件写入 `TradeRecord`,repo `UpdateTradeStatus` 只按 `client_order_id` 更新。延迟 replay 或旧事件可把 filled 降级。修法:状态转换表 + DB 条件更新;terminal 不可被非 terminal/失败态覆盖;ack 失败态不得覆盖已有 fill。 |
 
@@ -381,9 +381,20 @@ C-4/B-2 当前仍成立,而且这是设计不变量缺失,不是 managed-asset f
 该命令只确认当前相关包测试基线通过;现有测试覆盖单 instance genesis funding、`ListByAccount`
 排除 retired、managed/unmanaged drift scope,但没有多 instance 同账户的负向回归测试。
 
+2026-06-07 第5项复审/测试增量:结论仍为未修。当前代码没有落地二选一策略:
+`docs/saas-tier2-schema-v1.md` 仍写明一个 account 可对应多 Instance,但 `buildSeedPortfolio`
+仍按 `[INVENTED v1: whole-balance anchor; one instance per exchange account]` 用整账户
+base/USDT seed 每个 fresh instance。按现有 v1 ledger/schema,推荐选择“一账户一非 retired
+instance”:在 DB 加 `(owner_user_id, account_id) WHERE status!='retired'` partial unique,
+并让 create-instance/API/repo 测试证明第二个非 retired instance 被拒绝。per-instance allocation
+需要新增资金所有权模型、allocation 字段/表和 funding math,不应在当前 whole-balance seed 逻辑上假定安全。
+验证:`GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml`
+通过;`GOCACHE=/tmp/quantlab-go-cache go test -count=1 ./cmd/saas ./internal/repository`
+在 sandbox 因 `httptest.NewServer` 本地 socket 受限失败,提权后通过。
+
 | ID | severity | file:line | 条款 | 状态 | 修法 |
 |---|---|---|---|---|---|
-| L-1 | major | `internal/saas/store/db.go:134` + `internal/repository/instance.go:71` + `cmd/saas/agentmsg.go:421` + `cmd/saas/agentmsg.go:511` + `cmd/saas/agentmsg.go:518` + `cmd/saas/agentmsg.go:533` + `cmd/saas/agentmsg.go:610` + `cmd/saas/agentmsg.go:573` + `cmd/saas/agentmsg.go:715` | live reconciliation / account capital ownership | ⛔ 未修 | DB partial unique 只限制 `(owner_user_id,strategy_id,pair,account_id) WHERE status!='retired'`,允许同账户不同 pair/strategy 多个非 retired instance;`ListByAccount` 也明确返回该账户全部非 retired instance。`handleDeltaReport` 把同一账户 snapshot fan-out 给 `reconcile`;未 funded instance 逐个调用 `fundInstance`,而 `buildSeedPortfolio` 用整账户 actual base/USDT seed 每个 instance。下一轮已 funded 后,`reconcile` 把所有 portfolio 累加进同一个 `expected` map,managed set 又来自 `expected` keys,所以重复 baseline 会在 managed BTC/USDT 上形成假 drift,连续超过 freeze line 后触发 `maybeAutoFreeze`。修法二选一:V1 硬约束每个 `account_id` 只能有一个非 retired instance;或引入 per-instance capital allocation / managed-balance ownership,使 genesis funding 只能 seed 属于该 instance 的资金份额。补多实例 account 回归测试:两个 fresh instance 同账户从同一 snapshot funding 后,下一份相同 snapshot 不得产生 discrepancy/auto-freeze;或者创建第二个非 retired instance 必须被拒绝。 |
+| L-1 | major | `internal/saas/store/db.go:134` + `internal/repository/instance.go:71` + `cmd/saas/agentmsg.go:421` + `cmd/saas/agentmsg.go:511` + `cmd/saas/agentmsg.go:518` + `cmd/saas/agentmsg.go:533` + `cmd/saas/agentmsg.go:610` + `cmd/saas/agentmsg.go:573` + `cmd/saas/agentmsg.go:715` | live reconciliation / account capital ownership | ⛔ 未修 | DB partial unique 只限制 `(owner_user_id,strategy_id,pair,account_id) WHERE status!='retired'`,允许同账户不同 pair/strategy 多个非 retired instance;`ListByAccount` 也明确返回该账户全部非 retired instance。`handleDeltaReport` 把同一账户 snapshot fan-out 给 `reconcile`;未 funded instance 逐个调用 `fundInstance`,而 `buildSeedPortfolio` 用整账户 actual base/USDT seed 每个 instance。下一轮已 funded 后,`reconcile` 把所有 portfolio 累加进同一个 `expected` map,managed set 又来自 `expected` keys,所以重复 baseline 会在 managed BTC/USDT 上形成假 drift,连续超过 freeze line 后触发 `maybeAutoFreeze`。2026-06-07 复审建议选择 v1 硬约束:每个 `(owner_user_id,account_id)` 最多一个非 retired instance,因为当前没有 per-instance capital allocation / managed-balance ownership 模型。补 DB partial unique + create-instance/API/repo 回归测试;若产品改选 allocation,则必须先实现资金分配模型,再证明多 fresh instance 同 snapshot 不产生 discrepancy/auto-freeze。 |
 
 **证据补充**:
 - `internal/repository/instance_integration_test.go:45` 已用 BTC/ETH/BNB 不同 pair 建出同账户 live/idle/paused 三个非 retired instance,并断言 `ListByAccount` 返回 3 个;这证明当前行为不是理论路径。
@@ -409,6 +420,78 @@ terminal-status downgrade 这些负例。
 | S5B-3 | major | `internal/agent/client.go:578` + `internal/agent/client.go:579` + `internal/agent/client.go:624` + `internal/agent/client.go:636` | exchange event durability / delta_report fallback | ⛔ 未修 | `onOrderEvent` 同样丢弃 idempotency `Get` error,然后进入 `!ok` 分支按 unknown order return。真实 Binance fill 若遇到 SQLite read error,会在发送 `OrderUpdate`、加入 `delta_report` buffer、更新本地状态之前被丢弃。修法:区分 not found 和 read failed;read failed 不得当 unknown order 丢弃,至少 log/error metric 并保留 durable retry/报告路径;补 fake-store read-error event 测试。 |
 | S5B-4 | major | `cmd/saas/agentmsg.go:150` + `cmd/saas/agentmsg.go:189` + `internal/repository/trade.go:42` + `internal/repository/trade.go:193` | TradeRecord status monotonicity | ⛔ 未修 | SaaS `ack` / `order_update` 映射状态后调用 `UpdateTradeStatus`,repo 只 `WHERE client_order_id = ?` 更新,没有状态转换谓词。旧 `partial_filled`、`cancelled`、`rejected` 可覆盖已 `filled` 行。`MarkPartialIfPending` 已有正确的 pending-only guard,但通用更新没复用。修法:状态转换表 + DB 条件更新;terminal 不可被非 terminal/失败态覆盖;ack 失败态不得覆盖已有 fill;补 terminal replay/downgrade tests。 |
 
+#### 2026-06-06 第2项复审/测试增量
+
+按用户指定范围复审 `internal/agent/tradecommand.go`, `internal/agent/client.go`,
+`internal/agent/idempotency_sqlite.go`, `cmd/saas/agentmsg.go`, `internal/repository/trade.go`。
+结论:第2项仍未修,现有测试仍只有相邻覆盖,不是永久负向回归覆盖。
+
+新增验证:
+
+- 沙盒内先跑 `GOCACHE=/tmp/quantlab-go-cache go test -count=1 ./internal/agent ./cmd/saas ./internal/repository`;
+  `internal/agent` 和 `internal/repository` 通过,`cmd/saas` 因 `httptest.NewServer`
+  本地 socket 权限失败。
+- 提权后同一命令通过:
+  `GOCACHE=/tmp/quantlab-go-cache go test -count=1 ./internal/agent ./cmd/saas ./internal/repository`。
+
+复审证据:
+
+- replay-after-terminal: `tradecommand.go:27` frozen 和 `tradecommand.go:46` expiry 仍在
+  `tradecommand.go:57` idempotency lookup 之前。测试只有
+  `agent_test.go:409` immediate duplicate terminal、`agent_test.go:448` brand-new expired reject、
+  `kill_switch_test.go:17` brand-new frozen reject;缺已 filled/terminal order 在 expired/frozen 后 replay
+  仍返回 `duplicate_terminal` 的负向测试。
+- read-error fail-closed: `tradecommand.go:57` 和 `client.go:578` 仍丢弃 `Get` error;
+  `idempotency_sqlite.go:66` 明确 `Get` 会传播非 `ErrNoRows` 错误,但 submit path 随后可到
+  `tradecommand.go:105` 的 `Put(preRec)` 和 `tradecommand.go:111` 的 exchange submit。
+  现有测试没有 fake-store `Get` error 用例来证明不 submit、不 pending upsert、不丢 fill。
+- terminal status monotonicity: `agentmsg.go:159`/`:193` 仍调用通用
+  `UpdateTradeStatus`,而 `trade.go:46` 只按 `client_order_id` 更新 status。
+  `agentmsg_test.go:11` 只测映射,`trade_integration_test.go:246` 只测
+  `MarkPartialIfPending` pending-only guard;缺 generic ack/order_update replay 不得把 `filled`
+  降级为 `partial_filled`/`cancelled`/`rejected` 的测试。
+
+#### 2026-06-06 第3项 生命周期 / CAS 修复增量
+
+按用户指定范围复审并修复 `internal/repository/champion.go`,
+`internal/repository/instance.go`, `internal/api/handlers.go`。结论:Retire CAS、
+instance status CAS、DeployChampion retired/scope guard 已落地;相关 major 从未修转为已修。
+
+修复:
+
+- `ChampionRepo.Retire` 保留读前置状态用于纯函数校验,但实际写入下沉为
+  `WHERE id = ? AND retired_at IS NULL`;0 行返回 `api.ErrAlreadyRetired`,避免 stale
+  retire 覆盖首次 retire 的 `retired_by` / `retire_note`。
+- `InstanceRepo.UpdateStatus` 签名改为 `(instanceID, from, to)`,handler 将读到的当前
+  status 作为 expected status 传入;repo 用 `WHERE instance_id=? AND status=?` CAS 写入。
+- `InstanceRepo.SetActiveChampion` 改为单条条件写入:目标 instance 必须非 retired,且
+  `champion_histories` 中必须存在同 `challenger_id`、同 `(strategy_id,pair)`、
+  `retired_at IS NULL`、`deleted_at IS NULL` 的 active row。0 行按 target 缺失返回
+  404,否则返回 422 `ErrDeployChampionRefused`。
+- API 新增 `ErrDeployChampionRefused` 和 `mapInstanceWriteErr`;start/stop stale race 与
+  deploy scope/retired guard 都映射为 422,not found 仍映射 404。
+
+新增测试:
+
+- `internal/repository/lifecycle_cas_integration_test.go`
+  - `TestChampionRepo_RetireCASRejectsStaleHistory`
+  - `TestInstanceRepo_UpdateStatusCASRejectsStaleState`
+  - `TestInstanceRepo_SetActiveChampionRequiresMatchingActiveChampionAndLiveInstance`
+- `internal/api/instance_handlers_test.go`
+  - start/stop 断言 handler 传入 expected status。
+  - `TestStartInstance_CASRaceReturns422`
+  - `TestDeployChampion_RefusedReturns422`
+
+验证:
+
+- `GOCACHE=/tmp/quantlab-go-cache go test ./internal/repository ./internal/api ./cmd/saas ./internal/saas/store` 通过。
+- 沙盒内 targeted integration 因 localhost:5432 socket 权限失败;提权后
+  `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository -run 'TestChampionRepo_RetireCASRejectsStaleHistory|TestInstanceRepo_UpdateStatusCASRejectsStaleState|TestInstanceRepo_SetActiveChampionRequiresMatchingActiveChampionAndLiveInstance' -args -config=/home/l9g/quantlab/config.yaml`
+  通过。
+- 完整 DB-backed 回归
+  `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml`
+  通过。
+
 ### 阶段 4(持久层，§4 / SKILL §5）— 2026-06-02；2026-06-05 重审
 
 2026-06-05 重审结论:基础持久层仍然偏干净(GORM 参数化、Goose/AutoMigrate 双轨、drift guard
@@ -422,16 +505,17 @@ integration/drift 测试已在 2026-06-06 Stage 4B follow-up 用 `./config.yaml`
 | ID | severity | file:line | 条款 | 状态 | 修法 |
 |---|---|---|---|---|---|
 | D-1 | major | `internal/repository/champion.go:60`(count-then-insert)+ `internal/saas/store/db.go`(缺索引) | §4 事务隔离 / §5 | ✅ 已修 | 「每 (strategy_id,pair) 至多一个 active champion」此前仅靠事务内 `activeOther` count 守护;READ COMMITTED 下两个并发 Promote 各读 0 → 双双 INSERT → 两个 active champion(静默违反不变式)。修法:db.go 加 `uq_champion_active` 部分唯一索引(`WHERE retired_at IS NULL AND deleted_at IS NULL`)+ Promote 把 unique-violation 映射成 `ErrActiveChampionExists` + 启动前 `assertNoDuplicateActiveChampions`。 |
-| D-2 | major | `internal/repository/champion.go:138` + `internal/repository/champion.go:145` | §4 事务隔离 / §5 DB 条件保护 | ⛔ 未修 | `ChampionRepo.Retire` 先读 `ChampionHistory`,再 `WHERE id = ?` 更新。两个并发 Retire 都读到 `retired_at IS NULL` 时,都会通过 `applyRetire`,且都可 `RowsAffected=1`;后一个覆盖 `retired_at/retired_by/retire_note`。修法:UPDATE 改 `WHERE id = ? AND retired_at IS NULL`;`RowsAffected==0` 映射 `api.ErrAlreadyRetired`;补 CAS/并发回归测试。 |
+| D-2 | major | `internal/repository/champion.go:145` + `internal/repository/champion.go:151` | §4 事务隔离 / §5 DB 条件保护 | ✅ 已修(2026-06-06 第3项) | `ChampionRepo.Retire` 的实际 UPDATE 已改为 `WHERE id = ? AND retired_at IS NULL`;`RowsAffected==0` 映射 `api.ErrAlreadyRetired`。新增 integration 回归 `TestChampionRepo_RetireCASRejectsStaleHistory` 验证 stale retire 不能覆盖首次 retire 审计字段。 |
 | D-3 | major | `cmd/saas/agentmsg.go:296` + `cmd/saas/agentmsg.go:314` + `internal/saas/store/models.go:476` + `internal/saas/store/migrations/00001_baseline.sql:1340` | §4 事务隔离 / §5 schema invariant | ⛔ 未修 | `spot_executions` dedup 是 SELECT exists 后 INSERT,模型和 Goose 基线只有普通索引。并发重放或 `order_update`/`delta_report` 同时到达可双插重复 fill,新自增 ID 会被 ledger 当作新成交折叠。修法:加部分唯一索引 `(client_order_id, trade_id) WHERE trade_id <> 0` 和 `(client_order_id, filled_at_exchange_ms) WHERE trade_id = 0`;insert 路径把 unique violation 当幂等 no-op;补并发测试;同步 `db.go` raw DDL + goose `00002` 并跑 drift test。 |
-| D-4 | major | `internal/api/handlers.go:715` + `internal/repository/instance.go:84` + `internal/repository/instance.go:114` | §4 状态转换由 DB 条件保护 | ⛔ 未修 | Instance start/stop 在 handler 读状态后计算 next,repo `UpdateStatus` 只按 `instance_id` 写;并发 terminal retire/其它写入可被旧读覆盖回 `live/paused`。`SetActiveChampion` 也可直接改 retired instance。修法:状态转换改 CAS(`WHERE instance_id=? AND status IN (...)`)并用 `RowsAffected` 区分 not found/非法转换/竞态;deploy champion 至少加 `status <> 'retired'`。 |
+| D-4 | major | `internal/api/handlers.go:740` + `internal/repository/instance.go:85` + `internal/repository/instance.go:123` | §4 状态转换由 DB 条件保护 | ✅ 已修(2026-06-06 第3项) | Start/stop 现在把 handler 读到的 status 作为 expected status 传入 `UpdateStatus`,repo 用 `WHERE instance_id=? AND status=?` CAS 写入;deploy 通过 `status <> retired` + active/unretired matching champion `EXISTS` 一次性条件写入。新增 integration 回归覆盖 stale retired 覆盖拒绝、wrong pair、retired champion、retired instance。 |
 
 ### 阶段 4B(Persistence concurrency invariants)— 2026-06-06 重审
 
 重审范围: `champion_history` active uniqueness 与 Retire CAS、`spot_executions` fill dedup schema backstop、
 `strategy_instances` start/stop/deploy 条件写入、以及相邻的 funding/import claim 模式。结论:此前 3 个
-major 仍未修;`uq_champion_active` 仍确认有效。新增 2 个修缮点,其中 genesis funding claim ordering 为
-medium,import worker claim 为当前单 worker 设计下的 low scalability guard。
+major 中 Retire CAS 与 strategy_instances 状态/deploy CAS 已在 2026-06-06 第3项修复;
+`spot_executions` DB dedup 仍未修;`uq_champion_active` 仍确认有效。新增 2 个修缮点,其中
+genesis funding claim ordering 为 medium,import worker claim 为当前单 worker 设计下的 low scalability guard。
 
 验证:`GOCACHE=/tmp/quantlab-go-cache go test ./internal/repository ./internal/api ./cmd/saas ./internal/saas/store` 通过。
 首次沙箱内运行因 `httptest.NewServer` 需要监听本地端口失败(`listen tcp6 [::1]:0: socket: operation not permitted`);
@@ -442,23 +526,44 @@ schema;改用 `./config.yaml` 后,以下命令提权通过:
 
 | ID | severity | file:line | 条款 | 状态 | 修法 |
 |---|---|---|---|---|---|
-| D4B-1 | major | `internal/repository/champion.go:138` + `internal/repository/champion.go:145` | Retire CAS / audit attribution | ⛔ 未修 | 复核 D-2 仍成立:`Retire` 先 `First` 读 champion row,纯函数 `applyRetire` 只看内存里的 `RetiredAt`,随后 `UPDATE ... WHERE id = ?`。两个并发 Retire 都能读到未 retired,两个 UPDATE 都可 `RowsAffected=1`,后写覆盖先写的 `retired_at/retired_by/retire_note`。修法:UPDATE 改 `WHERE id = ? AND retired_at IS NULL`;`RowsAffected==0` 映射 `api.ErrAlreadyRetired`;补并发双退测试。 |
+| D4B-1 | major | `internal/repository/champion.go:145` + `internal/repository/champion.go:151` | Retire CAS / audit attribution | ✅ 已修(2026-06-06 第3项) | `Retire` 后写已改为 `WHERE id = ? AND retired_at IS NULL`;`RowsAffected==0` 映射 `api.ErrAlreadyRetired`。`TestChampionRepo_RetireCASRejectsStaleHistory` 覆盖 stale row 不得覆盖 first-writer 审计字段。 |
 | D4B-2 | major | `cmd/saas/agentmsg.go:296` + `cmd/saas/agentmsg.go:314` + `internal/repository/trade.go:79` + `internal/saas/store/models.go:476` + `internal/saas/store/migrations/00001_baseline.sql:1340` | spot_executions idempotent fill write | ⛔ 未修 | 复核 D-3/S5B-4 仍成立:`insertFillIfNew` 是 SELECT exists 后 INSERT;repo 注释明确 `SpotExecution has no unique index`;模型只给 `client_order_id/exchange_order_id/trade_id` 普通 index,goose baseline 也只有普通 index。并发 `order_update`/`delta_report` 或旧/新 WS 重放可双插同一 fill,新自增 `id` 会被 `NewExecutionsForInstance` 当作新成交折叠。修法:加 `(client_order_id, trade_id) WHERE trade_id <> 0` 与 `(client_order_id, filled_at_exchange_ms) WHERE trade_id = 0` 唯一约束;insert unique violation 当幂等 no-op;同步 AutoMigrate raw DDL + goose migration;补并发测试并跑 drift test。 |
-| D4B-3 | major | `internal/api/handlers.go:715` + `internal/api/handlers.go:735` + `internal/repository/instance.go:84` + `internal/repository/instance.go:114` | strategy_instances 状态转换 CAS | ⛔ 未修 | 复核 D-4/C-3 仍成立:`transitionInstance` handler 先读状态再算 next,`UpdateStatus` 只 `WHERE instance_id = ?`;`SetActiveChampion` 也只按 `instance_id` 写。旧读可把并发 terminal retired 覆盖回 `live/paused`,deploy 可改 retired instance。修法:repo 暴露条件转换 API,例如 `WHERE instance_id=? AND status IN (...)`;用 `RowsAffected` 区分 not found/非法转换/race;deploy 写入至少加 `status <> 'retired'`,并与 C-1 的 active/unretired champion 校验一起处理。 |
+| D4B-3 | major | `internal/api/handlers.go:740` + `internal/repository/instance.go:85` + `internal/repository/instance.go:123` | strategy_instances 状态转换 CAS | ✅ 已修(2026-06-06 第3项) | `transitionInstance` 将 expected status 传给 repo,`UpdateStatus` 以 `WHERE instance_id=? AND status=?` 条件写入;deploy 以 `status <> retired` 和 matching active/unretired champion `EXISTS` 条件写入。新增 integration 覆盖 stale retired overwrite、wrong pair、retired champion、retired instance。 |
 | D4B-4 | medium | `cmd/saas/agentmsg.go:637` + `cmd/saas/agentmsg.go:640` + `internal/repository/instance.go:104` + `internal/repository/portfolio.go:44` | genesis funding claim ordering | ⚠️ 可修缮 | `fundInstance` 先 append genesis `PortfolioState`,再 `MarkFunded`;`MarkFunded` 有 `funded_at_ms IS NULL` guard,但不返回 `RowsAffected`,调用方无从知道自己是否赢得 funding claim。并发 delta_report 若用不同 `nowMs` 进入,可留下多条 seed portfolio;`Latest()` 后续按 `now_ms DESC` 选一条,baseline/audit 可能取决于哪个报告时间更新,而不是单一 funding claim。修法:先原子 claim 再 seed,或 claim+seed 放事务;`MarkFunded` 返回 `(claimed bool,error)` / `UPDATE ... RETURNING`;只有 winner append seed;补 concurrent double-funding regression。 |
 | D4B-5 | low | `internal/repository/import_job.go:78` + `internal/repository/import_job.go:97` + `cmd/saas/main.go:375` | import job claim scalability guard | ⚠️ 可修缮 | 当前注释和 wiring 是非 saas、单 background worker,所以不是现有生产 bug。但 DB 层没有 claim 保护:`NextQueued` 选 queued oldest 不加锁,`MarkRunning` 只按 `job_id` 更新;若以后多 worker/多副本启用 import,同一 queued job 可被多次执行。修法:扩容前改成 `UPDATE ... WHERE status='queued' ... RETURNING` 或 `SELECT FOR UPDATE SKIP LOCKED`;`MarkRunning` queued-only 并处理 `RowsAffected==0`;补多 worker claim 测试。 |
+
+### 阶段 4D(spot_executions dedup 专项复审/测试)— 2026-06-07
+
+复查范围:`cmd/saas/agentmsg.go` fill chokepoint、`internal/repository/trade.go` existence/insert repo、
+`internal/saas/store/models.go` 模型索引、`internal/saas/store/db.go` AutoMigrate raw DDL、
+Goose baseline migration,以及本地 Postgres 实库索引。结论:D4B-2/D-3 仍为 major 未修。
+
+新增测试证据:
+- 无 DB 基线通过:`GOCACHE=/tmp/quantlab-go-cache go test ./internal/repository ./internal/api ./cmd/saas ./internal/saas/store`。
+- schema drift 通过:`GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/saas/store/ -run TestMigrationsMatchAutoMigrate -args -config=/home/l9g/quantlab/config.yaml`。
+- 现有 integration 通过:`GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml`。
+- 实库 `pg_indexes` 查询显示 `spot_executions` 除主键外只有普通索引:`client_order_id`、`deleted_at`、`exchange_order_id`、`trade_id`、`trade_record_id`;没有 `(client_order_id, trade_id)` 或 `(client_order_id, filled_at_exchange_ms)` dedup unique index。
+- 回滚事务探针中,相同 `(client_order_id, trade_id)` 连续插入两次均成功,事务内 count=2 后 ROLLBACK;`trade_id=0` fallback 的相同 `(client_order_id, filled_at_exchange_ms)` 也同样 count=2 后 ROLLBACK。探针后残留计数为 0。
+
+审阅结论:`insertFillIfNew` 仍先查 `ExecutionExistsByTrade`/`ExecutionExists` 再调用 plain
+`InsertSpotExecution`;这个顺序 replay 测试能覆盖单 goroutine 幂等,但两个 writer 在 READ COMMITTED
+下仍可同时看到不存在并双插。由于 `NewExecutionsForInstance` 按自增 `spot_executions.id` 增量折叠,
+重复 row 会被当成新成交进入 ledger。修法仍是 D4B-2:加两条 partial unique backstop
+`(client_order_id, trade_id) WHERE trade_id <> 0` 和
+`(client_order_id, filled_at_exchange_ms) WHERE trade_id = 0`,insert 路径把 unique violation 映射为幂等 no-op,
+并补永久并发/unique-violation 回归。
 
 ### 阶段 4C(DeployChampion 状态一致性)— 2026-06-06 专项复查
 
 复查范围:`DeployChampion` / `SetActiveChampion` 是否能证明请求的 challenger 是目标 instance
-`(strategy_id,pair)` 的 active、unretired champion,以及是否禁止部署到 retired instance。结论:major 仍未修。
+`(strategy_id,pair)` 的 active、unretired champion,以及是否禁止部署到 retired instance。结论:已在 2026-06-06 第3项修复。
 `uq_champion_active` 能保证每个 `(strategy_id,pair)` 最多一个 active champion,但 deploy 路径没有读取并绑定这条 active row。
 
 验证:`GOCACHE=/tmp/quantlab-go-cache go test ./internal/api ./internal/repository ./internal/saas/instance` 通过。
 
 | ID | severity | file:line | 条款 | 状态 | 修法 |
 |---|---|---|---|---|---|
-| D4C-1 | major | `internal/api/validate.go:139` + `internal/api/handlers.go:697` + `internal/repository/instance.go:114` + `internal/repository/champion.go:191` + `internal/saas/store/db.go:171` + `internal/saas/instance/manager.go:298` + `internal/saas/instance/champion_loader.go:35` | DeployChampion 状态一致性 / active champion scope / retired instance guard | ⛔ 未修 | `DeployChampionRequest.Validate()` 只检查 `challenger_id` 非空,handler 不读取目标 instance 或 `champion_history`,直接调用 `SetActiveChampion`;repo 只 `WHERE instance_id = ?` 写 `active_champ_id`,没有 `status <> 'retired'` 条件。`ChampionRepo.GetActive` 和 `uq_champion_active` 虽能表达 active/unretired champion 概念,但 deploy 没用它们证明请求 challenger 等于目标 instance `(strategy_id,pair)` 的 active row。Tick 后续按 instance 的 `StrategyID` resolve 策略,却用 `active_champ_id` 直接加载 challenger blob。修法:deploy 前在同一事务/条件 SQL 中读取目标 instance,要求 status 非 retired,并要求 `champion_histories.challenger_id = req.ChallengerID AND strategy_id = inst.StrategyID AND pair = inst.Pair AND retired_at IS NULL`;`RowsAffected==0` 映射 404/422;补 retired instance、retired champion、wrong pair/strategy、never-promoted challenger 回归测试。 |
+| D4C-1 | major | `internal/api/handlers.go:702` + `internal/repository/instance.go:123` + `internal/repository/instance.go:127` | DeployChampion 状态一致性 / active champion scope / retired instance guard | ✅ 已修(2026-06-06 第3项) | `SetActiveChampion` 现在以单条条件写入要求 target instance 非 retired,并要求 `champion_histories` 中存在同 `challenger_id`、同 `(strategy_id,pair)`、`retired_at IS NULL`、`deleted_at IS NULL` 的 active row;`RowsAffected==0` 映射 404/422。新增 retired instance、retired champion、wrong pair 回归测试;never-promoted 走同一 `EXISTS` miss 分支。 |
 
 ### Regression test follow-up — 2026-06-06 专项复查
 
@@ -477,9 +582,9 @@ Retire CAS、fill dedup concurrency、order terminal-status replay、多实例 a
 | G2C-2 / G-2 | major | ❌ 缺 Raw-level 序列测试 | 当前测试只逐个 `CrucibleResult.Validate()`,没有 empty windows、duplicate window、乱序、`WindowOOS` 混入 IS、Fatal 后续未 cascade skipped、`SkippedBy` 无真实 earlier Fatal 的 Raw-level negative cases。 |
 | G2C-3 | major | ❌ 缺 replay contract 测试 | `internal/verification/review_test.go:41`/`:68`/`:97` 覆盖 OK、score mismatch、hash/fingerprint short-circuit;没有 invalid replay Raw 应返回 Go error 而非 mismatch/silent match 的测试。 |
 | D-1 | major(已修) | ⚠️ 部分覆盖 | `internal/saas/store/db_integration_test.go:79` 验证 `uq_champion_active` DDL 落在正确表且有 partial predicate;仍缺真正插入两个 active champion 或并发 Promote 只允许一个成功的回归测试。 |
-| C-1 / D4C-1 | major | ❌ 缺 deploy 负向测试 | `internal/api/instance_handlers_test.go:240` 只测 happy path 写入 `active_champ_id`;没有 retired instance、retired champion、wrong pair/strategy、never-promoted challenger 的拒绝测试。 |
-| C-2 / D4B-1 / D-2 | major | ❌ 缺 DB CAS/并发测试 | `internal/repository/champion_test.go:145` 只测内存 `applyRetire` 已 retired 拒绝;没有 repository 层 `WHERE retired_at IS NULL` / `RowsAffected==0` 或双 Retire 并发归因测试。 |
-| C-3 / D4B-3 / D-4 | major | ⚠️ 部分覆盖 | `internal/api/instance_handlers_test.go:203` 只证明 handler 读到 retired 时 start 返回 422;没有 stale read 后 `UpdateStatus` 覆盖 terminal retired 的 repo/并发测试,也没有 deploy retired guard 测试。 |
+| C-1 / D4C-1 | major(已修) | ✅ 已有负向覆盖 | `internal/repository/lifecycle_cas_integration_test.go:135` 覆盖 active/matching happy path、wrong pair、retired champion、retired instance;`internal/api/instance_handlers_test.go` 覆盖 repo 拒绝映射 422。never-promoted challenger 走同一 `EXISTS` miss 分支,后续可补一个显式 case 提高可读性。 |
+| C-2 / D4B-1 / D-2 | major(已修) | ✅ 已有 DB CAS 覆盖 | `internal/repository/lifecycle_cas_integration_test.go:37` 用 stale `ChampionHistory` 验证 `WHERE retired_at IS NULL` 的 0 行返回 `ErrAlreadyRetired`,且首次 retire 的审计字段不被覆盖。 |
+| C-3 / D4B-3 / D-4 | major(已修) | ✅ 已有 CAS / retired guard 覆盖 | `internal/repository/lifecycle_cas_integration_test.go:94` 证明 stale idle->live 不能覆盖并发 retired;`:135` 同时覆盖 deploy retired-instance guard;`internal/api/instance_handlers_test.go` 覆盖 expected status 传递和 422 映射。 |
 | L-1 / C-4 / B-2 | major | ❌ 缺多实例 false-freeze 负向测试 | `cmd/saas/genesis_funding_integration_test.go:47` 是单实例 genesis funding;`internal/repository/instance_integration_test.go:20` 反而证明同 account 可返回多个非 retired instance;没有两个 fresh instance 同账户从同一 snapshot funding 后不产生 false discrepancy/auto-freeze,或第二个非 retired instance 被拒绝的测试。 |
 | D4B-2 / D-3 | major | ⚠️ 部分覆盖 | `cmd/saas/agentmsg_dedup_integration_test.go:33` 覆盖顺序 replay、cross-channel duplicate、same-ms distinct trade_ids;`internal/repository/reconciliation_integration_test.go:22` 覆盖 `ExecutionExists`;但没有两个并发 writers 同时通过 check-then-insert 的测试,也没有 DB unique violation 被当幂等 no-op 的测试。 |
 | S5B-1 | critical | ⚠️ 部分覆盖 | `internal/agent/agent_test.go:409` 覆盖 immediate duplicate terminal;`internal/agent/agent_test.go:448` 覆盖 brand-new expired reject;`internal/agent/kill_switch_test.go:17` 覆盖 brand-new frozen reject。缺 filled/terminal `client_order_id` 在 expired 或 frozen 后 replay 仍返回 `duplicate_terminal` 的测试。 |

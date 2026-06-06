@@ -89,7 +89,7 @@ func (f *fakeInstanceStore) Create(_ context.Context, _ *store.StrategyInstance)
 func (f *fakeInstanceStore) Get(_ context.Context, _ string) (*store.StrategyInstance, error) {
 	return f.inst, f.err
 }
-func (f *fakeInstanceStore) UpdateStatus(_ context.Context, _ string, _ store.InstanceStatus) error {
+func (f *fakeInstanceStore) UpdateStatus(_ context.Context, _ string, _, _ store.InstanceStatus) error {
 	return errors.New("not used")
 }
 func (f *fakeInstanceStore) SetActiveChampion(_ context.Context, _ string, _ string) error {

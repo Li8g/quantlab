@@ -905,6 +905,38 @@ Verification:
 
 - `GOCACHE=/tmp/quantlab-go-cache go test ./internal/repository ./internal/api ./cmd/saas ./internal/saas/store` passed.
 
+### 2026-06-07 Re-Review Delta
+
+Scope:
+
+- Rechecked the same multi-instance `account_id` path across `cmd/saas/agentmsg.go`, `internal/repository/instance.go`, `internal/repository/portfolio.go`, `internal/repository/reconciliation.go`, and `internal/saas/store/db.go`.
+- Rechecked whether the implementation has chosen one-account/one-non-retired-instance or per-instance capital allocation.
+
+Conclusion:
+
+- The finding remains open.
+- Current implementation has chosen neither policy in enforceable code. The schema/design doc still permits one account to map to many instances, while genesis funding still assumes whole-balance ownership for one instance per exchange account.
+- Recommended v1 decision: enforce at most one non-retired instance per `(owner_user_id, account_id)`. Per-instance allocation should be treated as a larger product/schema change because current `PortfolioState` and funding math have no capital ownership or allocation fields.
+
+Evidence:
+
+- `docs/saas-tier2-schema-v1.md:259` says schema does not add `(owner_user_id, account_id)` unique because one account may correspond to multiple instances.
+- `internal/saas/store/db.go:134` still creates `idx_inst_unique_active` only over `(owner_user_id, strategy_id, pair, account_id) WHERE status != 'retired'`.
+- `internal/repository/instance.go:72` still returns every non-retired instance for the account.
+- `cmd/saas/agentmsg.go:518` still funds every unfunded instance from the same parsed `actual` map, and `cmd/saas/agentmsg.go:610` still seeds whole base/USDT balances. The code comment at `cmd/saas/agentmsg.go:609` states the v1 assumption: whole-balance anchor, one instance per exchange account.
+- `cmd/saas/agentmsg.go:533` still aggregates all funded instance portfolios into one account-level `expected` map, and `cmd/saas/agentmsg.go:715` can advance auto-freeze from managed drift derived from that map.
+- Existing tests remain adjacent, not negative coverage: `cmd/saas/genesis_funding_integration_test.go:47` is single-instance; `internal/repository/instance_integration_test.go:20` proves multiple non-retired same-account instances are returned.
+
+Tests:
+
+- `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml` passed.
+- `GOCACHE=/tmp/quantlab-go-cache go test -count=1 ./cmd/saas ./internal/repository` passed after escalation for local `httptest` sockets. The sandboxed run passed `internal/repository` and failed only because `cmd/saas` could not open a local `httptest.NewServer` socket.
+
+Fix/Test Direction:
+
+- If choosing the recommended v1 invariant, add a DB partial unique backstop on `(owner_user_id, account_id) WHERE status != 'retired'`, keep create-instance unique violations mapped to conflict, and add repo/API regression tests proving a second non-retired same-account instance is rejected while retired rows do not block recreation.
+- If choosing per-instance allocation instead, add explicit allocation/managed-balance ownership before genesis funding and test that two fresh same-account instances funded from an unchanged exchange snapshot produce no discrepancy or auto-freeze.
+
 ## 2026-06-06 Addendum — DeployChampion State Consistency
 
 Scope:
@@ -973,9 +1005,9 @@ Coverage matrix:
 | G2C-2 Raw cascade contract | Missing | There are no Raw-level tests for empty windows, duplicate windows, non-canonical order, `WindowOOS` inside IS raw, invalid Fatal -> skipped cascade, or `SkippedBy` without a real earlier Fatal. |
 | G2C-3 verification replay boundary | Missing | `internal/verification/review_test.go` covers OK, mismatch, and hash/fingerprint short-circuit paths, but not invalid replay Raw returning a Go error before aggregation. |
 | D-1 active champion uniqueness | Partial | `internal/saas/store/db_integration_test.go:79` verifies the `uq_champion_active` index lands on the expected table and keeps the partial predicate. It does not try two active champion rows or concurrent Promote calls. |
-| C-1 / D4C-1 DeployChampion consistency | Missing | `internal/api/instance_handlers_test.go:240` only checks the happy path. There are no retired instance, retired champion, wrong pair/strategy, or never-promoted challenger rejection tests. |
-| C-2 / D4B-1 Retire CAS | Missing | `internal/repository/champion_test.go:145` only tests pure `applyRetire` with an already-retired in-memory row. There is no repository-level CAS / `RowsAffected==0` / double-Retire attribution test. |
-| C-3 / D4B-3 instance lifecycle CAS | Partial | `internal/api/instance_handlers_test.go:203` proves start refuses a currently retired instance. It does not prove stale start/stop reads cannot overwrite a concurrent retired state, and deploy still lacks a retired guard test. |
+| C-1 / D4C-1 DeployChampion consistency | Covered after Item 3 fix | `internal/repository/lifecycle_cas_integration_test.go:135` covers active/matching deploy, wrong pair, retired champion, and retired instance; `internal/api/instance_handlers_test.go` covers 422 mapping for deploy refusal. |
+| C-2 / D4B-1 Retire CAS | Covered after Item 3 fix | `internal/repository/lifecycle_cas_integration_test.go:37` proves stale Retire maps to `ErrAlreadyRetired` and cannot overwrite first-writer audit attribution. |
+| C-3 / D4B-3 instance lifecycle CAS | Covered after Item 3 fix | `internal/repository/lifecycle_cas_integration_test.go:94` proves stale idle->live cannot overwrite concurrent retired, and the deploy test covers retired-instance guard. |
 | L-1 / C-4 multi-instance account false-freeze | Missing | `cmd/saas/genesis_funding_integration_test.go:47` is single-instance only. `internal/repository/instance_integration_test.go:20` proves multiple non-retired instances under one account are returned. No test proves two fresh same-account instances do not false-freeze after whole-account genesis funding, or that the second instance is rejected. |
 | D4B-2 fill dedup concurrency / DB backstop | Partial | `cmd/saas/agentmsg_dedup_integration_test.go:33` covers sequential order_update replay, cross-channel duplicate, and same-ms distinct trade IDs. `internal/repository/reconciliation_integration_test.go:22` covers the existence query. There is no concurrent check-then-insert test and no DB unique-violation-as-idempotent-no-op test. |
 | S5B-1 replay after terminal | Partial | `internal/agent/agent_test.go:409` covers immediate duplicate terminal. `internal/agent/agent_test.go:448` covers brand-new expired rejection, and `internal/agent/kill_switch_test.go:17` covers brand-new frozen rejection. Missing: a filled/terminal `client_order_id` replayed after expiry or while frozen must still return `duplicate_terminal`. |
@@ -986,12 +1018,11 @@ Coverage matrix:
 Recommended test order:
 
 1. Raw fail-closed and Raw cascade contract tests.
-2. Retire CAS and terminal-status monotonicity tests.
+2. Terminal-status monotonicity tests.
 3. Agent idempotency read-error and replay-after-terminal tests.
 4. Fill dedup DB uniqueness / concurrency tests.
 5. Multi-instance account false-freeze test.
-6. DeployChampion scope / retired guard tests.
-7. Import-boundary CI guard for A-1.
+6. Import-boundary CI guard for A-1.
 
 ## 2026-06-06 Addendum — Raw Validation / GA Boundary Follow-up
 
@@ -1036,3 +1067,178 @@ Missing permanent negative tests:
 Verification:
 
 - `GOCACHE=/tmp/quantlab-go-cache go test ./internal/resultpkg ./internal/fitness ./internal/engine ./internal/verification ./internal/strategies/sigmoid_v1 ./internal/strategies/toy` passed.
+
+## 2026-06-06 Addendum — Item 2 Agent Order Idempotency / Terminal Replay Follow-up
+
+Scope:
+
+- Re-reviewed `internal/agent/tradecommand.go`, `internal/agent/client.go`,
+  `internal/agent/idempotency_sqlite.go`, `cmd/saas/agentmsg.go`, and
+  `internal/repository/trade.go`.
+- Rechecked whether replay-after-terminal, idempotency read-error fail-closed,
+  and terminal status monotonicity tests or fixes now exist.
+
+Conclusion:
+
+- S5B-1 / S5B-2 / S5B-3 / S5B-4 remain open.
+- The current focused package tests pass after local-socket escalation, but they
+  still do not include the missing negative regression cases.
+- No source code was changed in this pass.
+
+Evidence:
+
+- `internal/agent/tradecommand.go:27` rejects frozen commands before
+  `tradecommand.go:57` checks idempotency; `tradecommand.go:46` does the same
+  for expired commands. A known terminal `client_order_id` can therefore still
+  return `rejected` or `expired` instead of `duplicate_terminal`.
+- `internal/agent/tradecommand.go:57` discards the `idempotency.Get` error.
+  `internal/agent/idempotency_sqlite.go:66` documents that non-`ErrNoRows`
+  errors propagate as transient I/O, but submit handling can still proceed to
+  `tradecommand.go:105` `Put(preRec)` and `tradecommand.go:111` exchange submit.
+- `internal/agent/client.go:578` discards the same `Get` error on exchange
+  events; a read failure is still indistinguishable from unknown order and can
+  return before `client.go:624` delta buffering and before the `OrderUpdate`.
+- `cmd/saas/agentmsg.go:159` and `agentmsg.go:193` both call
+  `UpdateTradeStatus`; `internal/repository/trade.go:46` updates by
+  `client_order_id` only and has no transition predicate.
+
+Existing tests checked:
+
+- `internal/agent/agent_test.go:409` covers immediate duplicate terminal.
+- `internal/agent/agent_test.go:448` covers a brand-new expired command.
+- `internal/agent/kill_switch_test.go:17` covers a brand-new frozen command.
+- `internal/agent/agent_test.go:617` covers a known fill event, and
+  `agent_test.go:681` covers unknown-order drop.
+- `cmd/saas/agentmsg_test.go:11` covers status mapping and
+  `duplicate_terminal` no-op.
+- `internal/repository/trade_integration_test.go:246` covers
+  `MarkPartialIfPending` not touching a filled row.
+
+Missing permanent negative tests:
+
+- A previously filled/terminal `client_order_id` replayed after expiry must
+  still return `duplicate_terminal`.
+- A previously filled/terminal `client_order_id` replayed while frozen must
+  still return `duplicate_terminal`.
+- A fake idempotency-store `Get` error in `handleTradeCommand` must fail closed:
+  no exchange submit and no pending upsert over an existing terminal row.
+- A fake idempotency-store `Get` error in `onOrderEvent` must not silently drop a
+  real fill before `OrderUpdate` / delta_report buffering.
+- Generic SaaS status writes must prove `filled` cannot be downgraded by replayed
+  `partial_filled`, `cancelled`, or `rejected` updates/acks.
+
+Verification:
+
+- Sandboxed forced rerun:
+  `GOCACHE=/tmp/quantlab-go-cache go test -count=1 ./internal/agent ./cmd/saas ./internal/repository`.
+  `internal/agent` and `internal/repository` passed; `cmd/saas` hit the expected
+  sandbox local-socket restriction in `httptest.NewServer`.
+- Escalated rerun passed:
+  `GOCACHE=/tmp/quantlab-go-cache go test -count=1 ./internal/agent ./cmd/saas ./internal/repository`.
+
+## 2026-06-06 Addendum — Item 3 Lifecycle / CAS Fix Follow-up
+
+Scope:
+
+- Re-reviewed and fixed `internal/repository/champion.go`,
+  `internal/repository/instance.go`, and `internal/api/handlers.go`.
+- Covered Retire CAS, instance status CAS, and DeployChampion retired/scope
+  guard before and after the source change.
+
+Conclusion:
+
+- Retire CAS is fixed.
+- Instance start/stop stale-status overwrite is fixed.
+- DeployChampion now rejects retired instances and challengers that are not the
+  active, unretired champion for the target instance's `(strategy_id,pair)`.
+- New permanent regression coverage exists for the three fixed lifecycle/CAS
+  paths.
+- Remaining adjacent policy question: define whether Retire should block,
+  detach, or pause instances that already reference the retiring champion.
+
+Source changes:
+
+- `internal/repository/champion.go:145` adds a `retireHistory` helper; its
+  update predicate is `id + retired_at IS NULL`, and `RowsAffected == 0` maps
+  to `api.ErrAlreadyRetired`.
+- `internal/api/handlers.go:740` now passes the handler-read current status into
+  `Instances.UpdateStatus`; `internal/repository/instance.go:85` writes with
+  `instance_id + expected status`.
+- `internal/repository/instance.go:123` now deploys with one conditional write:
+  target instance status must be non-retired, and a correlated
+  `champion_histories` row must match `challenger_id`, `strategy_id`, `pair`,
+  `retired_at IS NULL`, and `deleted_at IS NULL`.
+- `internal/api/handlers.go` adds `ErrDeployChampionRefused` and maps invalid
+  deploy/CAS races to 422 while preserving 404 for missing instances.
+
+Regression tests:
+
+- `internal/repository/lifecycle_cas_integration_test.go:37`
+  `TestChampionRepo_RetireCASRejectsStaleHistory` proves a stale Retire cannot
+  rewrite first-writer audit attribution.
+- `internal/repository/lifecycle_cas_integration_test.go:94`
+  `TestInstanceRepo_UpdateStatusCASRejectsStaleState` proves stale idle->live
+  cannot overwrite concurrent retired.
+- `internal/repository/lifecycle_cas_integration_test.go:135`
+  `TestInstanceRepo_SetActiveChampionRequiresMatchingActiveChampionAndLiveInstance`
+  covers active/matching deploy, wrong pair, retired champion, and retired
+  instance.
+- `internal/api/instance_handlers_test.go` now checks expected-status propagation
+  and maps CAS/deploy refusal to HTTP 422.
+
+Verification:
+
+- `GOCACHE=/tmp/quantlab-go-cache go test ./internal/repository ./internal/api ./cmd/saas ./internal/saas/store` passed.
+- Sandboxed targeted integration first hit the expected localhost Postgres socket
+  restriction; the escalated rerun passed:
+  `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository -run 'TestChampionRepo_RetireCASRejectsStaleHistory|TestInstanceRepo_UpdateStatusCASRejectsStaleState|TestInstanceRepo_SetActiveChampionRequiresMatchingActiveChampionAndLiveInstance' -args -config=/home/l9g/quantlab/config.yaml`.
+- Full DB-backed repository/cmd regression passed:
+  `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml`.
+
+## 2026-06-07 Addendum — Item 4 spot_executions Dedup Backstop
+
+Scope:
+
+- Re-reviewed `cmd/saas/agentmsg.go`, `internal/repository/trade.go`,
+  `internal/saas/store/models.go`, `internal/saas/store/db.go`, and
+  `internal/saas/store/migrations/00001_baseline.sql`.
+- Tested existing package coverage, integration coverage, schema drift, live
+  Postgres index state, and rollback duplicate-insert probes.
+
+Conclusion:
+
+- The finding remains major and open.
+- `insertFillIfNew` still does `ExecutionExistsByTrade` or `ExecutionExists`
+  before plain `InsertSpotExecution`; the dedup check and insert are not one
+  database-enforced operation.
+- `SpotExecution` model tags, AutoMigrate raw DDL, and Goose baseline still lack
+  the two dedup unique identities.
+- Existing integration tests cover sequential replay, cross-channel duplicate,
+  and same-ms distinct `trade_id` fills, but they do not cover concurrent
+  check-then-insert or unique-violation-as-idempotent-no-op behavior.
+
+Live DB evidence:
+
+- `pg_indexes` for `spot_executions` showed ordinary indexes on
+  `client_order_id`, `deleted_at`, `exchange_order_id`, `trade_id`, and
+  `trade_record_id`, plus the primary key; no dedup unique index exists.
+- A transaction inserting the same `(client_order_id, trade_id)` twice reached
+  count=2 before `ROLLBACK`.
+- A second transaction inserting duplicate `trade_id=0`
+  `(client_order_id, filled_at_exchange_ms)` rows also reached count=2 before
+  `ROLLBACK`.
+- A final residue query for the probe keys returned 0 rows.
+
+Required fix remains:
+
+- Add partial unique indexes for `(client_order_id, trade_id) WHERE trade_id <> 0`
+  and `(client_order_id, filled_at_exchange_ms) WHERE trade_id = 0`.
+- Make the insert path treat unique violations as idempotent no-op.
+- Synchronize AutoMigrate raw DDL and Goose migration.
+- Add permanent concurrent writer / unique violation regression tests.
+
+Verification:
+
+- `GOCACHE=/tmp/quantlab-go-cache go test ./internal/repository ./internal/api ./cmd/saas ./internal/saas/store` passed.
+- `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/saas/store/ -run TestMigrationsMatchAutoMigrate -args -config=/home/l9g/quantlab/config.yaml` passed.
+- `GOCACHE=/tmp/quantlab-go-cache go test -tags=integration ./internal/repository ./cmd/saas -args -config=/home/l9g/quantlab/config.yaml` passed.

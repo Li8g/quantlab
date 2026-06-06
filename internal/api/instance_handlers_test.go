@@ -43,6 +43,7 @@ type fakeInstances struct {
 	getErr    error
 	upErr     error
 	deployErr error
+	gotFrom   store.InstanceStatus
 }
 
 func newFakeInstances() *fakeInstances {
@@ -72,12 +73,13 @@ func (f *fakeInstances) Get(_ context.Context, id string) (*store.StrategyInstan
 	return inst, nil
 }
 
-func (f *fakeInstances) UpdateStatus(_ context.Context, id string, status store.InstanceStatus) error {
+func (f *fakeInstances) UpdateStatus(_ context.Context, id string, from, status store.InstanceStatus) error {
 	if f.upErr != nil {
 		return f.upErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gotFrom = from
 	if inst, ok := f.byID[id]; ok {
 		inst.Status = status
 	}
@@ -198,6 +200,9 @@ func TestStartInstance_TransitionsIdleToLive(t *testing.T) {
 	if insts.byID["inst-1"].Status != store.InstanceStatusLive {
 		t.Errorf("Status = %q, want live", insts.byID["inst-1"].Status)
 	}
+	if insts.gotFrom != store.InstanceStatusIdle {
+		t.Errorf("UpdateStatus from = %q, want idle", insts.gotFrom)
+	}
 }
 
 func TestStartInstance_FromRetiredReturns422(t *testing.T) {
@@ -235,6 +240,27 @@ func TestStopInstance_TransitionsLiveToPaused(t *testing.T) {
 	if insts.byID["inst-1"].Status != store.InstanceStatusPaused {
 		t.Errorf("Status = %q, want paused", insts.byID["inst-1"].Status)
 	}
+	if insts.gotFrom != store.InstanceStatusLive {
+		t.Errorf("UpdateStatus from = %q, want live", insts.gotFrom)
+	}
+}
+
+func TestStartInstance_CASRaceReturns422(t *testing.T) {
+	insts := newFakeInstances()
+	insts.byID["inst-1"] = &store.StrategyInstance{
+		InstanceID: "inst-1", Status: store.InstanceStatusIdle,
+	}
+	insts.upErr = ErrInstanceTransitionRefused
+	h := &Handlers{Instances: insts, IDIssuer: &fakeIssuer{next: "x"}}
+	r := withClaimsHandlers(h, &auth.Claims{UserID: 1, Role: "operator"})
+
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/start", nil)
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("Code = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestDeployChampion_SetsActiveChampID(t *testing.T) {
@@ -257,6 +283,26 @@ func TestDeployChampion_SetsActiveChampID(t *testing.T) {
 	inst := insts.byID["inst-1"]
 	if inst.ActiveChampID == nil || *inst.ActiveChampID != "ch-001" {
 		t.Errorf("ActiveChampID = %v, want ch-001", inst.ActiveChampID)
+	}
+}
+
+func TestDeployChampion_RefusedReturns422(t *testing.T) {
+	insts := newFakeInstances()
+	insts.byID["inst-1"] = &store.StrategyInstance{
+		InstanceID: "inst-1", Status: store.InstanceStatusIdle,
+	}
+	insts.deployErr = ErrDeployChampionRefused
+	h := &Handlers{Instances: insts, IDIssuer: &fakeIssuer{next: "x"}}
+	r := withClaimsHandlers(h, &auth.Claims{UserID: 1, Role: "operator"})
+
+	body := []byte(`{"challenger_id":"ch-001"}`)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/deploy-champion", bytesReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("Code = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

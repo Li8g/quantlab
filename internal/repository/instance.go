@@ -12,6 +12,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"quantlab/internal/api"
 	"quantlab/internal/saas/store"
 )
 
@@ -78,14 +79,21 @@ func (r *InstanceRepo) ListByAccount(ctx context.Context, accountID string) ([]s
 	return rows, nil
 }
 
-// UpdateStatus transitions an instance to a new Status. The state
-// machine (§4.2 transition graph) is enforced by the caller — this
-// repo is a thin writer.
-func (r *InstanceRepo) UpdateStatus(ctx context.Context, instanceID string, status store.InstanceStatus) error {
-	return r.db.WithContext(ctx).
+// UpdateStatus transitions an instance from an expected current Status to a
+// new Status. The handler owns the state machine; the DB predicate owns the
+// compare-and-set so stale reads cannot overwrite a concurrent terminal write.
+func (r *InstanceRepo) UpdateStatus(ctx context.Context, instanceID string, from, to store.InstanceStatus) error {
+	res := r.db.WithContext(ctx).
 		Model(&store.StrategyInstance{}).
-		Where("instance_id = ?", instanceID).
-		Update("status", status).Error
+		Where("instance_id = ? AND status = ?", instanceID, from).
+		Update("status", to)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return r.classifyInstanceNoRows(ctx, instanceID, api.ErrInstanceTransitionRefused)
+	}
+	return nil
 }
 
 // SetLastTickWallTime stamps the wall-clock time of the last Tick
@@ -108,12 +116,43 @@ func (r *InstanceRepo) MarkFunded(ctx context.Context, instanceID string, ms int
 		Update("funded_at_ms", ms).Error
 }
 
-// SetActiveChampion attaches a Champion (ChallengerID) to an instance.
-// Used by the Promote → Deploy split (B2 frozen): Promote alone does
-// not touch instances; an explicit deploy call comes through here.
+// SetActiveChampion attaches the active, unretired Champion (ChallengerID) to
+// a non-retired instance. The correlated EXISTS ties the requested challenger
+// to the instance's (strategy_id, pair) in the same write predicate, so deploy
+// cannot race on a handler-side read or attach a wrong/retired champion.
 func (r *InstanceRepo) SetActiveChampion(ctx context.Context, instanceID string, challengerID string) error {
-	return r.db.WithContext(ctx).
+	res := r.db.WithContext(ctx).
+		Model(&store.StrategyInstance{}).
+		Where("instance_id = ? AND status <> ?", instanceID, store.InstanceStatusRetired).
+		Where(`EXISTS (
+			SELECT 1
+			FROM champion_histories
+			WHERE champion_histories.challenger_id = ?
+				AND champion_histories.strategy_id = strategy_instances.strategy_id
+				AND champion_histories.pair = strategy_instances.pair
+				AND champion_histories.retired_at IS NULL
+				AND champion_histories.deleted_at IS NULL
+		)`, challengerID).
+		Update("active_champ_id", challengerID)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return r.classifyInstanceNoRows(ctx, instanceID, api.ErrDeployChampionRefused)
+	}
+	return nil
+}
+
+func (r *InstanceRepo) classifyInstanceNoRows(ctx context.Context, instanceID string, transitionErr error) error {
+	var count int64
+	if err := r.db.WithContext(ctx).
 		Model(&store.StrategyInstance{}).
 		Where("instance_id = ?", instanceID).
-		Update("active_champ_id", challengerID).Error
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return transitionErr
 }
