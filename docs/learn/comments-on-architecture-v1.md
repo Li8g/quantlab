@@ -194,13 +194,22 @@ Refactor rule:
 Every external or cross-layer result must be validated at the receiver before
 business meaning is derived from it.
 
-For `RawEvaluateResult`, add a boundary helper, for example:
+For `RawEvaluateResult`, add mode-aware validators next to the existing
+`validate.go`, for example:
 
 ```go
-func ValidateRawForIS(raw *resultpkg.RawEvaluateResult) error
-func ValidateRawForOOS(raw *resultpkg.RawEvaluateResult) error
-func ValidateRawForStress(raw *resultpkg.RawEvaluateResult) error
+// internal/resultpkg/validate_raw.go
+func (r *RawEvaluateResult) ValidateForIS() error
+func (r *RawEvaluateResult) ValidateForOOS() error
+func (r *RawEvaluateResult) ValidateForStress() error
 ```
+
+These belong in `internal/resultpkg`, not in a child package such as
+`internal/resultpkg/rawvalidate`. They are extensions of the
+`RawEvaluateResult` contract, and there is no import cycle that forces a
+package split. Keep higher-level workflow policy outside resultpkg; for
+example, `RunStress` may still decide that a valid raw result with no captured
+returns means "skip stress".
 
 The IS validator should reject:
 
@@ -580,7 +589,8 @@ Goal: prevent invalid strategy/adapter output from becoming a score.
 
 Steps:
 
-1. Upgrade `RawEvaluateResult.Validate()` or add mode-specific validators.
+1. Upgrade `RawEvaluateResult.Validate()` and add mode-specific validators in
+   `internal/resultpkg/validate_raw.go`.
 2. Wire validation immediately after every `adapter.Evaluate`.
 3. Reject nil raw before dereferencing `raw.Windows`.
 4. Add negative tests for invalid raw.
@@ -736,11 +746,12 @@ internal/saas/execution
 internal/saas/reconciliation
 internal/saas/funding
 internal/saas/risk
-internal/resultpkg/rawvalidate
 ```
 
 Do not add a package unless it owns an invariant. Good package names describe
 business responsibility, not implementation convenience.
+Do not add `internal/resultpkg/rawvalidate` for RawEvaluateResult validation;
+place those validators in `internal/resultpkg/validate_raw.go`.
 
 ## Major Refactor Checklist
 

@@ -25,20 +25,23 @@ Use these projects as architecture references, not as drop-in dependencies.
 | Microsoft Qlib | <https://github.com/microsoft/qlib> | Research pipeline, data/feature/model/portfolio/backtest separation, experiment discipline. |
 | Backtrader | <https://www.backtrader.com/> | Simple strategy/data/broker/analyzer composition model for research and education. |
 | Zipline Reloaded | <https://github.com/stefan-jansen/zipline-reloaded> | Pythonic event-driven backtesting, calendars, bundle-style data ingestion. |
-| FinRL-X | <https://arxiv.org/abs/2603.21330> | AI/RL research-to-deployment pipeline discipline. |
-
 Suggested depth order for QuantLab:
 
 1. NautilusTrader
-2. LEAN
-3. Hummingbot
+2. Hummingbot
+3. LEAN
 4. vn.py
 5. Freqtrade
 6. Qlib
 
 Reason: QuantLab's immediate risk is live execution and invariant hardening,
-not research feature expansion. NautilusTrader, LEAN, and Hummingbot are the
-most relevant to that risk.
+not research feature expansion. NautilusTrader and Hummingbot are the most
+relevant to that risk: Hummingbot's in-flight order tracker and connector-level
+"store read error ≠ cache miss" handling maps directly onto the Agent
+idempotency fixes (Chapter 1 of the upgrade plan). LEAN is useful but
+lower-priority given its enterprise C# shape. FinRL-X (RL research framework)
+was removed: QuantLab uses GA, not RL, and the project's own §6 already says
+"do not treat research frameworks as live execution frameworks."
 
 ## 2. How To Read These Projects
 
