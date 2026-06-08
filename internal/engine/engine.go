@@ -130,6 +130,17 @@ func WindowWeights() map[resultpkg.WindowName]float64 {
 	}
 }
 
+func calcEliteCount(n int, ratio float64) int {
+	ne := int(float64(n) * ratio)
+	if ne < 1 {
+		ne = 1
+	}
+	if ne > n {
+		ne = n
+	}
+	return ne
+}
+
 // EpochResult is what RunEpoch returns. Phase 5D wraps this into a
 // full ChallengerResultPackage via engine.BuildChallengerPackage; the
 // SaaS Epoch service supplies the BuildContext + persists via
@@ -239,8 +250,19 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		}
 	}()
 
-	scores, raws, err := e.evaluatePopulation(ctx, plan, pop, adapters)
-	if err != nil {
+	// Pre-allocate working slices (reused every generation to avoid per-gen allocs).
+	// eliteScores/eliteRaws are scratch buffers for the elite carry-over path;
+	// they must be saved before produceNextGeneration (order[i] may alias 0..nElite-1).
+	n := e.cfg.PopSize
+	scores := make([]resultpkg.ScoreTotal, n)
+	raws := make([]*resultpkg.RawEvaluateResult, n)
+	fingerprints := make([]string, n)
+	order := make([]int, n)
+	nElite := calcEliteCount(n, e.cfg.EliteRatio)
+	eliteScores := make([]resultpkg.ScoreTotal, nElite)
+	eliteRaws := make([]*resultpkg.RawEvaluateResult, nElite)
+
+	if err := e.evaluatePopulation(ctx, plan, pop, adapters, scores, raws, 0); err != nil {
 		return nil, err
 	}
 	auditSamples = e.collectFatalSamples(auditSamples, pop, scores, raws, sampleRng, 0)
@@ -252,7 +274,6 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		actualGens int
 	)
 	for gen := 0; gen < e.cfg.MaxGenerations; gen++ {
-		fingerprints := make([]string, len(pop))
 		for i := range pop {
 			fingerprints[i] = e.strat.Fingerprint(pop[i])
 		}
@@ -260,7 +281,9 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 			e.cfg.OnGenerationEvaluated(gen, pop, scores, raws, fingerprints)
 		}
 
-		order := makeOrder(len(pop))
+		for i := range order {
+			order[i] = i
+		}
 		sort.SliceStable(order, func(i, j int) bool {
 			return compareWithFp(
 				scores[order[i]], scores[order[j]],
@@ -288,10 +311,26 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 			break
 		}
 
+		// Save elite scores/raws before producing next generation.
+		// order[i] may be < nElite, so we collect into scratch buffers first
+		// to avoid aliasing when we copy back to scores/raws[0..nElite-1].
+		for i := 0; i < nElite; i++ {
+			eliteScores[i] = scores[order[i]]
+			eliteRaws[i] = raws[order[i]]
+		}
+
 		next := e.produceNextGeneration(pop, scores, fingerprints, order, masterRng, conv.mutProb, conv.mutScale)
 		pop = next
-		scores, raws, err = e.evaluatePopulation(ctx, plan, pop, adapters)
-		if err != nil {
+
+		// Elites (next[0..nElite-1]) are exact deep-copies of the previous
+		// generation's best genes — same gene, same (gene,plan) → same result.
+		// Carry over scores/raws to skip re-evaluation.
+		for i := 0; i < nElite; i++ {
+			scores[i] = eliteScores[i]
+			raws[i] = eliteRaws[i]
+		}
+
+		if err := e.evaluatePopulation(ctx, plan, pop, adapters, scores, raws, nElite); err != nil {
 			return nil, err
 		}
 		auditSamples = e.collectFatalSamples(auditSamples, pop, scores, raws, sampleRng, gen+1)
@@ -369,32 +408,31 @@ func (e *Engine) collectFatalSamples(
 	return dst
 }
 
-// evaluatePopulation spreads pop across len(adapters) workers. Each worker
+// evaluatePopulation spreads pop[nSkip:] across len(adapters) workers. Each worker
 // owns one Adapter for the full pass; the engine calls Reset(plan) before
 // every Evaluate, satisfying the §5.6 isolation contract.
+//
+// scores and raws are pre-allocated by the caller (len = len(pop)); entries
+// [0..nSkip) are left untouched — the caller fills them (e.g. elite carry-over).
+// Workers write only to indices [nSkip..len(pop)).
 //
 // Determinism: scores[i] / raws[i] are written only by the worker handling
 // i; no cross-index races. Worker-pickup order does not affect final
 // scores because Adapter.Evaluate is required to be a pure function of
 // (gene, plan) (§5.5).
-//
-// raws is returned alongside scores so the main goroutine can run the
-// §I-3.12 fatal-audit sampler in deterministic idx order. Each raws[i]
-// holds the per-gene cascade output (Windows + FrictionActual +
-// LongestWindowStats); the slice survives only until the next
-// evaluatePopulation call in RunEpoch.
 func (e *Engine) evaluatePopulation(
 	ctx context.Context,
 	plan *domain.EvaluablePlan,
 	pop []domain.Gene,
 	adapters []strategy.Adapter,
-) ([]resultpkg.ScoreTotal, []*resultpkg.RawEvaluateResult, error) {
-	scores := make([]resultpkg.ScoreTotal, len(pop))
-	raws := make([]*resultpkg.RawEvaluateResult, len(pop))
+	scores []resultpkg.ScoreTotal,
+	raws []*resultpkg.RawEvaluateResult,
+	nSkip int,
+) error {
 	weights := WindowWeights()
 
-	jobs := make(chan int, len(pop))
-	for i := range pop {
+	jobs := make(chan int, len(pop)-nSkip)
+	for i := nSkip; i < len(pop); i++ {
 		jobs <- i
 	}
 	close(jobs)
@@ -434,9 +472,9 @@ func (e *Engine) evaluatePopulation(
 	wg.Wait()
 	close(errCh)
 	if err := <-errCh; err != nil {
-		return nil, nil, err
+		return err
 	}
-	return scores, raws, nil
+	return nil
 }
 
 // produceNextGeneration builds the next population: deep-copied elites
@@ -455,13 +493,7 @@ func (e *Engine) produceNextGeneration(
 	mutProb, mutScale float64,
 ) []domain.Gene {
 	n := len(pop)
-	nElite := int(float64(n) * e.cfg.EliteRatio)
-	if nElite < 1 {
-		nElite = 1
-	}
-	if nElite > n {
-		nElite = n
-	}
+	nElite := calcEliteCount(n, e.cfg.EliteRatio)
 
 	next := make([]domain.Gene, 0, n)
 	for i := 0; i < nElite; i++ {
@@ -511,10 +543,3 @@ func compareWithFp(a, b resultpkg.ScoreTotal, aFp, bFp string) int {
 	return quant.CompareFitness(a, b)
 }
 
-func makeOrder(n int) []int {
-	out := make([]int, n)
-	for i := range out {
-		out[i] = i
-	}
-	return out
-}
