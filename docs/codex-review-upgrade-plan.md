@@ -187,7 +187,7 @@ WHERE client_order_id = ? AND status NOT IN ('filled', 'cancelled', 'rejected')
 | Genesis funding 全仓锚定 | 随方案A自动成立 | — |
 | **Retire 策略（已部署 champion）** | ❌ 未决策 | 建议 v1：若有非退役实例的 `active_champ_id` 指向该 champion，则 422 拒绝 Retire，要求 operator 先换 champion 或 stop 实例 |
 | state_sync 重放深度 | ❌ 未决策（Phase 6 前置条件） | 先完成 Phase 1-4；Phase 6 开始前需明确：崩溃重启后追补哪段时间的 fill、是否跨副本、Agent 本地 SQLite 是否足够 |
-| SaaS 账本 float64 精度角色 | ❌ 未决策 | 建议 v1：monitoring-only，不用于 settlement；如需结算精度，届时引入 decimal |
+| SaaS 账本 float64 精度角色 | ✅ 已决策 2026-06-09：SaaS 账本保持 float64，decimal 仅限 agent/binance 边界；累加漂移 ~1e-11 远小于对账阈值 200bps，引 decimal 进 saas 层代价不值 | — |
 
 ---
 
