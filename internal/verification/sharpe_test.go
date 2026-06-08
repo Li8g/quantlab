@@ -2,7 +2,10 @@ package verification
 
 import (
 	"math"
+	"math/rand"
 	"testing"
+
+	"quantlab/internal/quant"
 )
 
 func TestComputeSharpeStats_EmptySeries(t *testing.T) {
@@ -73,5 +76,61 @@ func TestComputeSharpeStats_FeedsDSRWithoutNaN(t *testing.T) {
 	dsr := ComputeDSR(s.ObservedSharpe, 0.2, 10, s.HorizonT, s.Skew, s.ExcessKurt)
 	if math.IsNaN(dsr) {
 		t.Errorf("DSR = NaN from healthy stats %+v", s)
+	}
+}
+
+// TestComputeSharpeStats_MatchesSeparateFunctions verifies that the combined
+// two-pass implementation agrees with the original separate quant functions
+// to within 1e-9 relative tolerance on a large realistic series.
+func TestComputeSharpeStats_MatchesSeparateFunctions(t *testing.T) {
+	rng := rand.New(rand.NewSource(99))
+	returns := make([]float64, 87_600)
+	for i := range returns {
+		returns[i] = 0.0008 + (rng.Float64()-0.5)*0.02
+	}
+
+	got := ComputeSharpeStats(returns)
+
+	// Reference values from the original individual functions.
+	wantStd := quant.StdDev(returns)
+	wantMean := quant.KahanSum(returns) / float64(len(returns))
+	var wantSharpe float64
+	if wantStd > 0 {
+		wantSharpe = wantMean / wantStd
+	}
+	wantSkew := quant.Skewness(returns)
+	wantExKurt := quant.ExcessKurtosis(returns)
+
+	const tol = 1e-9
+	check := func(name string, got, want float64) {
+		t.Helper()
+		if want == 0 {
+			if math.Abs(got) > tol {
+				t.Errorf("%s: got %v, want ~0", name, got)
+			}
+			return
+		}
+		if rel := math.Abs(got-want) / math.Abs(want); rel > tol {
+			t.Errorf("%s: got %v, want %v (rel diff %.2e > tol %.2e)", name, got, want, rel, tol)
+		}
+	}
+
+	check("ObservedSharpe", got.ObservedSharpe, wantSharpe)
+	check("Skew", got.Skew, wantSkew)
+	check("ExcessKurt", got.ExcessKurt, wantExKurt)
+	if got.HorizonT != len(returns) {
+		t.Errorf("HorizonT = %d, want %d", got.HorizonT, len(returns))
+	}
+}
+
+func BenchmarkComputeSharpeStats_87kReturns(b *testing.B) {
+	rng := rand.New(rand.NewSource(42))
+	returns := make([]float64, 87_600)
+	for i := range returns {
+		returns[i] = 0.0008 + (rng.Float64()-0.5)*0.02
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ComputeSharpeStats(returns)
 	}
 }
