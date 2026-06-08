@@ -99,6 +99,32 @@ func (f *fakeInstances) SetActiveChampion(_ context.Context, id, chID string) er
 	return nil
 }
 
+func (f *fakeInstances) RetireInstance(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inst, ok := f.byID[id]
+	if !ok {
+		return gorm.ErrRecordNotFound
+	}
+	if inst.Status == store.InstanceStatusRetired {
+		return ErrInstanceAlreadyRetired
+	}
+	inst.Status = store.InstanceStatusRetired
+	return nil
+}
+
+func (f *fakeInstances) BlockingInstanceForChampion(_ context.Context, championID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, inst := range f.byID {
+		if inst.Status != store.InstanceStatusRetired &&
+			inst.ActiveChampID != nil && *inst.ActiveChampID == championID {
+			return inst.InstanceID, nil
+		}
+	}
+	return "", nil
+}
+
 type fakeIssuer struct{ next string }
 
 func (f *fakeIssuer) NewID() string { return f.next }
@@ -335,6 +361,7 @@ func TestPromoteRetire_AdminGated(t *testing.T) {
 	authSvc := testAuthService(t)
 	h := &Handlers{
 		Champions:    &fakeChampions{},
+		Instances:    newFakeInstances(),
 		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireAdmin: middleware.RequireRole(store.UserRoleAdmin),
 	}

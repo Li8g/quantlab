@@ -158,6 +158,42 @@ func (r *InstanceRepo) SetActiveChampion(ctx context.Context, instanceID string,
 	return nil
 }
 
+// RetireInstance transitions an instance to the terminal "retired" status from
+// any non-retired state (idle / paused / live). Returns
+// api.ErrInstanceAlreadyRetired when already retired, gorm.ErrRecordNotFound
+// when the instance does not exist.
+func (r *InstanceRepo) RetireInstance(ctx context.Context, instanceID string) error {
+	res := r.db.WithContext(ctx).
+		Model(&store.StrategyInstance{}).
+		Where("instance_id = ? AND status <> ?", instanceID, store.InstanceStatusRetired).
+		Update("status", store.InstanceStatusRetired)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return r.classifyInstanceNoRows(ctx, instanceID, api.ErrInstanceAlreadyRetired)
+	}
+	return nil
+}
+
+// BlockingInstanceForChampion returns the instance_id of the first non-retired
+// instance whose active_champ_id = championID, or "" when none exists. Used by
+// RetireChampion to enforce the deployed-champion safety gate.
+func (r *InstanceRepo) BlockingInstanceForChampion(ctx context.Context, championID string) (string, error) {
+	var inst store.StrategyInstance
+	err := r.db.WithContext(ctx).
+		Select("instance_id").
+		Where("active_champ_id = ? AND status <> ?", championID, store.InstanceStatusRetired).
+		First(&inst).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return inst.InstanceID, nil
+}
+
 func (r *InstanceRepo) classifyInstanceNoRows(ctx context.Context, instanceID string, transitionErr error) error {
 	var count int64
 	if err := r.db.WithContext(ctx).

@@ -436,7 +436,7 @@ func TestPromoteChallenger_NotFoundReturns404(t *testing.T) {
 }
 
 func TestRetireChampion_HappyPath(t *testing.T) {
-	h := &Handlers{Champions: &fakeChampions{}}
+	h := &Handlers{Champions: &fakeChampions{}, Instances: newFakeInstances()}
 	body := RetireChampionRequest{ReviewedBy: "bob"}
 	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/champions/ch-001/retire", body)
 	if w.Code != http.StatusOK {
@@ -445,7 +445,7 @@ func TestRetireChampion_HappyPath(t *testing.T) {
 }
 
 func TestRetireChampion_AlreadyRetiredReturns422(t *testing.T) {
-	h := &Handlers{Champions: &fakeChampions{retireErr: ErrAlreadyRetired}}
+	h := &Handlers{Champions: &fakeChampions{retireErr: ErrAlreadyRetired}, Instances: newFakeInstances()}
 	body := RetireChampionRequest{ReviewedBy: "bob"}
 	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/champions/ch-001/retire", body)
 	if w.Code != http.StatusUnprocessableEntity {
@@ -454,9 +454,84 @@ func TestRetireChampion_AlreadyRetiredReturns422(t *testing.T) {
 }
 
 func TestRetireChampion_NotFoundReturns404(t *testing.T) {
-	h := &Handlers{Champions: &fakeChampions{retireErr: gorm.ErrRecordNotFound}}
+	h := &Handlers{Champions: &fakeChampions{retireErr: gorm.ErrRecordNotFound}, Instances: newFakeInstances()}
 	body := RetireChampionRequest{ReviewedBy: "bob"}
 	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/champions/missing/retire", body)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Code = %d, want 404", w.Code)
+	}
+}
+
+// RetireChampion safety gate: 422 when a non-retired instance still deploys it.
+func TestRetireChampion_BlockedByInstance(t *testing.T) {
+	insts := newFakeInstances()
+	chID := "ch-deployed"
+	inst := &store.StrategyInstance{InstanceID: "inst-001", Status: store.InstanceStatusLive}
+	inst.ActiveChampID = &chID
+	insts.byID["inst-001"] = inst
+
+	h := &Handlers{
+		Champions: &fakeChampions{},
+		Instances: insts,
+	}
+	body := RetireChampionRequest{ReviewedBy: "bob"}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/champions/"+chID+"/retire", body)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("Code = %d, want 422; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// RetireChampion gate passes once all deploying instances are retired.
+func TestRetireChampion_AllowedAfterInstanceRetired(t *testing.T) {
+	insts := newFakeInstances()
+	chID := "ch-safe"
+	inst := &store.StrategyInstance{InstanceID: "inst-002", Status: store.InstanceStatusRetired}
+	inst.ActiveChampID = &chID
+	insts.byID["inst-002"] = inst
+
+	h := &Handlers{
+		Champions: &fakeChampions{},
+		Instances: insts,
+	}
+	body := RetireChampionRequest{ReviewedBy: "bob"}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/champions/"+chID+"/retire", body)
+	if w.Code != http.StatusOK {
+		t.Errorf("Code = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ===== RetireInstance =====
+
+func TestRetireInstance_HappyPath(t *testing.T) {
+	insts := newFakeInstances()
+	insts.byID["inst-10"] = &store.StrategyInstance{
+		InstanceID: "inst-10", Status: store.InstanceStatusLive,
+	}
+	h := &Handlers{Instances: insts}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/instances/inst-10/retire", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Code = %d; body=%s", w.Code, w.Body.String())
+	}
+	if insts.byID["inst-10"].Status != store.InstanceStatusRetired {
+		t.Error("instance status should be retired")
+	}
+}
+
+func TestRetireInstance_AlreadyRetiredReturns422(t *testing.T) {
+	insts := newFakeInstances()
+	insts.byID["inst-11"] = &store.StrategyInstance{
+		InstanceID: "inst-11", Status: store.InstanceStatusRetired,
+	}
+	h := &Handlers{Instances: insts}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/instances/inst-11/retire", nil)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("Code = %d, want 422", w.Code)
+	}
+}
+
+func TestRetireInstance_NotFoundReturns404(t *testing.T) {
+	h := &Handlers{Instances: newFakeInstances()}
+	w := doJSON(newRouter(h), http.MethodPost, "/api/v1/instances/missing/retire", nil)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Code = %d, want 404", w.Code)
 	}

@@ -95,6 +95,12 @@ func (f *fakeInstanceStore) UpdateStatus(_ context.Context, _ string, _, _ store
 func (f *fakeInstanceStore) SetActiveChampion(_ context.Context, _ string, _ string) error {
 	return errors.New("not used")
 }
+func (f *fakeInstanceStore) RetireInstance(_ context.Context, _ string) error {
+	return errors.New("not used")
+}
+func (f *fakeInstanceStore) BlockingInstanceForChampion(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
 
 type fakeSharpeBank struct {
 	snap SharpeBankStatsSnapshot

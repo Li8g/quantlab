@@ -18,6 +18,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -55,6 +56,7 @@ var (
 	ErrAlreadyPromoted       = errors.New("challenger already promoted")
 	ErrAlreadyRejected       = errors.New("challenger already rejected")
 	ErrAlreadyRetired        = errors.New("champion already retired")
+	ErrInstanceAlreadyRetired = errors.New("instance already retired")
 
 	// ErrActiveChampionExists: a Promote would create a second active
 	// champion for the same (strategy_id, pair). The framework
@@ -110,6 +112,11 @@ type InstanceStore interface {
 	Get(ctx context.Context, instanceID string) (*store.StrategyInstance, error)
 	UpdateStatus(ctx context.Context, instanceID string, from, to store.InstanceStatus) error
 	SetActiveChampion(ctx context.Context, instanceID string, challengerID string) error
+	// RetireInstance transitions an instance to the terminal retired status.
+	RetireInstance(ctx context.Context, instanceID string) error
+	// BlockingInstanceForChampion returns the first non-retired instance that
+	// still deploys championID, or "" when the champion is safe to retire.
+	BlockingInstanceForChampion(ctx context.Context, championID string) (string, error)
 }
 
 // ===== Phase 9 batch 1 collaborators =====
@@ -397,6 +404,13 @@ func (h *Handlers) Register(r gin.IRouter) {
 			inst.POST("/:instance_id/resume", h.ResumeInstance)
 		}
 	}
+
+	// RetireInstance — terminal transition, admin only.
+	if h.RequireAdmin != nil {
+		inst.POST("/:instance_id/retire", h.RequireAdmin, h.RetireInstance)
+	} else {
+		inst.POST("/:instance_id/retire", h.RetireInstance)
+	}
 }
 
 // ===== handlers =====
@@ -537,6 +551,22 @@ func (h *Handlers) PromoteChallenger(c *gin.Context) {
 	})
 }
 
+// RetireInstance: POST /api/v1/instances/:instance_id/retire (admin-only).
+// Transitions any non-retired status → retired (terminal). Once an instance
+// is retired it no longer blocks champion retirement (safety gate below).
+func (h *Handlers) RetireInstance(c *gin.Context) {
+	id := c.Param("instance_id")
+	if id == "" {
+		writeError(c, http.StatusBadRequest, errors.New("instance_id is required"))
+		return
+	}
+	if err := h.Instances.RetireInstance(c.Request.Context(), id); err != nil {
+		writeError(c, mapInstanceWriteErr(err), err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"instance_id": id, "status": "retired"})
+}
+
 // RetireChampion: POST /api/v1/champions/:champion_id/retire. The URL
 // param is the ChallengerID of the promoted gene (champions are stored
 // keyed by ChallengerID).
@@ -553,6 +583,17 @@ func (h *Handlers) RetireChampion(c *gin.Context) {
 	}
 	if err := req.Validate(); err != nil {
 		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	// Safety gate: block if any non-retired instance still deploys this champion.
+	blockingID, err := h.Instances.BlockingInstanceForChampion(c.Request.Context(), id)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if blockingID != "" {
+		writeError(c, http.StatusUnprocessableEntity,
+			fmt.Errorf("champion is deployed to instance %s; retire the instance or deploy a different champion first", blockingID))
 		return
 	}
 	if err := h.Champions.Retire(c.Request.Context(), id, req); err != nil {
@@ -780,7 +821,9 @@ func mapInstanceWriteErr(err error) int {
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, ErrInstanceTransitionRefused), errors.Is(err, ErrDeployChampionRefused):
+	case errors.Is(err, ErrInstanceTransitionRefused),
+		errors.Is(err, ErrDeployChampionRefused),
+		errors.Is(err, ErrInstanceAlreadyRetired):
 		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError

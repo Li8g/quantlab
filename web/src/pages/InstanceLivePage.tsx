@@ -24,11 +24,11 @@ import type {
 // resume (§5.13 v2 — lift the kill_switch freeze) is admin-only. Each
 // routes through a SudoModal step-up before hitting the endpoint; the role
 // it requests is derived from the verb (see sudoRoleForVerb).
-type ActionVerb = 'start' | 'stop' | 'deploy' | 'resume'
+type ActionVerb = 'start' | 'stop' | 'deploy' | 'resume' | 'retire-instance'
 
-// resume un-freezes a halted agent (admin); the rest are operator-level.
+// resume and retire-instance are admin-only; the rest are operator-level.
 function sudoRoleForVerb(verb: ActionVerb): 'admin' | 'operator' {
-  return verb === 'resume' ? 'admin' : 'operator'
+  return verb === 'resume' || verb === 'retire-instance' ? 'admin' : 'operator'
 }
 
 // F2.2: per-instance live snapshot. Polled every 3s — the detail view is
@@ -80,7 +80,9 @@ export default function InstanceLivePage() {
           ? `Pause ${tag}.`
           : verb === 'resume'
             ? `Resume (un-freeze) the agent on ${tag}.`
-            : `Deploy champion ${deployId.trim()} to ${tag}.`
+            : verb === 'retire-instance'
+              ? `Permanently retire instance ${tag}. This is irreversible.`
+              : `Deploy champion ${deployId.trim()} to ${tag}.`
     setPending({ verb, desc })
   }
 
@@ -139,6 +141,8 @@ export default function InstanceLivePage() {
               await apiFetch(`${base}/stop`, { method: 'POST', token })
             } else if (pending.verb === 'resume') {
               await apiFetch(`${base}/resume`, { method: 'POST', token })
+            } else if (pending.verb === 'retire-instance') {
+              await apiFetch(`${base}/retire`, { method: 'POST', token })
             } else {
               await apiFetch(`${base}/deploy-champion`, {
                 method: 'POST',
@@ -184,40 +188,51 @@ function ControlsCard({
           Instance retired — no actions available.
         </p>
       ) : (
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            className={btn}
-            disabled={status === 'live'}
-            onClick={() => onAct('start')}
-          >
-            Start
-          </button>
-          <button
-            type="button"
-            className={btn}
-            disabled={status !== 'live'}
-            onClick={() => onAct('stop')}
-          >
-            Pause
-          </button>
-          <div className="ml-auto flex items-center gap-2">
-            <input
-              value={deployId}
-              onChange={(e) => setDeployId(e.target.value)}
-              placeholder="challenger_id"
-              className="w-64 rounded-md border border-slate-300 px-2 py-1.5 font-mono text-xs focus:border-slate-500 focus:outline-none"
-            />
+        <>
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               className={btn}
-              disabled={!deployId.trim()}
-              onClick={() => onAct('deploy')}
+              disabled={status === 'live'}
+              onClick={() => onAct('start')}
             >
-              Deploy champion
+              Start
+            </button>
+            <button
+              type="button"
+              className={btn}
+              disabled={status !== 'live'}
+              onClick={() => onAct('stop')}
+            >
+              Pause
+            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <input
+                value={deployId}
+                onChange={(e) => setDeployId(e.target.value)}
+                placeholder="challenger_id"
+                className="w-64 rounded-md border border-slate-300 px-2 py-1.5 font-mono text-xs focus:border-slate-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                className={btn}
+                disabled={!deployId.trim()}
+                onClick={() => onAct('deploy')}
+              >
+                Deploy champion
+              </button>
+            </div>
+          </div>
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              className="rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
+              onClick={() => onAct('retire-instance')}
+            >
+              Retire instance
             </button>
           </div>
-        </div>
+        </>
       )}
       {activeChampionId && (
         <p className="mt-3 text-xs text-slate-400">
