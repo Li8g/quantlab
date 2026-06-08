@@ -69,7 +69,7 @@ func (a *fatalToyAdapter) Evaluate(_ domain.Gene) (*resultpkg.RawEvaluateResult,
 func (a *fatalToyAdapter) Close() error { return nil }
 
 func fatalCascade() *resultpkg.RawEvaluateResult {
-	reason := "test-forced-fatal"
+	reason := string(resultpkg.FatalReasonMDDExceeded)
 	ts := int64(1)
 	mdd := 0.6
 	windows := []resultpkg.CrucibleResult{

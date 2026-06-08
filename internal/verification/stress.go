@@ -57,6 +57,9 @@ func RunStress(
 	if raw == nil || len(raw.LongestWindowReturns) == 0 {
 		return nil, nil
 	}
+	if err := raw.ValidateForStress(); err != nil {
+		return nil, fmt.Errorf("verification.RunStress: invalid raw: %w", err)
+	}
 
 	blockLen := OptimalBlockLength(raw.LongestWindowReturns)
 	rep := RunMonteCarlo(raw.LongestWindowReturns, blockLen, DefaultStressIters, seed, plan.FatalMDD)

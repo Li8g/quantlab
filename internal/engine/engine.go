@@ -311,6 +311,9 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 	if err != nil {
 		return nil, fmt.Errorf("engine: re-evaluate best: evaluate: %w", err)
 	}
+	if err := bestRaw.ValidateForIS(); err != nil {
+		return nil, fmt.Errorf("engine: re-evaluate best: invalid raw: %w", err)
+	}
 
 	return &EpochResult{
 		BestGene:          append(domain.Gene(nil), pop[bestIdx]...),
@@ -414,6 +417,10 @@ func (e *Engine) evaluatePopulation(
 				raw, err := adapter.Evaluate(pop[idx])
 				if err != nil {
 					errCh <- fmt.Errorf("adapter.Evaluate[%d]: %w", idx, err)
+					return
+				}
+				if err := raw.ValidateForIS(); err != nil {
+					errCh <- fmt.Errorf("adapter.Evaluate[%d] invalid raw: %w", idx, err)
 					return
 				}
 				scores[idx] = fitness.AggregateScoreTotal(

@@ -155,8 +155,8 @@ func RunOOS(
 	if err != nil {
 		return nil, fmt.Errorf("verification.RunOOS: Evaluate: %w", err)
 	}
-	if len(raw.Windows) != 1 {
-		return nil, fmt.Errorf("verification.RunOOS: expected 1 OOS window result, got %d", len(raw.Windows))
+	if err := raw.ValidateForOOS(); err != nil {
+		return nil, fmt.Errorf("verification.RunOOS: invalid raw: %w", err)
 	}
 	_ = ctx // accepted for API symmetry / future cancellation; strategy.Evaluate doesn't honour ctx today
 

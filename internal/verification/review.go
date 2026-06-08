@@ -127,6 +127,9 @@ func RunReview(
 	if err != nil {
 		return nil, fmt.Errorf("verification.RunReview: Evaluate: %w", err)
 	}
+	if err := raw.ValidateForIS(); err != nil {
+		return nil, fmt.Errorf("verification.RunReview: invalid raw: %w", err)
+	}
 	replayScore := fitness.AggregateScoreTotal(
 		raw.Windows, weights, lambdaCons, resultpkg.FitnessVersionV1RawStd,
 	)

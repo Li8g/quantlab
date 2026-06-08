@@ -199,7 +199,7 @@ func TestRunOOS_FloorBoundary_ExactlyMinDays(t *testing.T) {
 func TestRunOOS_Fatal_RedAndFailed(t *testing.T) {
 	bars := flatBars(180, 0)
 	plan := planWithOOS(bars)
-	stub := &stubOOSStrategy{fatal: true, fatalReason: "drawdown_0.55"}
+	stub := &stubOOSStrategy{fatal: true, fatalReason: string(resultpkg.FatalReasonMDDExceeded)}
 	got, err := RunOOS(context.Background(), stub, plan, domain.Gene{0}, defaultDCA())
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
