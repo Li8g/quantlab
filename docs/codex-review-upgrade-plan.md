@@ -21,7 +21,7 @@
 
 ## 第1章 — Critical：Agent 幂等性三处 fail-open
 
-**状态：待修复** | 来源：S5B-1 / S5B-2 / S5B-3
+**状态：✅ 已完成 2026-06-08 | commit c802830** | 来源：S5B-1 / S5B-2 / S5B-3
 
 根因：`handleTradeCommand` 和 `onOrderEvent` 均将 `idempotency.Get` 的错误丢弃（`_, ok, _ := c.idempotency.Get(...)`）。
 
@@ -53,7 +53,7 @@
 
 ## 第2章 — Major：`spot_executions` 无 DB 唯一约束
 
-**状态：待修复** | 来源：D4B-2（06-07 addendum 已用真实 DB 验证：两次插入同一对均达到 count=2）
+**状态：✅ 已完成 2026-06-08 | commit 6c9d622** | 来源：D4B-2（06-07 addendum 已用真实 DB 验证：两次插入同一对均达到 count=2）
 
 **现状**：`insertFillIfNew` = 先查存在性，再 Insert（check-then-insert，非原子）。两路并发可同时通过检查，产生重复成交行，账本重复计算，误触 auto-freeze。
 
@@ -73,7 +73,7 @@
 
 ## 第3章 — Major：trade_records 状态非单调
 
-**状态：待修复** | 来源：S5B-4 / C-5
+**状态：✅ 已完成 2026-06-08 | commit 6c9d622** | 来源：S5B-4 / C-5
 
 **现状**：`TradeRepo.UpdateTradeStatus` 按 `client_order_id` 无条件覆盖。ack / order_update 乱序或重放时，`partial_filled` / `cancelled` / `rejected` 可覆盖 `filled`。
 
@@ -101,7 +101,7 @@ WHERE client_order_id = ? AND status NOT IN ('filled', 'cancelled', 'rejected')
 
 ## 第4章 — Major：多实例同账户误冻结
 
-**状态：已决策，待实施** | 来源：L-1（06-06 / 06-07 addendum 多次确认 open）
+**状态：✅ 已完成 2026-06-08 | commit c3f287c** | 来源：L-1（06-06 / 06-07 addendum 多次确认 open）
 
 ### 决策：方案 A — 强制每账户最多一个非退役实例
 
@@ -127,7 +127,7 @@ WHERE client_order_id = ? AND status NOT IN ('filled', 'cancelled', 'rejected')
 
 ## 第5章 — Medium：Genesis Funding 竞争条件
 
-**状态：待修复** | 来源：Stage 4B "Genesis Funding Claim Happens After The Seed Append"
+**状态：✅ 已完成 2026-06-08 | commit 93da7b2** | 来源：Stage 4B "Genesis Funding Claim Happens After The Seed Append"
 
 **现状**：`fundInstance` 先 append genesis PortfolioState，再 `MarkFunded`——两步非原子。并发两路 delta_report 可各自留下 seed 行，baseline 按时间戳而非唯一 claim 决定。
 
@@ -143,42 +143,23 @@ WHERE client_order_id = ? AND status NOT IN ('filled', 'cancelled', 'rejected')
 
 ## 第6章 — Medium：RawEvaluateResult Validate 未接入 GA 热循环
 
-**状态：待修复** | 来源：G2C-1 / G2C-2 / G2C-3
+**状态：✅ 已完成 2026-06-08 | commit d193dc7** | 来源：G2C-1 / G2C-2 / G2C-3
 
-**现状**：
-- `engine.evaluatePopulation`（`engine.go:414`）调 `adapter.Evaluate` 后直接聚合 `raw.Windows`，无 nil 检查、无 `Validate()`
-- Best-gene 重评估（`engine.go:310`）、`RunReview`（`review.go:126`）、`RunOOS`（`oos.go:154`，nil 不 fail-closed）、`RunStress`（`stress.go:53`，nil 当 no-series skip）同样缺保护
-- `RawEvaluateResult.Validate()` 自身只校验三态互斥，不校验序列/去重/OOS/cascade 语义
+**实现**：新增 `internal/resultpkg/validate_raw.go`，三个方法：
+- `ValidateForIS()`：拒绝 nil/empty/OOS-in-IS/重复/非规范顺序/坏 cascade（SkippedBy-without-fatal、normal-after-cascade、fatal-after-cascade）
+- `ValidateForOOS()`：精确 1 个 window；RunOOS 把 OOS 窗口重命名为 Window6M，故不检查标签
+- `ValidateForStress()`：delegate → `ValidateForIS`（stress 用 IS plan）
 
-**修复步骤**：
-1. 新增 `internal/resultpkg/validate_raw.go`，以方法形式扩展校验：
-   ```go
-   func (r *RawEvaluateResult) ValidateForIS() error    // 含序列/去重/OOS/cascade
-   func (r *RawEvaluateResult) ValidateForOOS() error
-   func (r *RawEvaluateResult) ValidateForStress() error
-   ```
-   **注意**：Stress 中"无 LongestWindowReturns → 跳过"的业务策略留在 `internal/verification/stress.go`，resultpkg 只管 shape/sequence/cascade/field consistency，不知道 Monte Carlo/plan 语义。
-2. `evaluatePopulation`：`raw == nil` → worker error；`raw.ValidateForIS() != nil` → fail-closed
-3. Best-gene 重评估：同样加 nil + `ValidateForIS` 检查
-4. `RunReview`、`RunOOS`、`RunStress`：各自调用对应模式的 validator
+接线点（全部 fail-closed）：
+- `engine.evaluatePopulation`：nil raw 不再 panic，ValidateForIS 失败 → worker error
+- engine best-gene 重评估：同样加 ValidateForIS guard
+- `verification.RunReview`：ValidateForIS
+- `verification.RunOOS`：ValidateForOOS（替代原来的 `len != 1` 硬判）
+- `verification.RunStress`：ValidateForStress（在业务跳过逻辑之后，non-nil raw 必须合法）
 
-**`ValidateForIS` 应拒绝**：
-- `raw == nil`
-- nil / empty `Windows`
-- duplicate windows
-- 非规范顺序（6m→2y→5y→10y）
-- `WindowOOS` 出现在 IS raw 中
-- non-fatal/non-skipped window 的 `Score.Value == nil`
-- `SkippedBy` 指向的 Fatal 不存在于更早的窗口
-- Fatal 窗口出现在 cascade-skipped 序列之后
+顺带修复：`fatal_audit_test.go` 和 `oos_test.go` 两处测试 fixture 使用非枚举 `FatalReason` 字符串，现已替换为 `FatalReasonMDDExceeded`。
 
-**必须补的测试**（6条）：
-- nil raw → RunEpoch error，不 panic
-- invalid raw → RunEpoch + best-gene re-eval fail before aggregation
-- `ValidateForIS` 拒绝：empty / duplicate / non-canonical / OOS-in-IS / bad-cascade / SkippedBy-without-fatal
-- RunReview invalid raw → Go error（不是 mismatch 或 OK）
-- RunOOS nil raw → fail closed
-- RunStress invalid non-nil raw → 不 silent skip
+**测试**：14 条 validator 单元测试（`validate_raw_test.go`）+ 2 条 engine 接线测试（nil-raw 热循环不 panic、best-reeval nil-raw 返回 error，见 `engine_raw_validate_test.go`）。全项目 26 包无回归。
 
 ---
 
@@ -233,23 +214,21 @@ cmd/saas                     — config、依赖构建、路由/hub 设置、sig
 
 ## 优先级总览
 
-| 项目 | 严重性 | 状态 | 建议顺序 |
+| 项目 | 严重性 | 状态 | commit |
 |---|---|---|---|
 | 已完成（Item 3：CAS + DeployChampion） | Major | ✅ Done | — |
-| 第1章 Agent fail-open（幂等性） | Critical | 待修 | **1** |
-| 第2章 spot_executions DB 唯一约束 | Major | 待修 | **2** |
-| 第3章 trade status 单调性 | Major | 待修 | **3** |
-| 第4章 多实例同账户（方案A） | Major | 决策已定，待实施 | **4** |
-| 第5章 genesis funding 竞争条件 | Medium | 待修 | 5 |
-| 第6章 Raw Validate 接入热循环 | Medium | 待修 | 6 |
-| 第7章 架构边界（Low 项） | Low | 可延后 | 7 |
-| ⑤⑥ Frontend observability | Low | 可与 1-4 并行 | 并行 |
-| Phase 5 agentmsg.go 提取 | 技术债 | 有意推迟 | 1-4 完成后专项 |
-| Phase 6 durable reconnect replay | 未来 | 需先定产品规格 | 最后 |
+| 第1章 Agent fail-open（幂等性） | Critical | ✅ 完成 2026-06-08 | c802830 |
+| 第2章 spot_executions DB 唯一约束 | Major | ✅ 完成 2026-06-08 | 6c9d622 |
+| 第3章 trade status 单调性 | Major | ✅ 完成 2026-06-08 | 6c9d622 |
+| 第4章 多实例同账户（方案A） | Major | ✅ 完成 2026-06-08 | c3f287c |
+| 第5章 genesis funding 竞争条件 | Medium | ✅ 完成 2026-06-08 | 93da7b2 |
+| 第6章 Raw Validate 接入热循环 | Medium | ✅ 完成 2026-06-08 | d193dc7 |
+| 第7章 架构边界（Low 项） | Low | 可延后 | — |
+| ⑤⑥ Frontend observability | Low | 可延后 | — |
+| Phase 5 agentmsg.go 提取 | 技术债 | 有意推迟（需无实盘窗口） | — |
+| Phase 6 durable reconnect replay | 未来 | 需先定产品规格 | — |
 
-**Goose 迁移编号规划**：
-- `00002_spot_executions_dedup.sql`（第2章）
-- `00003_instance_one_per_account.sql`（第4章）
+**Goose 迁移编号**：`00002_spot_executions_dedup.sql`（第2章）、`00003_instance_one_per_account.sql`（第4章）。
 
 ---
 
