@@ -168,3 +168,63 @@ evaluations (`evaluation_traces`), 12,513 distinct scores, all non-fatal.
 - ε is a relative threshold on `ScoreTotal.Value`. The comparison logic remains
   `CompareFitness` with no epsilon — ε only governs the version-event decision,
   not the sort.
+
+## 10. #6 shipped — 2026-06-08 (action item 3 closed)
+
+Commits `e5cf9e2` + `f7b8929`. All tests green. No `fitness_version` bump.
+
+### What was built
+
+**`e5cf9e2` — incremental indicator state**
+
+`internal/strategies/sigmoid_v1/indicator_state.go` introduces `incrIndicatorState`:
+
+- **EMA_long**: α-recurrence from bar 0 (no per-bar cold-start reset over the
+  sliding 900-bar buffer). Same α = 2/(period+1) as `quant.EMA`.
+- **MAV short/long**: difference ring buffer + running sum. Same last-N absolute
+  diffs as `MAVAbsChangeWindow` — result is bit-identical to the batch path.
+- **logReturn lookback**: close ring of size MAVShortPeriod+1; `buf[head]` is
+  the close from MAVShortPeriod bars ago.
+
+`stepCore` (live trading) is unchanged. A new `stepCoreFromIndicators` is
+extracted as the shared compute body; `evaluateWindow`'s hot loop calls it
+directly with pre-resolved O(1)/bar values (铁律 1 preserved).
+
+**`f7b8929` — skip DebugSnapshot in backtest**
+
+`stepCoreFromIndicators` gains a `wantDebug bool` parameter. `evaluateWindow`
+passes `false`: `applyStrategyOutput` never reads the `DebugSnapshot` field and
+`evaluateWindow` does not return it, so the 4 heap allocs/bar from
+`buildDebugSnapshot` were pure waste in the backtest path.
+
+### Measured performance (87.6k-bar 10y window, Intel i7-1355U)
+
+| Metric | Before #6 | After e5cf9e2 | After f7b8929 |
+|---|---|---|---|
+| ns/op | ~700 000 000 | 20 764 000 | **17 789 000** |
+| Speedup | — | ~34× | **~39×** |
+| allocs/op | ~437 600* | 268 901 | **6 099** |
+| B/op | ~630 MB* | 11.9 MB | **6.9 MB** |
+
+\* estimated: 87.6k × 900-elem EMA alloc (7.2B bytes) + 87.6k × 4 debug allocs.
+
+### Numerical verdict
+
+- **MAV**: bit-identical to batch (ring buffer = same diffs, same window). Not a
+  version event.
+- **EMA**: incremental divergence measured by `TestIncrIndicatorState_EMAWithinTolerance`
+  and `TestEMADivergence_WindowedVsIncremental`:
+
+  | EMA period | EMA rel-delta (max) | Signal term Δ (A1·Δpd) |
+  |---|---|---|
+  | 50  | ~0 (machine) | ~0 |
+  | 100 | 2.8e-10 | 1.4e-10 |
+  | 200 | 3.3e-6  | 1.7e-6 |
+  | 300 (max) | **7.8e-5** | **3.9e-5** |
+
+  Signal-level Δ ≤ 4e-5 at worst. Propagation through NAV → `ScoreTotal`
+  compresses this further; the ScoreTotal delta is expected well below ε = 1e-4.
+  **No `fitness_version` bump required.**
+
+- **DebugSnapshot skip**: no math touched; pure allocation removal. Not a
+  version event.
