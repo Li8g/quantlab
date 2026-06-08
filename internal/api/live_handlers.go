@@ -139,8 +139,9 @@ func (h *Handlers) GetInstanceLive(c *gin.Context) {
 	}
 
 	resp := InstanceLiveResponse{
-		Instance:     toInstanceResponse(inst),
-		RecentTrades: []TradeRecordSummary{},
+		Instance:          toInstanceResponse(inst),
+		RecentTrades:      []TradeRecordSummary{},
+		MaxBarStalenessMs: h.DataStalenessMs,
 	}
 
 	// Portfolio — DB pull. (nil, nil) means "no tick yet": leave omitted.
@@ -385,6 +386,8 @@ type AgentErrorView struct {
 // no Hub in this process); RecentTrades is always present (possibly []).
 // RecentDiscrepancies/RecentErrors are omitted when the Recon
 // collaborator is unwired (Tier L nil-skip).
+// MaxBarStalenessMs mirrors the server's data_feed.max_bar_staleness so
+// the frontend's age badge uses the same threshold as the trading guard.
 type InstanceLiveResponse struct {
 	Instance            InstanceResponse                `json:"instance"`
 	Portfolio           *PortfolioSnapshotView          `json:"portfolio,omitempty"`
@@ -393,6 +396,7 @@ type InstanceLiveResponse struct {
 	RecentDiscrepancies []ReconciliationDiscrepancyView `json:"recent_discrepancies,omitempty"`
 	RecentErrors        []AgentErrorView                `json:"recent_errors,omitempty"`
 	KillStatus          *KillStatusView                 `json:"kill_status,omitempty"`
+	MaxBarStalenessMs   int64                           `json:"max_bar_staleness_ms,omitempty"`
 }
 
 // KillStatusView surfaces the most recent kill_switch for the instance's

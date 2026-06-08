@@ -1,6 +1,8 @@
 package wshub
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,6 +87,49 @@ func TestHandshake_EnvMismatchDevWarnsButProceeds(t *testing.T) {
 	got := driveHandshakeEnv(t, pc, accountID, token, wire.EnvironmentTestnet)
 	if got.Type != wire.TypeAuthOK {
 		t.Fatalf("env mismatch on dev should warn-only and proceed; got %q", got.Type)
+	}
+}
+
+func TestHandshake_EnvMismatchProdCallsRejectHook(t *testing.T) {
+	svc, _, token, _, accountID := authFixture(t)
+	var hookCalls atomic.Int32
+	var gotCode, gotAccountID string
+	hub := New(svc, Config{
+		PingInterval:        50 * time.Millisecond,
+		PongTimeout:         50 * time.Millisecond,
+		PingMisses:          3,
+		AuthTimeout:         2 * time.Second,
+		StateSyncTimeout:    2 * time.Second,
+		WriteTimeout:        2 * time.Second,
+		ExpectedEnvironment: wire.EnvironmentMainnet,
+		RejectEnvMismatch:   true,
+		Clock:               newFakeClock(time.Unix(1700000000, 0)),
+		MsgIDFn:             stableMsgID(),
+		NowFn:               func() time.Time { return time.Unix(1700000000, 0) },
+		OnHandshakeReject: func(_ context.Context, acct, code, _ string) error {
+			hookCalls.Add(1)
+			gotAccountID, gotCode = acct, code
+			return nil
+		},
+	})
+	pc := newPipeConn()
+	cancel, wg := runConnInBg(hub, pc)
+	defer func() { cancel(); _ = pc.Close(); wg.Wait() }()
+
+	got := driveHandshakeEnv(t, pc, accountID, token, wire.EnvironmentTestnet)
+	if got.Type != wire.TypeAuthFail {
+		t.Fatalf("expected auth_fail, got %q", got.Type)
+	}
+	// Give the hook goroutine a moment; it runs synchronously in the conn
+	// goroutine so the auth_fail has already been sent before we get here.
+	if hookCalls.Load() != 1 {
+		t.Errorf("hook calls = %d, want 1", hookCalls.Load())
+	}
+	if gotAccountID != accountID {
+		t.Errorf("hook accountID = %q, want %q", gotAccountID, accountID)
+	}
+	if gotCode != string(wire.AuthFailEnvironmentMismatch) {
+		t.Errorf("hook code = %q, want %q", gotCode, wire.AuthFailEnvironmentMismatch)
 	}
 }
 

@@ -72,6 +72,13 @@ type Config struct {
 	// a structured log line in addition to firing this hook.
 	OnAgentMessage func(ctx context.Context, accountID string, env wire.Envelope) error
 
+	// OnHandshakeReject fires when a connection is rejected during handshake
+	// (e.g. env-mismatch auth_fail). accountID and code are always set; msg
+	// is human-readable. Best-effort — errors are logged, not propagated.
+	// The hook runs in the connection goroutine, so implementations must be
+	// non-blocking (or use a background context).
+	OnHandshakeReject func(ctx context.Context, accountID, code, msg string) error
+
 	// OnConnectionState fires on Connection lifecycle transitions
 	// (authed / ready / stale / disconnected) and on every Agent →
 	// SaaS message (pong / ack / order_update / delta_report) to
@@ -115,10 +122,11 @@ type Hub struct {
 	expectedEnv       string
 	rejectEnvMismatch bool
 
-	onStateSync       func(ctx context.Context, accountID string, payload json.RawMessage) error
-	onStale           func(ctx context.Context, accountID string) error
-	onAgentMessage    func(ctx context.Context, accountID string, env wire.Envelope) error
-	onConnectionState func(ctx context.Context, ev ConnectionStateEvent) error
+	onStateSync        func(ctx context.Context, accountID string, payload json.RawMessage) error
+	onStale            func(ctx context.Context, accountID string) error
+	onAgentMessage     func(ctx context.Context, accountID string, env wire.Envelope) error
+	onConnectionState  func(ctx context.Context, ev ConnectionStateEvent) error
+	onHandshakeReject  func(ctx context.Context, accountID, code, msg string) error
 }
 
 // New constructs a Hub with cfg overrides applied to the package defaults.
@@ -142,6 +150,7 @@ func New(auth *agentauth.Service, cfg Config) *Hub {
 		onStale:           cfg.OnStale,
 		onAgentMessage:    cfg.OnAgentMessage,
 		onConnectionState: cfg.OnConnectionState,
+		onHandshakeReject: cfg.OnHandshakeReject,
 	}
 	if h.log == nil {
 		h.log = slog.Default()

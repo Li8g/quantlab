@@ -232,4 +232,7 @@ export interface InstanceLiveResponse {
   recent_discrepancies?: ReconciliationDiscrepancyView[]
   recent_errors?: AgentErrorView[]
   kill_status?: KillStatusView
+  // ⑤ staleness guard threshold — mirrors data_feed.max_bar_staleness so the
+  // age badge uses the same bound as the server-side trading guard.
+  max_bar_staleness_ms?: number
 }

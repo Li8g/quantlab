@@ -403,8 +403,14 @@ func (c *Connection) doHandshake(ctx context.Context) error {
 	// compatible).
 	if c.hub.expectedEnv != "" && hello.Environment != "" && hello.Environment != c.hub.expectedEnv {
 		if c.hub.rejectEnvMismatch {
-			c.sendAuthFail(ctx, wire.AuthFailEnvironmentMismatch,
-				"agent environment does not match deployment expectation")
+			const rejectMsg = "agent environment does not match deployment expectation"
+			c.sendAuthFail(ctx, wire.AuthFailEnvironmentMismatch, rejectMsg)
+			if c.hub.onHandshakeReject != nil {
+				if herr := c.hub.onHandshakeReject(ctx, c.AccountID,
+					string(wire.AuthFailEnvironmentMismatch), rejectMsg); herr != nil {
+					c.hub.log.Warn("onHandshakeReject hook error", "err", herr)
+				}
+			}
 			return fmt.Errorf("environment_mismatch: hello=%q expected=%q",
 				hello.Environment, c.hub.expectedEnv)
 		}

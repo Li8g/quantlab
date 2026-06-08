@@ -356,6 +356,15 @@ func TestGetInstanceLive(t *testing.T) {
 			prices:   &fakePriceReader{err: gorm.ErrInvalidDB},
 			wantCode: http.StatusInternalServerError,
 		},
+		{
+			name: "DataStalenessMs echoed to response", role: store.UserRoleAdmin, userID: 1,
+			seed: true, portfolio: samplePortfolio, wantCode: http.StatusOK,
+			check: func(t *testing.T, resp InstanceLiveResponse, _ *fakeTradeLister) {
+				if resp.MaxBarStalenessMs != 900_000 {
+					t.Errorf("max_bar_staleness_ms = %d, want 900000", resp.MaxBarStalenessMs)
+				}
+			},
+		},
 	}
 
 	for _, c := range cases {
@@ -369,10 +378,15 @@ func TestGetInstanceLive(t *testing.T) {
 			}
 			insts.getErr = c.instErr
 			trades := &fakeTradeLister{rows: c.trades, err: c.tradesErr}
+			staleness := int64(0)
+			if c.check != nil && c.name == "DataStalenessMs echoed to response" {
+				staleness = 900_000
+			}
 			h := &Handlers{
-				Instances:  insts,
-				Portfolios: &fakePortfolio{ps: c.portfolio, err: c.portErr},
-				Trades:     trades,
+				Instances:       insts,
+				Portfolios:      &fakePortfolio{ps: c.portfolio, err: c.portErr},
+				Trades:          trades,
+				DataStalenessMs: staleness,
 			}
 			if c.presence != nil {
 				h.Presence = c.presence

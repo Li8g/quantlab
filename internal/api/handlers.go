@@ -240,6 +240,11 @@ type Handlers struct {
 	// as a frozen banner. Nil-skippable.
 	Kills KillStatusReader
 
+	// DataStalenessMs is the effective max_bar_staleness threshold surfaced
+	// in /live so the frontend can colour-code the mark-price age badge.
+	// Zero → the frontend falls back to its own default (15 min).
+	DataStalenessMs int64
+
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests
 	// that exercise handlers without auth leave this nil.

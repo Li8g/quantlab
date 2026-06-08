@@ -303,6 +303,9 @@ func main() {
 		// (mainnet klines + testnet agent) keeps running.
 		ExpectedEnvironment: cfg.Live.ExpectedEnvironment,
 		RejectEnvMismatch:   cfg.AppRole == config.AppRoleSaaS,
+		// backlog ⑥ observability: record the rejection as an AgentError so
+		// it surfaces in the /live recent_errors panel.
+		OnHandshakeReject: makeHandshakeRejectHook(instanceRepo, reconRepo),
 	})
 	// Auto-freeze control plane (kill_switch Option 3): the delta_report
 	// drift detector reaches back through the hub to halt a drifting agent.
@@ -355,6 +358,12 @@ func main() {
 		Prices:       klineRepo,
 		Recon:        reconRepo,
 		Kills:        auditRepo, // /live frozen banner (Option 3 step 4)
+		DataStalenessMs: func() int64 {
+			if cfg.DataFeed.MaxBarStaleness > 0 {
+				return cfg.DataFeed.MaxBarStaleness.Milliseconds()
+			}
+			return instance.DefaultMaxBarStaleness.Milliseconds()
+		}(),
 		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,
