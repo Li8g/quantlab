@@ -107,8 +107,9 @@ func (s *Sigmoid) Step(input strategy.StrategyInput) (strategy.StrategyOutput, e
 }
 
 // stepCore is the typed-input compute body Step wraps. It is the only
-// place the §7-pseudocode pipeline lives; both the JSON-boundary Step
-// and the backtest inner loop call this with identical semantics.
+// place the §7-pseudocode pipeline lives for the live-trading path; both
+// the JSON-boundary Step and any caller that already has a full Closes
+// history use this entry point.
 //
 // Inputs are by value and treated as immutable; rs is taken by value
 // and returned by value so the function is referentially transparent
@@ -121,7 +122,6 @@ func stepCore(input strategy.StrategyInput, rs RuntimeState, c Chromosome) (
 	marketState, volRatio := ComputeMarketState(
 		input.Closes, c.MAVShortPeriod, c.MAVLongPeriod, c.QuietThreshold,
 	)
-	marketBetaMul := MarketBetaMultiplier(marketState)
 
 	// Latest close = price proxy. Empty closes (impossible after
 	// MinEvalBars warmup) collapses price to 0, which keeps the rest
@@ -131,8 +131,26 @@ func stepCore(input strategy.StrategyInput, rs RuntimeState, c Chromosome) (
 		price = input.Closes[n-1]
 	}
 
-	// §7-3 signal synthesis + §7-4 micro rebalance.
+	// §7-3 signal synthesis.
 	signal := ComputeSignal(input.Closes, c, volRatio)
+
+	return stepCoreFromIndicators(input, rs, c, marketState, volRatio, signal, price)
+}
+
+// stepCoreFromIndicators is the §7-pseudocode compute body downstream of
+// indicator resolution. stepCore calls it after the O(window) batch path;
+// evaluateWindow's hot loop calls it directly with O(1)/bar incremental
+// values from incrIndicatorState — both arrive at identical logic (铁律 1).
+func stepCoreFromIndicators(
+	input strategy.StrategyInput, rs RuntimeState, c Chromosome,
+	marketState MarketState, volRatio, signal, price float64,
+) (
+	[]strategy.OrderIntent, []strategy.OrderIntent, []strategy.ReleaseIntent,
+	RuntimeState, *strategy.DebugSnapshot,
+) {
+	marketBetaMul := MarketBetaMultiplier(marketState)
+
+	// §7-4 micro rebalance.
 	micro := computeMicroRebalance(c, microRebalanceInputs{
 		DeadBTC:       input.Portfolio.DeadBTC,
 		FloatBTC:      input.Portfolio.FloatBTC,

@@ -23,14 +23,11 @@ import (
 	"quantlab/internal/verification"
 )
 
-// stepHistoryCap bounds the length of the trailing closes/timestamps
-// slices fed into Step(). At MaxChromosomePeriod × 3 = 900 bars, the
-// longest-period EMA (max ema_long_period = 300) has converged to
-// well under 1% of its asymptotic value (α^(3·period) ≈ e^-6). The
-// MAV short lookback ≤ 50 bars fits trivially.
-//
-// Without this cap, ComputeSignal's quant.EMA call is O(n) per bar
-// and the loop is O(n²) — 260k 1m bars × 260k = 70B ops per gene.
+// stepHistoryCap is the EMA convergence horizon: at MaxChromosomePeriod × 3
+// bars, the longest-period EMA (period = 300) has decayed its seed to
+// α^(3·period) ≈ e⁻⁶ of the initial value. The constant is no longer used
+// in the production hot loop (replaced by incremental state in incrIndicatorState)
+// but is kept as a reference bound and is used by ema_divergence_test.go.
 const stepHistoryCap = MaxChromosomePeriod * 3
 
 // evaluateWindow runs strat.Step over every bar in window.Bars,
@@ -86,16 +83,15 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	// Step() round-trips this through JSON on every tick because the
 	// state must survive process restarts via DB; the backtest loop
 	// owns the whole evaluation in-process, so we skip the ~22KB
-	// json.Unmarshal+Marshal per bar by calling stepCore directly.
-	// Same compute body either way (铁律 1).
+	// json.Unmarshal+Marshal per bar by calling stepCoreFromIndicators
+	// directly. Same compute body either way (铁律 1).
 	rs := freshRuntimeState()
 	var lastProcessedBarTime int64
 
-	// Trailing closes/timestamps. Pre-allocated to the cap and
-	// shifted in-place via copy() once full, so the backing array
-	// never exceeds stepHistoryCap regardless of window size.
-	closesBuf := make([]float64, 0, stepHistoryCap)
-	timestampsBuf := make([]int64, 0, stepHistoryCap)
+	// Incremental indicator state: O(1)/bar EMA + MAV + logReturn
+	// lookback ring, replacing the O(window) batch recomputation that
+	// drove the hot-loop cost before #6.
+	incrState := newIncrIndicatorState(c)
 
 	var (
 		navAtWarmupStart float64
@@ -116,16 +112,9 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	logReturns := make([]float64, 0, scoredCap)
 
 	for i, bar := range window.Bars {
-		// Append to trailing history, shifting in-place when full.
-		if len(closesBuf) == stepHistoryCap {
-			copy(closesBuf, closesBuf[1:])
-			closesBuf[stepHistoryCap-1] = bar.Close
-			copy(timestampsBuf, timestampsBuf[1:])
-			timestampsBuf[stepHistoryCap-1] = bar.OpenTime
-		} else {
-			closesBuf = append(closesBuf, bar.Close)
-			timestampsBuf = append(timestampsBuf, bar.OpenTime)
-		}
+		// Advance incremental indicators (O(1): EMA, MAV rings, logReturn
+		// lookback). Must precede computeMarketState/computeSignal calls.
+		incrState.update(bar.Close)
 
 		// Snapshot NAV just BEFORE this bar's orders apply. This is
 		// the value used for peak/drawdown tracking at index i — it
@@ -165,17 +154,21 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 			}
 		}
 
+		// Resolve indicators (O(1)/bar) and drive the strategy body.
+		marketState, volRatio := incrState.computeMarketState(c.QuietThreshold)
+		signal := incrState.computeSignal(c, volRatio, bar.Close)
+
 		input := strategy.StrategyInput{
 			NowMs:                bar.OpenTime,
-			Closes:               closesBuf,
-			Timestamps:           timestampsBuf,
 			Portfolio:            p,
 			Chromosome:           gene,
 			LastProcessedBarTime: lastProcessedBarTime,
-			// RuntimeState left zero — the inner path threads typed rs
-			// in/out of stepCore, bypassing the JSON wire shape.
+			// Closes/Timestamps omitted: indicators are pre-resolved via
+			// incrState; stepCoreFromIndicators does not read input.Closes.
 		}
-		macroOrders, microOrders, releaseIntents, newRS, dbg := stepCore(input, rs, c)
+		macroOrders, microOrders, releaseIntents, newRS, dbg := stepCoreFromIndicators(
+			input, rs, c, marketState, volRatio, signal, bar.Close,
+		)
 
 		// Gap bars: discard orders so no fake trades; RuntimeState
 		// still evolves through stepCore so peak window etc. stay

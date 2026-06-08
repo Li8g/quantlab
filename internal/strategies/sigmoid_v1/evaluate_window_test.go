@@ -353,6 +353,40 @@ func TestEvaluateWindow_EmptyBarsErrors(t *testing.T) {
 	}
 }
 
+// BenchmarkEvaluateWindow_10kBars measures per-gene evaluation cost for a
+// 10 000-bar window (≈ 7d of 1m bars). This is the hot path in GA evolution.
+func BenchmarkEvaluateWindow_10kBars(b *testing.B) {
+	s := windowTestSigmoid()
+	gene := stepTestGene()
+	bars := rampBars(10_000, 50_000, 60_000, windowTestRefMs)
+	w := domain.CrucibleWindow{
+		Name: resultpkg.Window10Y, WarmupLen: 500, Bars: bars,
+		StartTS: bars[0].OpenTime, EndTS: bars[len(bars)-1].OpenTime,
+	}
+	fp := domain.FrictionParams{TakerFeeBPS: 5, SlippageBPS: 2}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		evaluateWindow(s, gene, w, fp, testFatalMDD, testInitialUSDT)
+	}
+}
+
+// BenchmarkEvaluateWindow_87kBars simulates a 10-year 1-hour window
+// (~87 600 bars — the regime where indicator recomputation was 0.7s/gene).
+func BenchmarkEvaluateWindow_87kBars(b *testing.B) {
+	s := windowTestSigmoid()
+	gene := stepTestGene()
+	bars := rampBars(87_600, 50_000, 60_000, windowTestRefMs)
+	w := domain.CrucibleWindow{
+		Name: resultpkg.Window10Y, WarmupLen: 1000, Bars: bars,
+		StartTS: bars[0].OpenTime, EndTS: bars[len(bars)-1].OpenTime,
+	}
+	fp := domain.FrictionParams{TakerFeeBPS: 5, SlippageBPS: 2}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		evaluateWindow(s, gene, w, fp, testFatalMDD, testInitialUSDT)
+	}
+}
+
 func TestEvaluateWindow_WarmupGEQLenErrors(t *testing.T) {
 	bars := flatBars(10, 100, windowTestRefMs)
 	_, _, _, err := evaluateWindow(
