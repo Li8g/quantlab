@@ -800,3 +800,226 @@ func TestOnOrderEvent_FallsBackToFillQtyWhenCumulativeZero(t *testing.T) {
 		t.Errorf("CumulativeFilledQuantityDecimal = %q, want fallback 0.002", ou.CumulativeFilledQuantityDecimal)
 	}
 }
+
+// ---- idempotency fail-open tests (S5B-1, S5B-2, S5B-3) ----
+
+// alwaysErrStore is an IdempotencyStore whose Get always returns an error.
+// Used to drive the S5B-2 / S5B-3 fail-closed paths.
+type alwaysErrStore struct{ err error }
+
+func (s *alwaysErrStore) Get(_ string) (IdempotencyRecord, bool, error) {
+	return IdempotencyRecord{}, false, s.err
+}
+func (s *alwaysErrStore) Put(_ IdempotencyRecord) error { return nil }
+func (s *alwaysErrStore) UpdateStatus(_ string, _ IdempotencyStatus, _ string, _ int64) error {
+	return nil
+}
+
+// newTestClientWithIdem is newTestClient with an explicit IdempotencyStore.
+func newTestClientWithIdem(t *testing.T, conns []*pipeConn, ex Exchange, idem IdempotencyStore) *Client {
+	t.Helper()
+	cfg := Config{
+		AgentID:   "01HKAGENT00000000000000000",
+		AccountID: "01HKACCT00000000000000000A",
+		SaaSURL:   "ws://test/api/v1/ws/agent",
+		SaaSToken: "agt_01HKAGENT00000000000000000_FAKESECRET",
+		Exchange:  ExchangeConfig{Name: "mock"},
+	}
+	dialer := &staticDialer{conns: conns}
+	return NewClient(cfg, ex, idem, Options{
+		Dialer:        dialer,
+		Backoff:       []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+		BackoffJitter: func() float64 { return 1.0 },
+		NowFn:         func() time.Time { return time.Unix(1700000000, 0) },
+	})
+}
+
+// newOnOrderEventFixtureWithIdem is newOnOrderEventFixture with a custom store.
+func newOnOrderEventFixtureWithIdem(t *testing.T, idem IdempotencyStore) (*Client, *pipeConn, *streamerMockExchange) {
+	t.Helper()
+	pc := newPipeConn()
+	ex := newStreamerMockExchange()
+	c := newTestClientWithIdem(t, []*pipeConn{}, ex, idem)
+	c.connMu.Lock()
+	c.conn = pc
+	c.connMu.Unlock()
+	return c, pc, ex
+}
+
+// TestHandleTradeCommand_DuplicateTerminalBeforeExpiry (S5B-1): a replay of
+// an already-filled order with a past valid_until_ms must return
+// duplicate_terminal, not expired.
+func TestHandleTradeCommand_DuplicateTerminalBeforeExpiry(t *testing.T) {
+	idem := NewMemoryStore()
+	_ = idem.Put(IdempotencyRecord{
+		ClientOrderID:   "01HKCOID000000000000FILLED1",
+		ExchangeOrderID: "ex-order-filled-1",
+		Status:          IdempotencyStatusFilled,
+	})
+
+	pc := newPipeConn()
+	ex := NewMockExchange(map[string]decimal.Decimal{"BTCUSDT": decimal.NewFromInt(50000)})
+	c := newTestClientWithIdem(t, []*pipeConn{pc}, ex, idem)
+	cancel, errCh := runClientInBg(t, c)
+	defer cancel()
+
+	runHubHandshake(t, pc, c.cfg.AccountID)
+
+	// Replay with an already-expired timestamp.
+	pc.hubSendEnv(t, wire.TypeTradeCommand, c.cfg.AccountID, wire.TradeCommand{
+		IntentKind:      wire.IntentKindMacro,
+		ClientOrderID:   "01HKCOID000000000000FILLED1",
+		InstanceID:      "01HKINSTANCE0000000000000A",
+		Symbol:          "BTCUSDT",
+		Side:            "buy",
+		OrderType:       "market",
+		QuantityDecimal: "0.01",
+		ValidUntilMs:    1, // far in the past
+		NowMsAtSaaS:     1,
+	})
+
+	ack, _ := wire.DecodePayload[wire.Ack](pc.hubReadEnv(t))
+	if ack.Status != wire.AckStatusDuplicateTerminal {
+		t.Errorf("ack.status = %q, want duplicate_terminal (not expired)", ack.Status)
+	}
+
+	cancel()
+	_ = pc.Close()
+	<-errCh
+}
+
+// TestHandleTradeCommand_DuplicateTerminalWhileFrozen (S5B-1): a replay of
+// an already-filled order while the agent is frozen must return
+// duplicate_terminal, not rejected.
+func TestHandleTradeCommand_DuplicateTerminalWhileFrozen(t *testing.T) {
+	idem := NewMemoryStore()
+	_ = idem.Put(IdempotencyRecord{
+		ClientOrderID:   "01HKCOID000000000000FILLED2",
+		ExchangeOrderID: "ex-order-filled-2",
+		Status:          IdempotencyStatusFilled,
+	})
+
+	pc := newPipeConn()
+	ex := NewMockExchange(map[string]decimal.Decimal{"BTCUSDT": decimal.NewFromInt(50000)})
+	c := newTestClientWithIdem(t, []*pipeConn{pc}, ex, idem)
+	cancel, errCh := runClientInBg(t, c)
+	defer cancel()
+
+	runHubHandshake(t, pc, c.cfg.AccountID)
+
+	// Freeze the agent via kill_switch.
+	pc.hubSendEnv(t, wire.TypeKillSwitch, c.cfg.AccountID, wire.KillSwitch{
+		Reason: wire.KillSwitchDiscrepancyDetected, Scope: wire.KillSwitchScopeAll,
+	})
+	if ack, _ := wire.DecodePayload[wire.Ack](pc.hubReadEnv(t)); ack.Status != wire.AckStatusAccepted {
+		t.Fatalf("kill_switch ack.status = %q, want accepted", ack.Status)
+	}
+
+	// Replay the already-filled order while frozen.
+	pc.hubSendEnv(t, wire.TypeTradeCommand, c.cfg.AccountID, wire.TradeCommand{
+		IntentKind:      wire.IntentKindMacro,
+		ClientOrderID:   "01HKCOID000000000000FILLED2",
+		InstanceID:      "01HKINSTANCE0000000000000A",
+		Symbol:          "BTCUSDT",
+		Side:            "buy",
+		OrderType:       "market",
+		QuantityDecimal: "0.01",
+		ValidUntilMs:    time.Now().UnixMilli() + 60000,
+		NowMsAtSaaS:     time.Now().UnixMilli(),
+	})
+
+	ack, _ := wire.DecodePayload[wire.Ack](pc.hubReadEnv(t))
+	if ack.Status != wire.AckStatusDuplicateTerminal {
+		t.Errorf("ack.status = %q, want duplicate_terminal (not rejected)", ack.Status)
+	}
+
+	cancel()
+	_ = pc.Close()
+	<-errCh
+}
+
+// TestHandleTradeCommand_IdempotencyGetError_NoSubmit (S5B-2): when
+// idempotency.Get returns an error, the handler must return an internal
+// error response and must not submit to the exchange.
+func TestHandleTradeCommand_IdempotencyGetError_NoSubmit(t *testing.T) {
+	errStore := &alwaysErrStore{err: errors.New("sqlite busy")}
+
+	pc := newPipeConn()
+	ex := NewMockExchange(map[string]decimal.Decimal{"BTCUSDT": decimal.NewFromInt(50000)})
+	c := newTestClientWithIdem(t, []*pipeConn{pc}, ex, errStore)
+	cancel, errCh := runClientInBg(t, c)
+	defer cancel()
+
+	runHubHandshake(t, pc, c.cfg.AccountID)
+
+	pc.hubSendEnv(t, wire.TypeTradeCommand, c.cfg.AccountID, wire.TradeCommand{
+		IntentKind:      wire.IntentKindMacro,
+		ClientOrderID:   "01HKCOID000000000000ERRGET",
+		InstanceID:      "01HKINSTANCE0000000000000A",
+		Symbol:          "BTCUSDT",
+		Side:            "buy",
+		OrderType:       "market",
+		QuantityDecimal: "0.01",
+		ValidUntilMs:    time.Now().UnixMilli() + 60000,
+		NowMsAtSaaS:     time.Now().UnixMilli(),
+	})
+
+	// Expect an error_msg frame, not an Ack.
+	env := pc.hubReadEnv(t)
+	if env.Type != wire.TypeError {
+		t.Errorf("response type = %q, want error_msg (no submit on Get error)", env.Type)
+	}
+	em, _ := wire.DecodePayload[wire.Error](env)
+	if em.Code != wire.ErrorCodeInternalError {
+		t.Errorf("error code = %q, want internal_error", em.Code)
+	}
+	if !strings.Contains(em.Message, "idempotency read") {
+		t.Errorf("error message = %q, want it to mention idempotency", em.Message)
+	}
+
+	cancel()
+	_ = pc.Close()
+	<-errCh
+}
+
+// TestOnOrderEvent_IdempotencyGetError_FillNotDropped (S5B-3): when
+// onOrderEvent's idempotency.Get returns an error, the fill must still
+// appear in the delta_report buffer and an OrderUpdate must be sent.
+func TestOnOrderEvent_IdempotencyGetError_FillNotDropped(t *testing.T) {
+	errStore := &alwaysErrStore{err: errors.New("sqlite locked")}
+	c, pc, ex := newOnOrderEventFixtureWithIdem(t, errStore)
+
+	ex.emit(OrderEvent{
+		ClientOrderID:   "COID-ERRFILL",
+		ExchangeOrderID: "ex-order-errfill",
+		Status:          wire.OrderStatusFilled,
+		Side:            "buy",
+		Fill: &ExchangeFill{
+			FillQuantity: decimal.RequireFromString("0.01"),
+			FillPrice:    decimal.NewFromInt(65000),
+		},
+		CumulativeFillQuantity: decimal.RequireFromString("0.01"),
+	})
+
+	// Fill must appear in delta buffer.
+	fills, _ := c.delta.drain()
+	if len(fills) != 1 {
+		t.Fatalf("delta fills = %d, want 1", len(fills))
+	}
+	if fills[0].ClientOrderID != "COID-ERRFILL" {
+		t.Errorf("delta fill client_order_id = %q, want COID-ERRFILL", fills[0].ClientOrderID)
+	}
+
+	// OrderUpdate must be sent on the conn.
+	env := pc.hubReadEnv(t)
+	if env.Type != wire.TypeOrderUpdate {
+		t.Errorf("frame type = %q, want order_update", env.Type)
+	}
+	ou, _ := wire.DecodePayload[wire.OrderUpdate](env)
+	if ou.ClientOrderID != "COID-ERRFILL" {
+		t.Errorf("order_update.client_order_id = %q, want COID-ERRFILL", ou.ClientOrderID)
+	}
+	if len(ou.Fills) != 1 {
+		t.Errorf("order_update.fills = %d, want 1", len(ou.Fills))
+	}
+}

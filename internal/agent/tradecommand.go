@@ -20,10 +20,24 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 		return
 	}
 
+	// Idempotency check (§2.5) — must come first, before frozen/expiry:
+	// a known client_order_id always returns duplicate_pending/terminal
+	// regardless of latch or expiry state (S5B-1). A read error is
+	// fatal: fail-closed to prevent duplicate exchange submissions (S5B-2).
+	existing, ok, idemErr := c.idempotency.Get(tc.ClientOrderID)
+	if idemErr != nil {
+		c.sendError(ctx, conn, wire.ErrorCodeInternalError, "idempotency read: "+idemErr.Error(), env.MsgID)
+		return
+	}
+	if ok {
+		c.sendAck(ctx, conn, c.duplicateAck(existing, c.nowMs()))
+		return
+	}
+
 	// Frozen latch (kill_switch / HALTED): reject every new order without
-	// submitting. Checked before expiry/idempotency so a killed Agent
-	// never reaches the exchange. The latch survives reconnect and clears
-	// only on process restart (§5.13).
+	// submitting. Checked after idempotency so replays of known orders
+	// always return a deterministic duplicate_* response. The latch
+	// survives reconnect and clears only on process restart (§5.13).
 	if c.frozen.Load() {
 		c.sendAck(ctx, conn, wire.Ack{
 			ClientOrderID: tc.ClientOrderID,
@@ -36,7 +50,8 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 
 	// Expiry check (§5.8): if valid_until_ms has passed (per Agent wall
 	// clock OR per SaaS's NowMsAtSaaS, whichever is later), reject with
-	// status=expired without submitting.
+	// status=expired without submitting. Checked after idempotency so a
+	// replayed expired command returns duplicate_* (not expired).
 	clk := c.nowMs()
 	saasClk := tc.NowMsAtSaaS
 	wallClk := clk
@@ -50,12 +65,6 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 			ExchangeNowMs: clk,
 			RejectReason:  "valid_until_ms passed before submit",
 		})
-		return
-	}
-
-	// Idempotency check (§2.5): same client_order_id already seen?
-	if existing, ok, _ := c.idempotency.Get(tc.ClientOrderID); ok {
-		c.sendAck(ctx, conn, c.duplicateAck(existing, clk))
 		return
 	}
 
