@@ -298,6 +298,9 @@ func main() {
 	hub := wshub.New(agentAuthSvc, wshub.Config{
 		OnAgentMessage:    agentMsgs.Hook,
 		OnConnectionState: makeConnectionStateHook(statusReporter),
+		// Reconcile positions immediately on reconnect — no need to wait 60s
+		// for the first delta_report to see the agent's latest holdings.
+		OnStateSync: agentMsgs.handleStateSync,
 		// backlog ⑥: reject a misconfigured agent (wrong env) at handshake.
 		// Hard-fail only on prod; dev/lab warns so the testnet workflow
 		// (mainnet klines + testnet agent) keeps running.

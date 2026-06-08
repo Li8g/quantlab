@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -758,4 +759,23 @@ func (h *agentMessageHandler) ClearDriftStreak(accountID string) {
 	h.freezeMu.Lock()
 	delete(h.driftStreak, accountID)
 	h.freezeMu.Unlock()
+}
+
+// handleStateSync fires immediately after a successful handshake, giving SaaS
+// fresh position data without waiting up to 60s for the next delta_report.
+// It maps StateSyncResponse onto a synthetic DeltaReport so all reconcile
+// and fill-recovery logic is shared with the regular delta_report path.
+func (h *agentMessageHandler) handleStateSync(ctx context.Context, accountID string, payload json.RawMessage) error {
+	var resp wire.StateSyncResponse
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return fmt.Errorf("agentmsg: decode state_sync_response: %w", err)
+	}
+	dr := &wire.DeltaReport{
+		ReportedAtMs: resp.ReportedAtMs,
+		Positions:    resp.Positions,
+		SinceLastReport: wire.DeltaReportSince{
+			Fills: resp.SinceLastFills,
+		},
+	}
+	return h.handleDeltaReport(ctx, accountID, dr)
 }
