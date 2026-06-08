@@ -134,16 +134,20 @@ func stepCore(input strategy.StrategyInput, rs RuntimeState, c Chromosome) (
 	// §7-3 signal synthesis.
 	signal := ComputeSignal(input.Closes, c, volRatio)
 
-	return stepCoreFromIndicators(input, rs, c, marketState, volRatio, signal, price)
+	return stepCoreFromIndicators(input, rs, c, marketState, volRatio, signal, price, true)
 }
 
 // stepCoreFromIndicators is the §7-pseudocode compute body downstream of
 // indicator resolution. stepCore calls it after the O(window) batch path;
 // evaluateWindow's hot loop calls it directly with O(1)/bar incremental
 // values from incrIndicatorState — both arrive at identical logic (铁律 1).
+//
+// wantDebug=false skips buildDebugSnapshot entirely. The backtest loop
+// never reads DebugSnapshot, so passing false eliminates 4 heap allocs/bar.
 func stepCoreFromIndicators(
 	input strategy.StrategyInput, rs RuntimeState, c Chromosome,
 	marketState MarketState, volRatio, signal, price float64,
+	wantDebug bool,
 ) (
 	[]strategy.OrderIntent, []strategy.OrderIntent, []strategy.ReleaseIntent,
 	RuntimeState, *strategy.DebugSnapshot,
@@ -173,8 +177,11 @@ func stepCoreFromIndicators(
 	peak := rollNAVPeakWindow(&rs, input.NowMs, nav)
 	releaseIntents, rs := applyReleaseDecision(input, c, &rs, nav, peak)
 
-	return macroOrders, microOrders, releaseIntents, rs,
-		buildDebugSnapshot(signal, micro.TargetWeight, marketState)
+	var dbg *strategy.DebugSnapshot
+	if wantDebug {
+		dbg = buildDebugSnapshot(signal, micro.TargetWeight, marketState)
+	}
+	return macroOrders, microOrders, releaseIntents, rs, dbg
 }
 
 // buildMicroOrders applies the §5.5 wedge filter and synthesises at

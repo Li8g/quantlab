@@ -167,7 +167,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 			// incrState; stepCoreFromIndicators does not read input.Closes.
 		}
 		macroOrders, microOrders, releaseIntents, newRS, dbg := stepCoreFromIndicators(
-			input, rs, c, marketState, volRatio, signal, bar.Close,
+			input, rs, c, marketState, volRatio, signal, bar.Close, false,
 		)
 
 		// Gap bars: discard orders so no fake trades; RuntimeState
