@@ -115,14 +115,20 @@ func (r *InstanceRepo) SetLastTickWallTime(ctx context.Context, instanceID strin
 		Update("last_tick_wall_time", t).Error
 }
 
-// MarkFunded stamps the genesis funding time, but only while it is still
-// NULL (idempotent claim) so a fresh exchange snapshot anchors the ledger
-// exactly once even if two delta_reports race. See agentmsg.fundInstance.
-func (r *InstanceRepo) MarkFunded(ctx context.Context, instanceID string, ms int64) error {
-	return r.db.WithContext(ctx).
+// MarkFunded claims the genesis funding slot via a NULL guard.
+// Returns (true, nil) when this call wrote the stamp (the caller won the
+// race and must write the seed portfolio). Returns (false, nil) when
+// funded_at_ms was already set (another goroutine already claimed it — skip
+// the seed write). See agentmsg.fundInstance for the claim-first protocol.
+func (r *InstanceRepo) MarkFunded(ctx context.Context, instanceID string, ms int64) (bool, error) {
+	res := r.db.WithContext(ctx).
 		Model(&store.StrategyInstance{}).
 		Where("instance_id = ? AND funded_at_ms IS NULL", instanceID).
-		Update("funded_at_ms", ms).Error
+		Update("funded_at_ms", ms)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 // SetActiveChampion attaches the active, unretired Champion (ChallengerID) to

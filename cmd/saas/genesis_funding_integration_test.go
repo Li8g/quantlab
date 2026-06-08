@@ -232,11 +232,19 @@ func TestMarkFunded_IdempotentNullGuard(t *testing.T) {
 		t.Fatalf("create instance: %v", err)
 	}
 
-	if err := instances.MarkFunded(ctx, instanceID, 111); err != nil {
+	claimed1, err := instances.MarkFunded(ctx, instanceID, 111)
+	if err != nil {
 		t.Fatalf("MarkFunded first: %v", err)
 	}
-	if err := instances.MarkFunded(ctx, instanceID, 222); err != nil {
+	if !claimed1 {
+		t.Fatal("MarkFunded first: expected claimed=true")
+	}
+	claimed2, err := instances.MarkFunded(ctx, instanceID, 222)
+	if err != nil {
 		t.Fatalf("MarkFunded second: %v", err)
+	}
+	if claimed2 {
+		t.Fatal("MarkFunded second: expected claimed=false (NULL guard blocks overwrite)")
 	}
 	got, err := instances.Get(ctx, instanceID)
 	if err != nil {
@@ -244,5 +252,73 @@ func TestMarkFunded_IdempotentNullGuard(t *testing.T) {
 	}
 	if got.FundedAtMs == nil || *got.FundedAtMs != 111 {
 		t.Errorf("FundedAtMs = %v, want stable 111 (NULL-guard blocks overwrite)", got.FundedAtMs)
+	}
+}
+
+// TestFundInstance_DoubleFundPreventsDuplicateSeed simulates two concurrent
+// delta_reports both seeing FundedAtMs=NULL and both entering fundInstance.
+// Only the first caller (the one that wins MarkFunded) must write the seed
+// portfolio; the second must return nil without touching the DB.
+func TestFundInstance_DoubleFundPreventsDuplicateSeed(t *testing.T) {
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		t.Fatalf("load config %s: %v", *configPath, err)
+	}
+	db, err := store.NewDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, _ := db.DB()
+		if sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	})
+	ctx := context.Background()
+	instances := repository.NewInstanceRepo(db)
+	portfolios := repository.NewPortfolioRepo(db)
+	trades := repository.NewTradeRepo(db)
+	recon := repository.NewReconRepo(db)
+
+	const instanceID = "gf-inst-double"
+	cleanup := func() {
+		_ = db.Where("account_id = ?", gfAccount).Delete(&store.StrategyInstance{}).Error
+		_ = db.Where("instance_id = ?", instanceID).Delete(&store.PortfolioState{}).Error
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	base := &store.StrategyInstance{
+		InstanceID:  instanceID,
+		StrategyID:  "sigmoid_v1",
+		Pair:        "BTCUSDT",
+		AccountID:   gfAccount,
+		OwnerUserID: 1,
+		Status:      store.InstanceStatusLive,
+	}
+	if err := instances.Create(ctx, base); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	h := newAgentMessageHandler(trades, instances, portfolios, recon, nil)
+	actual := map[string]float64{"BTC": 0.5, "USDT": 1000.0}
+
+	// First call: claims the slot and writes the seed.
+	inst1 := *base
+	if err := h.fundInstance(ctx, &inst1, actual, 1000); err != nil {
+		t.Fatalf("fundInstance first: %v", err)
+	}
+
+	// Second call: FundedAtMs is still nil on this copy (race simulation).
+	inst2 := *base
+	if err := h.fundInstance(ctx, &inst2, actual, 1000); err != nil {
+		t.Fatalf("fundInstance second: %v", err)
+	}
+
+	// Exactly one seed row must exist.
+	var count int64
+	db.Model(&store.PortfolioState{}).Where("instance_id = ?", instanceID).Count(&count)
+	if count != 1 {
+		t.Errorf("portfolio row count = %d, want 1 (double-fund prevented)", count)
 	}
 }

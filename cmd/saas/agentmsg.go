@@ -617,14 +617,20 @@ func buildSeedPortfolio(inst *store.StrategyInstance, actual map[string]float64,
 	}
 }
 
-// fundInstance anchors a fresh instance's SaaS ledger to the exchange's actual
-// holdings (the faucet/account balance) so reconciliation later compares like
-// with like instead of false-flagging a never-funded $0 ledger as total drift.
-// Seeds the portfolio first, then claims the funded flag (idempotent via the
-// NULL guard in MarkFunded); on the rare concurrent double-seed both rows carry
-// the same balance and Latest picks one. Mutates inst.FundedAtMs so the caller's
-// loop doesn't also reconcile it this round.
+// fundInstance claims the genesis funding slot (MarkFunded NULL guard) and —
+// only when the claim succeeds — anchors the SaaS ledger to the exchange's
+// actual holdings. Claim-first prevents concurrent double-seed: if two
+// delta_reports both see FundedAtMs=NULL and race here, only the winner
+// (MarkFunded RowsAffected=1) writes the seed row. Mutates inst.FundedAtMs
+// so the caller's loop does not also reconcile it this round.
 func (h *agentMessageHandler) fundInstance(ctx context.Context, inst *store.StrategyInstance, actual map[string]float64, nowMs int64) error {
+	claimed, err := h.instances.MarkFunded(ctx, inst.InstanceID, nowMs)
+	if err != nil {
+		return fmt.Errorf("agentmsg: mark instance %s funded: %w", inst.InstanceID, err)
+	}
+	if !claimed {
+		return nil // another goroutine already claimed; skip seed write
+	}
 	seed := buildSeedPortfolio(inst, actual, nowMs)
 	// Anchor the ledger watermark to the latest existing fill: the genesis
 	// balance already reflects every pre-funding execution, so the first Tick
@@ -636,9 +642,6 @@ func (h *agentMessageHandler) fundInstance(ctx context.Context, inst *store.Stra
 	seed.LastAppliedExecID = maxExecID
 	if err := h.portfolios.Append(ctx, seed); err != nil {
 		return fmt.Errorf("agentmsg: fund instance %s seed portfolio: %w", inst.InstanceID, err)
-	}
-	if err := h.instances.MarkFunded(ctx, inst.InstanceID, nowMs); err != nil {
-		return fmt.Errorf("agentmsg: mark instance %s funded: %w", inst.InstanceID, err)
 	}
 	inst.FundedAtMs = &nowMs
 	h.logger.Info("instance_funded_from_exchange",
