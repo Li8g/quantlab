@@ -281,10 +281,12 @@ function EquityCard({
             {formatUsd(portfolio.equity)}{' '}
             <span className="text-sm font-normal text-slate-400">USDT</span>
           </div>
-          <p className={`mt-1 text-xs ${ageClass(portfolio.mark_price_ms)}`}>
-            marked @ {formatUsd(portfolio.mark_price)} · {formatAge(portfolio.mark_price_ms)}
-            {staleLabel(portfolio.mark_price_ms)}
-          </p>
+          {portfolio.mark_price_ms != null && (
+            <p className={`mt-1 text-xs ${ageClass(portfolio.mark_price_ms)}`}>
+              marked @ {formatUsd(portfolio.mark_price)} · {formatAge(portfolio.mark_price_ms)}
+              {staleLabel(portfolio.mark_price_ms)}
+            </p>
+          )}
         </>
       ) : (
         <p className="text-sm text-slate-400">
