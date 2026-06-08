@@ -18,9 +18,9 @@ import (
 	"math"
 
 	"quantlab/internal/domain"
+	"quantlab/internal/quant"
 	"quantlab/internal/resultpkg"
 	"quantlab/internal/strategy"
-	"quantlab/internal/verification"
 )
 
 // stepHistoryCap is the EMA convergence horizon: at MaxChromosomePeriod × 3
@@ -236,7 +236,7 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	if prevPreNav > 0 {
 		logReturns = append(logReturns, math.Log(navFinal/prevPreNav))
 	}
-	stats := verification.ComputeSharpeStats(logReturns)
+	stats := quant.ComputeSharpeStats(logReturns)
 
 	score := math.Log(navFinal / navAtWarmupStart)
 	return resultpkg.CrucibleResult{

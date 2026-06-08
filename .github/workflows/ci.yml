@@ -100,3 +100,13 @@ jobs:
 
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
+
+      # Verify that the engine production package does not import any concrete
+      # strategy implementation. Test files may import strategies for integration
+      # tests; this check covers non-test deps only (go list -deps, not -test -deps).
+      - name: engine-boundary
+        run: |
+          if go list -deps quantlab/internal/engine | grep -q 'strategies/'; then
+            echo "::error::engine production code imports a concrete strategy package"
+            exit 1
+          fi

@@ -217,7 +217,7 @@ func runStats(ctx context.Context, args []string) error {
 		fmt.Println("no klines imported yet")
 		return nil
 	}
-	sort.Slice(rows, func(i, j int) bool {
+	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].Symbol != rows[j].Symbol {
 			return rows[i].Symbol < rows[j].Symbol
 		}

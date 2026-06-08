@@ -204,8 +204,16 @@ func (t *Toy) Evaluate(
 		return nil, err
 	}
 	score := -(math.Abs(g[geneDimAlpha]-targetAlpha) + math.Abs(g[geneDimBeta]-targetBeta))
-	windows := make([]resultpkg.CrucibleResult, 0, len(plan.Windows))
+	planWindows := make(map[resultpkg.WindowName]domain.CrucibleWindow, len(plan.Windows))
 	for _, w := range plan.Windows {
+		planWindows[w.Name] = w
+	}
+	windows := make([]resultpkg.CrucibleResult, 0, len(plan.Windows))
+	for _, wName := range resultpkg.AllWindowsInEvalOrder() {
+		w, ok := planWindows[wName]
+		if !ok {
+			continue
+		}
 		v := score
 		windows = append(windows, resultpkg.CrucibleResult{
 			Window: w.Name,
