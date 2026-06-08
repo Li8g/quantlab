@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,6 +151,26 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	}
 	if resp.Status != "idle" {
 		t.Errorf("Status = %q, want idle (initial)", resp.Status)
+	}
+}
+
+func TestCreateInstance_AccountActiveInstanceReturns409(t *testing.T) {
+	insts := newFakeInstances()
+	insts.createErr = ErrAccountActiveInstanceExists
+	h := &Handlers{Instances: insts, IDIssuer: &fakeIssuer{next: "x"}}
+	r := withClaimsHandlers(h, &auth.Claims{UserID: 1, Role: "operator"})
+
+	body := []byte(`{"strategy_id":"sigmoid_v1","pair":"BTCUSDT","account_id":"main"}`)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/instances", bytesReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("Code = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "active instance") {
+		t.Errorf("body %q does not mention active instance", rec.Body.String())
 	}
 }
 

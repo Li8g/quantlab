@@ -8,6 +8,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -27,14 +28,22 @@ func NewInstanceRepo(db *gorm.DB) *InstanceRepo {
 	return &InstanceRepo{db: db}
 }
 
-// Create inserts a new StrategyInstance. The caller is responsible
-// for allocating InstanceID (ULID) and setting initial Status (idle).
-// Returns the partial-unique violation as-is — handler maps to 409/422.
+// Create inserts a new StrategyInstance. The caller is responsible for
+// allocating InstanceID (ULID) and setting initial Status (idle).
+// Returns api.ErrAccountActiveInstanceExists when the per-account partial
+// unique (uq_inst_one_per_account) fires — handler maps to 409 Conflict.
+// Other unique violations are returned as-is for the handler to classify.
 func (r *InstanceRepo) Create(ctx context.Context, inst *store.StrategyInstance) error {
 	if inst == nil {
 		return errors.New("repository.InstanceRepo.Create: nil instance")
 	}
-	return r.db.WithContext(ctx).Create(inst).Error
+	if err := r.db.WithContext(ctx).Create(inst).Error; err != nil {
+		if strings.Contains(err.Error(), "uq_inst_one_per_account") {
+			return api.ErrAccountActiveInstanceExists
+		}
+		return err
+	}
+	return nil
 }
 
 // Get fetches an instance by its public InstanceID (ULID).

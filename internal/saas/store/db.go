@@ -138,6 +138,18 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("store.NewDB: partial unique strategy_instances: %w", err)
 	}
 
+	// Partial unique index: one non-retired instance per exchange account
+	// (00003_instance_one_per_account.sql). v1 uses a whole-balance anchor —
+	// two non-retired instances on the same (user, account) double-count
+	// expected holdings, guaranteed to breach auto-freeze. GORM tags cannot
+	// express partial unique, so DDL explicitly.
+	const instOnePerAccountSQL = `CREATE UNIQUE INDEX IF NOT EXISTS uq_inst_one_per_account
+		ON strategy_instances (owner_user_id, account_id)
+		WHERE status != 'retired'`
+	if err := db.WithContext(ctx).Exec(instOnePerAccountSQL).Error; err != nil {
+		return nil, fmt.Errorf("store.NewDB: partial unique strategy_instances (one-per-account): %w", err)
+	}
+
 	// Partial unique index on import_jobs per docs/phase9-data-import-v1.md
 	// §2.1: a (symbol, interval) pair can only have one active import at a
 	// time (the orchestrator delete+rewrites that range's gap rows, so

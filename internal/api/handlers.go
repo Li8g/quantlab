@@ -71,6 +71,13 @@ var (
 	// already has a queued/running import job. The partial unique index
 	// uq_import_jobs_active rejects the INSERT. → 409 Conflict.
 	ErrImportActive = errors.New("an import is already active for this (symbol, interval)")
+
+	// ErrAccountActiveInstanceExists: a CreateInstance would place a second
+	// non-retired instance on the same exchange account. v1 uses a whole-
+	// balance anchor — two instances on the same account double-count expected
+	// holdings and trigger auto-freeze. The partial unique index
+	// uq_inst_one_per_account rejects the INSERT. → 409 Conflict.
+	ErrAccountActiveInstanceExists = errors.New("account already has an active instance; retire it before creating a new one")
 )
 
 // EpochCreator triggers a new evolution task. The HTTP layer holds
@@ -747,20 +754,18 @@ func (h *Handlers) transitionInstance(c *gin.Context, nextStatus func(store.Inst
 	})
 }
 
-// mapInstanceCreateErr distinguishes the partial-unique violation
-// from a generic DB failure. The partial unique on
-// (owner_user_id, strategy_id, pair, account_id) WHERE status !=
-// 'retired' triggers when admin tries to create a duplicate active
-// instance — that's 409, not 500.
+// mapInstanceCreateErr maps InstanceRepo.Create errors to HTTP status codes.
+// ErrAccountActiveInstanceExists (the per-account partial unique) → 409.
+// Any other unique violation (the legacy per-(strategy,pair) index) → 409.
+// Everything else → 500.
 func mapInstanceCreateErr(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError
 	}
-	msg := err.Error()
-	// pgx surfaces 23505 (unique_violation); GORM wraps it. We don't
-	// have a typed sentinel from gorm, so substring match the
-	// constraint name we set in db.go.
-	if containsUnique(msg) {
+	if errors.Is(err, ErrAccountActiveInstanceExists) {
+		return http.StatusConflict
+	}
+	if containsUnique(err.Error()) {
 		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
