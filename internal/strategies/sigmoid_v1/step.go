@@ -134,7 +134,7 @@ func stepCore(input strategy.StrategyInput, rs RuntimeState, c Chromosome) (
 	// §7-3 signal synthesis.
 	signal := ComputeSignal(input.Closes, c, volRatio)
 
-	return stepCoreFromIndicators(input, rs, c, marketState, volRatio, signal, price, true)
+	return stepCoreFromIndicators(&input, rs, c, marketState, volRatio, signal, price, true)
 }
 
 // stepCoreFromIndicators is the §7-pseudocode compute body downstream of
@@ -142,10 +142,11 @@ func stepCore(input strategy.StrategyInput, rs RuntimeState, c Chromosome) (
 // evaluateWindow's hot loop calls it directly with O(1)/bar incremental
 // values from incrIndicatorState — both arrive at identical logic (铁律 1).
 //
+// input is a read-only pointer; callers must not mutate it through this pointer.
 // wantDebug=false skips buildDebugSnapshot entirely. The backtest loop
 // never reads DebugSnapshot, so passing false eliminates 4 heap allocs/bar.
 func stepCoreFromIndicators(
-	input strategy.StrategyInput, rs RuntimeState, c Chromosome,
+	input *strategy.StrategyInput, rs RuntimeState, c Chromosome,
 	marketState MarketState, volRatio, signal, price float64,
 	wantDebug bool,
 ) (
@@ -233,7 +234,7 @@ func buildMicroOrders(nowMs int64, m microRebalanceResult, volRatio float64, sta
 // §3.3 rule: AmountUSD > SpendableUSDT → skip silently (do NOT emit a
 // reduced order). The skip protects micro from being starved by macro
 // when cash is tight.
-func applyMacroDecision(input strategy.StrategyInput, c Chromosome, rs *RuntimeState, totalEquity float64) ([]strategy.OrderIntent, RuntimeState) {
+func applyMacroDecision(input *strategy.StrategyInput, c Chromosome, rs *RuntimeState, totalEquity float64) ([]strategy.OrderIntent, RuntimeState) {
 	d := EvaluateMacroEngine(
 		input.NowMs, input.LastProcessedBarTime, rs.LastMacroBuyMs, c.MacroInjectUSD,
 	)
@@ -260,7 +261,7 @@ func applyMacroDecision(input strategy.StrategyInput, c Chromosome, rs *RuntimeS
 // applyReleaseDecision wraps evaluateRelease and stamps rs.LastReleaseMs
 // on a successful fire. peak must already reflect the current bar
 // (caller invokes rollNAVPeakWindow first).
-func applyReleaseDecision(input strategy.StrategyInput, c Chromosome, rs *RuntimeState, nav, peak float64) ([]strategy.ReleaseIntent, RuntimeState) {
+func applyReleaseDecision(input *strategy.StrategyInput, c Chromosome, rs *RuntimeState, nav, peak float64) ([]strategy.ReleaseIntent, RuntimeState) {
 	d := evaluateRelease(
 		rs, input.NowMs, nav, peak,
 		input.Portfolio.DeadBTC, input.Portfolio.FloatBTC,

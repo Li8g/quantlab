@@ -111,6 +111,13 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 	scoredCap := len(window.Bars) - window.WarmupLen
 	logReturns := make([]float64, 0, scoredCap)
 
+	// StrategyInput is hoisted outside the loop and its three per-bar
+	// fields updated in-place. We pass &input to stepCoreFromIndicators
+	// to avoid a 216B by-value copy on every bar.
+	// Closes/Timestamps/Spawn/RuntimeState remain zero — indicators are
+	// pre-resolved via incrState; stepCoreFromIndicators does not read them.
+	input := strategy.StrategyInput{Chromosome: gene}
+
 	for i, bar := range window.Bars {
 		// Advance incremental indicators (O(1): EMA, MAV rings, logReturn
 		// lookback). Must precede computeMarketState/computeSignal calls.
@@ -158,16 +165,11 @@ func evaluateWindow(strat *Sigmoid, gene domain.Gene, window domain.CrucibleWind
 		marketState, volRatio := incrState.computeMarketState(c.QuietThreshold)
 		signal := incrState.computeSignal(c, volRatio, bar.Close)
 
-		input := strategy.StrategyInput{
-			NowMs:                bar.OpenTime,
-			Portfolio:            p,
-			Chromosome:           gene,
-			LastProcessedBarTime: lastProcessedBarTime,
-			// Closes/Timestamps omitted: indicators are pre-resolved via
-			// incrState; stepCoreFromIndicators does not read input.Closes.
-		}
+		input.NowMs = bar.OpenTime
+		input.Portfolio = p
+		input.LastProcessedBarTime = lastProcessedBarTime
 		macroOrders, microOrders, releaseIntents, newRS, dbg := stepCoreFromIndicators(
-			input, rs, c, marketState, volRatio, signal, bar.Close, false,
+			&input, rs, c, marketState, volRatio, signal, bar.Close, false,
 		)
 
 		// Gap bars: discard orders so no fake trades; RuntimeState
