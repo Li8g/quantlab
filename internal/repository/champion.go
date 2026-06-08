@@ -138,21 +138,25 @@ func (r *ChampionRepo) Retire(ctx context.Context, challengerID string, req api.
 		if err := tx.Where("challenger_id = ?", challengerID).First(&history).Error; err != nil {
 			return err
 		}
-		updates, err := applyRetire(history, req, time.Now().UTC())
-		if err != nil {
-			return err
-		}
-		res := tx.Model(&store.ChampionHistory{}).
-			Where("id = ?", history.ID).
-			Updates(updates)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return fmt.Errorf("repository.ChampionRepo.Retire: update affected 0 rows (race?)")
-		}
-		return nil
+		return retireHistory(tx, history, req, time.Now().UTC())
 	})
+}
+
+func retireHistory(tx *gorm.DB, history store.ChampionHistory, req api.RetireChampionRequest, now time.Time) error {
+	updates, err := applyRetire(history, req, now)
+	if err != nil {
+		return err
+	}
+	res := tx.Model(&store.ChampionHistory{}).
+		Where("id = ? AND retired_at IS NULL", history.ID).
+		Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return api.ErrAlreadyRetired
+	}
+	return nil
 }
 
 // List returns ChampionHistory rows ordered by PromotedAt descending

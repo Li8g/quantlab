@@ -122,11 +122,49 @@ bump expected on score-comparability grounds.
 1. **CLAUDE.md**: rewrite the implicit "scoring change → version bump" into the
    §5 tolerance gate; record ε once calibrated. *(Done 2026-06-04 — see the
    "Reproducibility gate" note under Version Constants.)*
-2. **Calibrate ε** from the live score distribution (§6). **Next week's priority
-   (week of 2026-06-08).** Until ε is set, treat scoring changes conservatively
-   (i.e. fall back to the old "bump when in doubt" behaviour).
+2. **Calibrate ε** from the live score distribution (§6). *(Done 2026-06-08 —
+   see §9 below. ε = 1e-4; CLAUDE.md updated.)*
 3. **When building #6**: thread the incremental seam through `EvaluateWindow`,
    then measure the **ScoreTotal** delta (not just signal) under both modes on
    the current champion; confirm < ε before deciding version vs no-version.
 4. Keep `ema_divergence_test.go` as standing pre-evidence + a regression guard on
    the cold-start magnitude.
+
+## 9. Calibration measurement — 2026-06-08
+
+**Snapshot:** 36 persisted challengers (`gene_records`), 13,436 within-population
+evaluations (`evaluation_traces`), 12,513 distinct scores, all non-fatal.
+
+### Score distribution
+
+| Layer | Min gap | p10 gap | Median gap | Notes |
+|---|---|---|---|---|
+| `gene_records` (36 challengers) | 1.5e-5 | — | — | persisted best-of-epoch |
+| champion-level contenders (top 5) | 4.4e-5 | — | — | relevant for promote |
+| champion vs #2 | 2.88e-4 | — | — | current champion's margin |
+| `evaluation_traces` distinct scores | 1.36e-11 | 2.19e-6 | 1.91e-5 | within-pop; many near-ties |
+
+### Decision: ε = 1e-4 (relative ScoreTotal)
+
+**Rationale:**
+
+- **Lower bound satisfied:** ε = 1e-4 is ~5 orders above established numerical
+  noise (~1e-9).
+- **Promote decisions protected:** ε < current champion-vs-#2 gap (2.88e-4). A
+  sub-ε code change cannot make any existing contender overtake the champion.
+- **Trajectory divergence accepted:** ε > the minimum champion-level gap
+  (4.4e-5). Sub-ε changes *may* flip #3 vs #4 in the top population. This is
+  the cross-implementation trajectory portability explicitly given up in §5.
+- **EMA consistency with #6 pre-evidence:** the signal-level delta at worst is
+  ~4e-5 (A1·Δpd, `ema_divergence_test.go`). The propagation through NAV →
+  ScoreTotal strongly compresses this; the actual ScoreTotal delta is expected
+  well below 1e-4. *(Confirmation deferred to action item 3 above, when the #6
+  seam is built.)*
+
+**Caveats:**
+- Dataset is thin (36 challengers). As epochs accumulate, the minimum
+  `gene_records` gap will shrink. Recalibrate when challenger count >> 100 or
+  if the champion-vs-#2 gap narrows below 3×ε.
+- ε is a relative threshold on `ScoreTotal.Value`. The comparison logic remains
+  `CompareFitness` with no epsilon — ε only governs the version-event decision,
+  not the sort.

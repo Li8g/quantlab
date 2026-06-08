@@ -62,6 +62,11 @@ var (
 	// must Retire the incumbent before promoting a successor.
 	ErrActiveChampionExists = errors.New("active champion already exists for this (strategy_id, pair); retire it first")
 
+	// ErrDeployChampionRefused: the requested challenger is not the active,
+	// unretired champion for the target instance's (strategy_id, pair), or
+	// the target instance is terminal. → 422 Unprocessable Entity.
+	ErrDeployChampionRefused = errors.New("deploy champion refused")
+
 	// ErrImportActive: a Create for an (symbol, interval) pair that
 	// already has a queued/running import job. The partial unique index
 	// uq_import_jobs_active rejects the INSERT. → 409 Conflict.
@@ -96,7 +101,7 @@ type ChampionUpdater interface {
 type InstanceStore interface {
 	Create(ctx context.Context, inst *store.StrategyInstance) error
 	Get(ctx context.Context, instanceID string) (*store.StrategyInstance, error)
-	UpdateStatus(ctx context.Context, instanceID string, status store.InstanceStatus) error
+	UpdateStatus(ctx context.Context, instanceID string, from, to store.InstanceStatus) error
 	SetActiveChampion(ctx context.Context, instanceID string, challengerID string) error
 }
 
@@ -695,7 +700,7 @@ func (h *Handlers) DeployChampion(c *gin.Context) {
 		return
 	}
 	if err := h.Instances.SetActiveChampion(c.Request.Context(), id, req.ChallengerID); err != nil {
-		writeError(c, mapReadErr(err), err)
+		writeError(c, mapInstanceWriteErr(err), err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -732,8 +737,8 @@ func (h *Handlers) transitionInstance(c *gin.Context, nextStatus func(store.Inst
 		})
 		return
 	}
-	if err := h.Instances.UpdateStatus(c.Request.Context(), id, next); err != nil {
-		writeError(c, http.StatusInternalServerError, err)
+	if err := h.Instances.UpdateStatus(c.Request.Context(), id, inst.Status, next); err != nil {
+		writeError(c, mapInstanceWriteErr(err), err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -759,6 +764,17 @@ func mapInstanceCreateErr(err error) int {
 		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
+}
+
+func mapInstanceWriteErr(err error) int {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, ErrInstanceTransitionRefused), errors.Is(err, ErrDeployChampionRefused):
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func containsUnique(s string) bool {

@@ -203,9 +203,10 @@ single seed, complete `Reset`); `bars_hash` (inputs) and `fingerprint` (gene
 identity) stay exact. What is given up is cross-*implementation* trajectory
 portability (a champion is reproducible under its own version, which is enough
 for audit). Rationale + the worked #6 example + the measurement harness:
-`docs/decision-ga-reproducibility-constraint.md`. **ε is not yet calibrated —
-its calibration from the live score distribution is next week's priority work
-(week of 2026-06-08); until then treat scoring changes conservatively.**
+`docs/decision-ga-reproducibility-constraint.md`. **ε = 1e-4 (relative
+ScoreTotal, calibrated 2026-06-08; see §9 of the decision doc for the full
+measurement).** Below ε, a code change is numerically equivalent — no version
+event. Above ε, bump `fitness_version`.
 
 ## Key Invariants
 
