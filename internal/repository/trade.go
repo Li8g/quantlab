@@ -7,6 +7,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -35,24 +36,28 @@ func (r *TradeRepo) InsertTradeRecord(ctx context.Context, tr *store.TradeRecord
 	return r.db.WithContext(ctx).Create(tr).Error
 }
 
-// UpdateTradeStatus updates Status for the row keyed by client_order_id.
-// Returns gorm.ErrRecordNotFound when no row matches — callers (the
-// Ack/OrderUpdate hook) treat that as a protocol error (Agent acked a
-// command SaaS never recorded). Idempotent on identical updates.
+// terminalStatuses are the TradeRecord states from which no further
+// status transition is allowed. The DB predicate in UpdateTradeStatus
+// uses this set to enforce monotonicity.
+var terminalStatuses = []store.TradeStatus{
+	store.TradeStatusFilled,
+	store.TradeStatusCancelled,
+	store.TradeStatusRejected,
+}
+
+// UpdateTradeStatus advances Status for the row keyed by client_order_id,
+// enforcing lifecycle monotonicity: terminal rows (filled/cancelled/rejected)
+// are never overwritten. RowsAffected=0 is a no-op — the row is either already
+// terminal (idempotent re-delivery) or never existed (ack for an unknown order);
+// both are treated as acceptable non-events by callers.
 func (r *TradeRepo) UpdateTradeStatus(ctx context.Context, clientOrderID string, status store.TradeStatus) error {
 	if clientOrderID == "" {
 		return errors.New("repository.TradeRepo.UpdateTradeStatus: empty client_order_id")
 	}
 	res := r.db.WithContext(ctx).Model(&store.TradeRecord{}).
-		Where("client_order_id = ?", clientOrderID).
+		Where("client_order_id = ? AND status NOT IN ?", clientOrderID, terminalStatuses).
 		Update("status", status)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return res.Error
 }
 
 // ListByInstance returns TradeRecord rows for one instance, ordered
@@ -76,12 +81,29 @@ func (r *TradeRepo) ListByInstance(ctx context.Context, instanceID string, limit
 	return rows, nil
 }
 
-// InsertSpotExecution appends one fill row. SpotExecution has no unique
-// index on (client_order_id, filled_at_exchange_ms): both fill channels
-// (order_update and delta_report) dedup at the caller via ExecutionExists
-// before inserting, since the exchange event stream is at-least-once and a
-// redelivered fill rides a fresh envelope msg_id that envelope-level replay
-// protection can't catch (see agentmsg.insertFillIfNew).
+// isFillDuplicate reports whether err is a Postgres unique-constraint violation
+// on spot_executions. Both fill channels (order_update / delta_report) do a
+// check-then-insert; this catches the rare concurrent race where both pass the
+// EXISTS check and both attempt INSERT. The second insert is a no-op: the DB
+// enforces the invariant and InsertSpotExecution translates the violation into
+// nil so callers don't see an error.
+func isFillDuplicate(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "uq_spot_exec") ||
+		strings.Contains(msg, "23505") ||
+		strings.Contains(msg, "duplicate key value")
+}
+
+// InsertSpotExecution appends one fill row. Two partial unique indexes
+// (uq_spot_exec_by_trade / uq_spot_exec_by_ms) enforce exactly-once
+// semantics at the DB level; a unique violation is translated to nil so
+// callers treat a duplicate insert as a no-op (see 00002_spot_executions_dedup.sql).
 func (r *TradeRepo) InsertSpotExecution(ctx context.Context, ex *store.SpotExecution) error {
 	if ex == nil {
 		return errors.New("repository.TradeRepo.InsertSpotExecution: nil execution")
@@ -89,7 +111,11 @@ func (r *TradeRepo) InsertSpotExecution(ctx context.Context, ex *store.SpotExecu
 	if ex.ClientOrderID == "" {
 		return errors.New("repository.TradeRepo.InsertSpotExecution: empty client_order_id")
 	}
-	return r.db.WithContext(ctx).Create(ex).Error
+	err := r.db.WithContext(ctx).Create(ex).Error
+	if isFillDuplicate(err) {
+		return nil
+	}
+	return err
 }
 
 // ExecutionExistsByTrade reports whether a fill with this (client_order_id,

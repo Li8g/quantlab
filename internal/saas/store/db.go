@@ -175,6 +175,23 @@ func NewDB(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("store.NewDB: partial unique champion_history: %w", err)
 	}
 
+	// Partial unique indexes on spot_executions — DB backstop for concurrent
+	// fill dedup (00002_spot_executions_dedup.sql). Two keys: trade_id-based
+	// (canonical Binance per-trade id) and ms-based (fallback for MockExchange
+	// / legacy rows). GORM tags cannot express partial unique, so DDL explicitly.
+	const spotExecTradeSQL = `CREATE UNIQUE INDEX IF NOT EXISTS uq_spot_exec_by_trade
+		ON spot_executions (client_order_id, trade_id)
+		WHERE trade_id <> 0`
+	if err := db.WithContext(ctx).Exec(spotExecTradeSQL).Error; err != nil {
+		return nil, fmt.Errorf("store.NewDB: partial unique spot_executions (trade): %w", err)
+	}
+	const spotExecMsSQL = `CREATE UNIQUE INDEX IF NOT EXISTS uq_spot_exec_by_ms
+		ON spot_executions (client_order_id, filled_at_exchange_ms)
+		WHERE trade_id = 0`
+	if err := db.WithContext(ctx).Exec(spotExecMsSQL).Error; err != nil {
+		return nil, fmt.Errorf("store.NewDB: partial unique spot_executions (ms): %w", err)
+	}
+
 	return db, nil
 }
 

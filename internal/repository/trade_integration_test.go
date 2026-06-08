@@ -14,6 +14,8 @@ import (
 	"context"
 	"testing"
 
+	"gorm.io/gorm"
+
 	"quantlab/internal/saas/config"
 	"quantlab/internal/saas/store"
 )
@@ -340,5 +342,222 @@ func TestTradeRepo_SweepOrphanPending(t *testing.T) {
 	// Idempotent: a second sweep finds nothing (the orphan is now cancelled).
 	if n2, err := repo.SweepOrphanPending(ctx, nowMs); err != nil || n2 != 0 {
 		t.Errorf("second sweep = (%d, %v), want (0, nil)", n2, err)
+	}
+}
+
+// openDedupTestDB is the shared harness for the spot_executions dedup tests.
+func openDedupTestDB(t *testing.T) (*TradeRepo, *gorm.DB, context.Context) {
+	t.Helper()
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		t.Fatalf("load config %s: %v", *configPath, err)
+	}
+	db, err := store.NewDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, _ := db.DB()
+		if sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	})
+	cleanup := func() {
+		_ = db.Where("client_order_id LIKE ?", "dd-%").Delete(&store.SpotExecution{}).Error
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	return NewTradeRepo(db), db, context.Background()
+}
+
+// TestTradeRepo_InsertSpotExecution_DedupByTradeID proves the uq_spot_exec_by_trade
+// partial unique index: inserting the same (client_order_id, trade_id) twice
+// results in exactly one row and no error (the second insert is a no-op).
+func TestTradeRepo_InsertSpotExecution_DedupByTradeID(t *testing.T) {
+	repo, db, ctx := openDedupTestDB(t)
+
+	fill := store.SpotExecution{
+		ClientOrderID:      "dd-co-1",
+		ExchangeOrderID:    "dd-ex-1",
+		FillQuantity:       0.1,
+		FillPrice:          60000,
+		FillFeeAsset:       "USDT",
+		FillFeeAmount:      0.01,
+		FilledAtExchangeMs: 1000,
+		TradeID:            42,
+	}
+
+	if err := repo.InsertSpotExecution(ctx, &fill); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+
+	// Second insert with same (client_order_id, trade_id): must be a no-op.
+	dup := fill
+	dup.ID = 0 // reset GORM primary key so Create doesn't try an UPDATE
+	if err := repo.InsertSpotExecution(ctx, &dup); err != nil {
+		t.Fatalf("second insert (duplicate) returned error: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&store.SpotExecution{}).
+		Where("client_order_id = ? AND trade_id = ?", "dd-co-1", int64(42)).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (duplicate must not insert a second row)", count)
+	}
+}
+
+// TestTradeRepo_InsertSpotExecution_DedupByMs proves the uq_spot_exec_by_ms
+// partial unique index (trade_id = 0 fallback path): inserting the same
+// (client_order_id, filled_at_exchange_ms) twice when trade_id is absent
+// results in exactly one row and no error.
+func TestTradeRepo_InsertSpotExecution_DedupByMs(t *testing.T) {
+	repo, db, ctx := openDedupTestDB(t)
+
+	fill := store.SpotExecution{
+		ClientOrderID:      "dd-co-2",
+		ExchangeOrderID:    "dd-ex-2",
+		FillQuantity:       0.2,
+		FillPrice:          61000,
+		FillFeeAsset:       "USDT",
+		FillFeeAmount:      0.02,
+		FilledAtExchangeMs: 2000,
+		TradeID:            0, // no per-trade id (MockExchange)
+	}
+
+	if err := repo.InsertSpotExecution(ctx, &fill); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+
+	// Second insert with same (client_order_id, filled_at_exchange_ms, trade_id=0).
+	dup := fill
+	dup.ID = 0
+	if err := repo.InsertSpotExecution(ctx, &dup); err != nil {
+		t.Fatalf("second insert (duplicate) returned error: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&store.SpotExecution{}).
+		Where("client_order_id = ? AND filled_at_exchange_ms = ? AND trade_id = 0", "dd-co-2", int64(2000)).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (duplicate must not insert a second row)", count)
+	}
+}
+
+// ---- UpdateTradeStatus monotonicity tests ----
+
+// openMonotonicTestDB is the shared harness for UpdateTradeStatus monotonicity tests.
+func openMonotonicTestDB(t *testing.T) (*TradeRepo, *gorm.DB, context.Context) {
+	t.Helper()
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		t.Fatalf("load config %s: %v", *configPath, err)
+	}
+	db, err := store.NewDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, _ := db.DB()
+		if sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	})
+	cleanup := func() {
+		_ = db.Where("client_order_id LIKE ?", "mo-%").Delete(&store.TradeRecord{}).Error
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	return NewTradeRepo(db), db, context.Background()
+}
+
+func insertMoOrder(t *testing.T, repo *TradeRepo, ctx context.Context, id string, status store.TradeStatus) {
+	t.Helper()
+	if err := repo.InsertTradeRecord(ctx, &store.TradeRecord{
+		ClientOrderID: id,
+		InstanceID:    "mo-inst",
+		Symbol:        "BTCUSDT",
+		Side:          "buy",
+		OrderType:     "market",
+		QuantityUSD:   100,
+		NowMsAtSaaS:   1,
+		ValidUntilMs:  9999999999,
+		Status:        status,
+	}); err != nil {
+		t.Fatalf("InsertTradeRecord %s: %v", id, err)
+	}
+}
+
+func queryStatus(t *testing.T, db *gorm.DB, ctx context.Context, id string) store.TradeStatus {
+	t.Helper()
+	var tr store.TradeRecord
+	if err := db.WithContext(ctx).Where("client_order_id = ?", id).First(&tr).Error; err != nil {
+		t.Fatalf("fetch TradeRecord %s: %v", id, err)
+	}
+	return tr.Status
+}
+
+// TestTradeRepo_UpdateTradeStatus_FilledNoDowngrade proves that a filled
+// TradeRecord is not downgraded when partial_filled or rejected arrives
+// (e.g. a delayed order_update or ack replay).
+func TestTradeRepo_UpdateTradeStatus_FilledNoDowngrade(t *testing.T) {
+	repo, db, ctx := openMonotonicTestDB(t)
+
+	insertMoOrder(t, repo, ctx, "mo-filled-1", store.TradeStatusFilled)
+
+	if err := repo.UpdateTradeStatus(ctx, "mo-filled-1", store.TradeStatusPartialFilled); err != nil {
+		t.Fatalf("UpdateTradeStatus(partial_filled on filled): unexpected error: %v", err)
+	}
+	if got := queryStatus(t, db, ctx, "mo-filled-1"); got != store.TradeStatusFilled {
+		t.Errorf("status = %q after partial_filled update, want filled (must not downgrade)", got)
+	}
+
+	if err := repo.UpdateTradeStatus(ctx, "mo-filled-1", store.TradeStatusRejected); err != nil {
+		t.Fatalf("UpdateTradeStatus(rejected on filled): unexpected error: %v", err)
+	}
+	if got := queryStatus(t, db, ctx, "mo-filled-1"); got != store.TradeStatusFilled {
+		t.Errorf("status = %q after rejected update, want filled (must not downgrade)", got)
+	}
+}
+
+// TestTradeRepo_UpdateTradeStatus_ExpiredAckNoCancel proves that an expired
+// ack (mapped to cancelled by ackToTradeStatus) cannot overwrite a filled row.
+func TestTradeRepo_UpdateTradeStatus_ExpiredAckNoCancel(t *testing.T) {
+	repo, db, ctx := openMonotonicTestDB(t)
+
+	insertMoOrder(t, repo, ctx, "mo-filled-2", store.TradeStatusFilled)
+
+	if err := repo.UpdateTradeStatus(ctx, "mo-filled-2", store.TradeStatusCancelled); err != nil {
+		t.Fatalf("UpdateTradeStatus(cancelled on filled): unexpected error: %v", err)
+	}
+	if got := queryStatus(t, db, ctx, "mo-filled-2"); got != store.TradeStatusFilled {
+		t.Errorf("status = %q after cancelled update, want filled (expired ack must not cancel)", got)
+	}
+}
+
+// TestTradeRepo_UpdateTradeStatus_NonTerminalAdvances proves the normal
+// forward transitions still work: pending → partial_filled → filled.
+func TestTradeRepo_UpdateTradeStatus_NonTerminalAdvances(t *testing.T) {
+	repo, db, ctx := openMonotonicTestDB(t)
+
+	insertMoOrder(t, repo, ctx, "mo-adv-1", store.TradeStatusPending)
+
+	if err := repo.UpdateTradeStatus(ctx, "mo-adv-1", store.TradeStatusPartialFilled); err != nil {
+		t.Fatalf("pending→partial_filled: %v", err)
+	}
+	if got := queryStatus(t, db, ctx, "mo-adv-1"); got != store.TradeStatusPartialFilled {
+		t.Errorf("status = %q, want partial_filled", got)
+	}
+
+	if err := repo.UpdateTradeStatus(ctx, "mo-adv-1", store.TradeStatusFilled); err != nil {
+		t.Fatalf("partial_filled→filled: %v", err)
+	}
+	if got := queryStatus(t, db, ctx, "mo-adv-1"); got != store.TradeStatusFilled {
+		t.Errorf("status = %q, want filled", got)
 	}
 }
