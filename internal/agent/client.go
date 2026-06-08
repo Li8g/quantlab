@@ -575,13 +575,19 @@ func (c *Client) onOrderEvent(ev OrderEvent) {
 		return
 	}
 
-	rec, ok, _ := c.idempotency.Get(ev.ClientOrderID)
-	if !ok {
-		// Either the order was placed by a previous Agent process
-		// (sqlite retention covers 7d; some events outlive that), or
-		// the executionReport raced ahead of the Submit ack record
-		// write. Drop with warn — SaaS-side reconciliation handles
-		// this in v2.
+	rec, ok, idemErr := c.idempotency.Get(ev.ClientOrderID)
+	if idemErr != nil {
+		// Read error: log but do not drop the fill — OrderUpdate and
+		// delta_report must still be emitted (S5B-3). rec is zero-value:
+		// ExchangeOrderID="" (ev.ExchangeOrderID used via orFallback
+		// below), MarketRef=0 → slippage=0. Status update is skipped.
+		c.log.Error("agent_order_event_idempotency_read_error",
+			"client_order_id", ev.ClientOrderID,
+			"error", idemErr)
+	} else if !ok {
+		// Genuinely unknown order: placed by a previous process (sqlite
+		// retention 7d) or executionReport raced ahead of pending write.
+		// Drop with warn — SaaS-side reconciliation handles in v2.
 		c.log.Warn("agent_order_event_unknown_order",
 			"client_order_id", ev.ClientOrderID,
 			"exchange_order_id", ev.ExchangeOrderID,
@@ -630,11 +636,14 @@ func (c *Client) onOrderEvent(ev OrderEvent) {
 	}
 
 	// Update idempotency status to the latest terminal/non-terminal
-	// state. The mapping mirrors mapEventStatusToWire.
-	newStatus := mapEventStatusToIdem(ev.Status, rec.Status)
-	if newStatus != rec.Status {
-		_ = c.idempotency.UpdateStatus(
-			ev.ClientOrderID, newStatus, ou.ExchangeOrderID, c.nowMs())
+	// state. Skipped on read error (idemErr != nil): we couldn't read
+	// the record, so we can't safely update it.
+	if idemErr == nil {
+		newStatus := mapEventStatusToIdem(ev.Status, rec.Status)
+		if newStatus != rec.Status {
+			_ = c.idempotency.UpdateStatus(
+				ev.ClientOrderID, newStatus, ou.ExchangeOrderID, c.nowMs())
+		}
 	}
 
 	// Snapshot the active conn under the same lock that runSession
