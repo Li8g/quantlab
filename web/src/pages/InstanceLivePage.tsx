@@ -21,14 +21,16 @@ import type {
 } from '../lib/types'
 
 // The intervention verbs. start/stop/deploy (場景② F2.3) require operator+;
-// resume (§5.13 v2 — lift the kill_switch freeze) is admin-only. Each
-// routes through a SudoModal step-up before hitting the endpoint; the role
-// it requests is derived from the verb (see sudoRoleForVerb).
-type ActionVerb = 'start' | 'stop' | 'deploy' | 'resume' | 'retire-instance'
+// kill (manual kill_switch trigger) and resume (§5.13 v2 — lift the freeze)
+// are admin-only. Each routes through a SudoModal step-up before hitting the
+// endpoint; the role it requests is derived from the verb (see sudoRoleForVerb).
+type ActionVerb = 'start' | 'stop' | 'deploy' | 'kill' | 'resume' | 'retire-instance'
 
-// resume and retire-instance are admin-only; the rest are operator-level.
+// kill, resume and retire-instance are admin-only; the rest are operator-level.
 function sudoRoleForVerb(verb: ActionVerb): 'admin' | 'operator' {
-  return verb === 'resume' || verb === 'retire-instance' ? 'admin' : 'operator'
+  return verb === 'kill' || verb === 'resume' || verb === 'retire-instance'
+    ? 'admin'
+    : 'operator'
 }
 
 // F2.2: per-instance live snapshot. Polled every 3s — the detail view is
@@ -78,11 +80,13 @@ export default function InstanceLivePage() {
         ? `Start live trading on ${tag}.`
         : verb === 'stop'
           ? `Pause ${tag}.`
-          : verb === 'resume'
-            ? `Resume (un-freeze) the agent on ${tag}.`
-            : verb === 'retire-instance'
-              ? `Permanently retire instance ${tag}. This is irreversible.`
-              : `Deploy champion ${deployId.trim()} to ${tag}.`
+          : verb === 'kill'
+            ? `Emergency kill_switch on ${tag}: freeze the agent NOW. New orders are rejected immediately; already-filled orders cannot be undone. Reversible via Resume.`
+            : verb === 'resume'
+              ? `Resume (un-freeze) the agent on ${tag}.`
+              : verb === 'retire-instance'
+                ? `Permanently retire instance ${tag}. This is irreversible.`
+                : `Deploy champion ${deployId.trim()} to ${tag}.`
     setPending({ verb, desc })
   }
 
@@ -111,6 +115,7 @@ export default function InstanceLivePage() {
 
       <ControlsCard
         status={instance.status}
+        frozen={!!data.kill_status}
         activeChampionId={instance.active_champion_id}
         deployId={deployId}
         setDeployId={setDeployId}
@@ -139,6 +144,8 @@ export default function InstanceLivePage() {
               await apiFetch(`${base}/start`, { method: 'POST', token })
             } else if (pending.verb === 'stop') {
               await apiFetch(`${base}/stop`, { method: 'POST', token })
+            } else if (pending.verb === 'kill') {
+              await apiFetch(`${base}/kill`, { method: 'POST', token })
             } else if (pending.verb === 'resume') {
               await apiFetch(`${base}/resume`, { method: 'POST', token })
             } else if (pending.verb === 'retire-instance') {
@@ -168,12 +175,14 @@ export default function InstanceLivePage() {
 // operator step-up at click time is the real gate.
 function ControlsCard({
   status,
+  frozen,
   activeChampionId,
   deployId,
   setDeployId,
   onAct,
 }: {
   status: InstanceStatus
+  frozen: boolean
   activeChampionId?: string
   deployId: string
   setDeployId: (v: string) => void
@@ -223,10 +232,19 @@ function ControlsCard({
               </button>
             </div>
           </div>
-          <div className="mt-3 border-t border-slate-100 pt-3">
+          <div className="mt-3 flex items-center gap-3 border-t border-slate-100 pt-3">
             <button
               type="button"
-              className="rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
+              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600"
+              disabled={frozen}
+              title={frozen ? 'Agent already frozen' : 'Freeze the agent immediately (admin)'}
+              onClick={() => onAct('kill')}
+            >
+              {frozen ? 'Frozen' : 'Kill switch'}
+            </button>
+            <button
+              type="button"
+              className="ml-auto rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
               onClick={() => onAct('retire-instance')}
             >
               Retire instance
