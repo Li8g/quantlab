@@ -1,6 +1,6 @@
 # QuantLab 代码审阅 Plan
 
-依据 `go-skill-quantlab/SKILL.md`(11 节 + merge-gate checklist),与 quantlab 实际包结构对齐。
+依据 `.claude/skills/go-skill-quantlab/SKILL.md`(11 节 + merge-gate checklist),与 quantlab 实际包结构对齐。
 
 ## 0. 范围与产出
 

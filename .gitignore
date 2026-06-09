@@ -32,7 +32,11 @@ vendor/
 
 # --- Local tool data ---
 # Claude Code local settings + graphify knowledge-graph output.
-.claude/
+# Ignore .claude/ local state (settings.local.json, rules/) but DO commit
+# shared agent skills — .claude/skills/ is the canonical cross-tool skill dir
+# (Codex reads it via the .agents/skills symlink; OpenCode reads it natively).
+.claude/*
+!.claude/skills/
 graphify-out/
 
 # Agent local SQLite idempotency store (config.agent.yaml db_path; default

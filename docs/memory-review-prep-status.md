@@ -10,7 +10,7 @@ Purpose: preserve the current QuantLab review-preparation state after an opencod
 - Review skill loaded successfully in the session: `quantlab-review`.
 - Root review contract exists: `CODEX_SKILL.md`.
 - Project read-only reviewer agent exists: `.opencode/agents/quantlab-readonly-reviewer.md`.
-- Project review skill exists: `.opencode/skills/quantlab-review/SKILL.md`.
+- Project review skill exists: `.claude/skills/quantlab-review/SKILL.md`.
 - Existing review plan/history exists: `docs/code-review-plan.md`.
 - Current Codex review archive exists: `docs/codex-readonly-review-2026-06-05.md`.
 - `.opencode/.gitignore` ignores `node_modules`, `package.json`, `package-lock.json`, and `bun.lock`.
