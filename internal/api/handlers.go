@@ -52,10 +52,10 @@ var (
 	// Promote/Retire transition invariants. All four map to 422
 	// Unprocessable Entity — the request was well-formed but the
 	// target's current state forbids the transition.
-	ErrCannotPromoteTestMode = errors.New("cannot promote a TestMode=true challenger")
-	ErrAlreadyPromoted       = errors.New("challenger already promoted")
-	ErrAlreadyRejected       = errors.New("challenger already rejected")
-	ErrAlreadyRetired        = errors.New("champion already retired")
+	ErrCannotPromoteTestMode  = errors.New("cannot promote a TestMode=true challenger")
+	ErrAlreadyPromoted        = errors.New("challenger already promoted")
+	ErrAlreadyRejected        = errors.New("challenger already rejected")
+	ErrAlreadyRetired         = errors.New("champion already retired")
 	ErrInstanceAlreadyRetired = errors.New("instance already retired")
 
 	// ErrActiveChampionExists: a Promote would create a second active

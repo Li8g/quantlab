@@ -122,11 +122,11 @@ type Hub struct {
 	expectedEnv       string
 	rejectEnvMismatch bool
 
-	onStateSync        func(ctx context.Context, accountID string, payload json.RawMessage) error
-	onStale            func(ctx context.Context, accountID string) error
-	onAgentMessage     func(ctx context.Context, accountID string, env wire.Envelope) error
-	onConnectionState  func(ctx context.Context, ev ConnectionStateEvent) error
-	onHandshakeReject  func(ctx context.Context, accountID, code, msg string) error
+	onStateSync       func(ctx context.Context, accountID string, payload json.RawMessage) error
+	onStale           func(ctx context.Context, accountID string) error
+	onAgentMessage    func(ctx context.Context, accountID string, env wire.Envelope) error
+	onConnectionState func(ctx context.Context, ev ConnectionStateEvent) error
+	onHandshakeReject func(ctx context.Context, accountID, code, msg string) error
 }
 
 // New constructs a Hub with cfg overrides applied to the package defaults.

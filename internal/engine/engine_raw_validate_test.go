@@ -23,9 +23,9 @@ func (s *nilRawStrat) MinEvalBars() int   { return 1 }
 func (s *nilRawStrat) Segments() []domain.SegmentInfo {
 	return []domain.SegmentInfo{{Name: "x", Dimensions: []int{0}, GeneStep: []float64{0.1}}}
 }
-func (s *nilRawStrat) Sample(rng *rand.Rand) domain.Gene      { return domain.Gene{rng.Float64()} }
-func (s *nilRawStrat) Clamp(g domain.Gene) domain.Gene        { return g }
-func (s *nilRawStrat) Validate(g domain.Gene) error           { return nil }
+func (s *nilRawStrat) Sample(rng *rand.Rand) domain.Gene                     { return domain.Gene{rng.Float64()} }
+func (s *nilRawStrat) Clamp(g domain.Gene) domain.Gene                       { return g }
+func (s *nilRawStrat) Validate(g domain.Gene) error                          { return nil }
 func (s *nilRawStrat) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene { return p1 }
 func (s *nilRawStrat) Mutate(g domain.Gene, _, _ float64, _ *rand.Rand) domain.Gene {
 	return g
@@ -49,7 +49,7 @@ func (s *nilRawStrat) NewAdapter(_ *domain.EvaluablePlan) (strategy.Adapter, err
 
 type nilRawAdapter struct{}
 
-func (a *nilRawAdapter) Reset(_ *domain.EvaluablePlan) error                    { return nil }
+func (a *nilRawAdapter) Reset(_ *domain.EvaluablePlan) error { return nil }
 func (a *nilRawAdapter) Evaluate(_ domain.Gene) (*resultpkg.RawEvaluateResult, error) {
 	return nil, nil
 }
@@ -68,9 +68,9 @@ func (s *countingStrat) MinEvalBars() int   { return 1 }
 func (s *countingStrat) Segments() []domain.SegmentInfo {
 	return []domain.SegmentInfo{{Name: "x", Dimensions: []int{0}, GeneStep: []float64{0.1}}}
 }
-func (s *countingStrat) Sample(rng *rand.Rand) domain.Gene      { return domain.Gene{rng.Float64()} }
-func (s *countingStrat) Clamp(g domain.Gene) domain.Gene        { return g }
-func (s *countingStrat) Validate(g domain.Gene) error           { return nil }
+func (s *countingStrat) Sample(rng *rand.Rand) domain.Gene                     { return domain.Gene{rng.Float64()} }
+func (s *countingStrat) Clamp(g domain.Gene) domain.Gene                       { return g }
+func (s *countingStrat) Validate(g domain.Gene) error                          { return nil }
 func (s *countingStrat) Crossover(p1, _ domain.Gene, _ *rand.Rand) domain.Gene { return p1 }
 func (s *countingStrat) Mutate(g domain.Gene, _, _ float64, _ *rand.Rand) domain.Gene {
 	return g

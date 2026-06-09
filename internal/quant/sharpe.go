@@ -47,9 +47,18 @@ func ComputeSharpeStats(returns []float64) resultpkg.SharpeStats {
 		d2 := d * d
 		d3 := d2 * d
 		d4 := d2 * d2
-		y := d2 - c2; t := s2 + y; c2 = (t - s2) - y; s2 = t
-		y = d3 - c3; t = s3 + y; c3 = (t - s3) - y; s3 = t
-		y = d4 - c4; t = s4 + y; c4 = (t - s4) - y; s4 = t
+		y := d2 - c2
+		t := s2 + y
+		c2 = (t - s2) - y
+		s2 = t
+		y = d3 - c3
+		t = s3 + y
+		c3 = (t - s3) - y
+		s3 = t
+		y = d4 - c4
+		t = s4 + y
+		c4 = (t - s4) - y
+		s4 = t
 	}
 
 	// StdDev uses n-1 (sample); Skew/ExKurt use n (population biased,

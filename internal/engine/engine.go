@@ -542,4 +542,3 @@ func compareWithFp(a, b resultpkg.ScoreTotal, aFp, bFp string) int {
 	}
 	return quant.CompareFitness(a, b)
 }
-
