@@ -8,7 +8,11 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+# dist holds the built SPA, embedded into the saas binary via web/embed.go
+# (go:embed). Ignore the build artifacts but keep the .gitkeep placeholder so
+# the embed pattern stays valid in a fresh checkout (else `go build` fails).
+dist/*
+!dist/.gitkeep
 dist-ssr
 *.local
 

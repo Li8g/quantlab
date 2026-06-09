@@ -299,9 +299,14 @@ tail -f /var/log/datafeeder.log
 
 ### 步骤 1 — 启动 SaaS
 
+前端 SPA 通过 `go:embed`（`web/embed.go`）编译进 saas 二进制，**编译前必须先构建前端**，否则只嵌入占位文件、网页不可用（API 仍正常）：
+
 ```bash
-go run ./cmd/saas --config config.yaml
+cd web && npm ci && npm run build && cd ..   # 产出 web/dist，被 go:embed 嵌入
+go run ./cmd/saas --config config.yaml        # 或先 go build -o saas ./cmd/saas 再 ./saas
 ```
+
+启动后**网页 UI 与 API 同源**，直接访问 `http://<服务器IP>:8080/` 即可登录（promote/retire、live 监控、start/stop/deploy/resume 都在网页里）。下面各步的 curl 是等价的脚本化路径，按需选用。无需 nginx 或 vite。
 
 `app_role=saas` 启动时自动执行 `goose up`（幂等，已是最新则跳过）。
 

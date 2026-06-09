@@ -383,6 +383,10 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	h.Register(r)
+	// Serve the embedded React SPA (web/dist) for non-/api routes so the
+	// frontend is reachable same-origin in production. No-op when no build is
+	// embedded (CI / un-built checkout) — see registerWebUI.
+	registerWebUI(r)
 
 	srv := &http.Server{
 		Addr:              cfg.Server.HTTPListen,
