@@ -58,6 +58,8 @@ func main() {
 		err = runVerify(ctx, args)
 	case "stats":
 		err = runStats(ctx, args)
+	case "last-bar":
+		err = runLastBar(ctx, args)
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -76,9 +78,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `datafeeder — import / verify / inspect K-line archives
 
 Usage:
-  datafeeder import --symbol BTCUSDT --interval 1m --from 2025-01-01 --to 2025-01-07
-  datafeeder verify --symbol BTCUSDT --interval 1m
+  datafeeder import   --symbol BTCUSDT --interval 1m --from 2025-01-01 --to 2025-01-07
+  datafeeder verify   --symbol BTCUSDT --interval 1m
   datafeeder stats
+  datafeeder last-bar --symbol BTCUSDT --interval 1m
 
 Common flags:
   --config PATH    config.yaml path (default ./config.yaml or $CONFIG_PATH)
@@ -230,6 +233,38 @@ func runStats(ctx context.Context, args []string) error {
 			time.UnixMilli(r.Min).UTC().Format(time.RFC3339),
 			time.UnixMilli(r.Max).UTC().Format(time.RFC3339))
 	}
+	return nil
+}
+
+func runLastBar(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("last-bar", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "config.yaml path")
+	symbol := fs.String("symbol", "", "instrument symbol, e.g. BTCUSDT")
+	interval := fs.String("interval", "1m", "kline interval")
+	_ = fs.Parse(args)
+
+	if *symbol == "" {
+		return fmt.Errorf("last-bar: --symbol required")
+	}
+
+	db, err := openDB(ctx, *cfgPath)
+	if err != nil {
+		return err
+	}
+	defer closeDB(db)
+
+	var maxTime int64
+	if err := db.WithContext(ctx).Model(&store.KLine{}).
+		Select("COALESCE(MAX(open_time), 0)").
+		Where("symbol = ? AND interval = ?", *symbol, *interval).
+		Scan(&maxTime).Error; err != nil {
+		return fmt.Errorf("last-bar: query: %w", err)
+	}
+	if maxTime == 0 {
+		return fmt.Errorf("last-bar: no klines found for %s/%s — run an initial import first", *symbol, *interval)
+	}
+
+	fmt.Println(time.UnixMilli(maxTime).UTC().Format("2006-01-02"))
 	return nil
 }
 
