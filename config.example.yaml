@@ -25,16 +25,6 @@ database:
   # may not set automigrate (prod schema is goose-owned).
   migration_mode: ""
 
-# Redis publishes Agent online state (key `agent:{accountID}:status`)
-# per docs/saas-ws-protocol-v1.md §7.2. Empty addr skips the startup
-# ping — saas falls back to NopReporter and the online-state key is not
-# published, which is fine for single-node dev / unit tests. For
-# multi-process or prod, set addr to a real Redis (e.g. localhost:6379).
-redis:
-  addr: ""
-  password: ""
-  db: 0
-
 jwt:
   # MUST be >= 32 bytes when app_role=saas (HS256 / RFC 7518).
   # Generate with: openssl rand -hex 32
