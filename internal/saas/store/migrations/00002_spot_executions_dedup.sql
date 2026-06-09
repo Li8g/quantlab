@@ -14,6 +14,9 @@
 
 -- +goose Up
 
+SET lock_timeout = '3s';
+SET statement_timeout = '60s';
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_spot_exec_by_trade
     ON spot_executions (client_order_id, trade_id)
     WHERE trade_id <> 0;

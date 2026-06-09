@@ -14,9 +14,21 @@ excluded_paths = ["*_baseline.sql"]
 
 # goose wraps each migration file in a transaction (unless it declares
 # `-- +goose NO TRANSACTION`), so Squawk should reason about statements as
-# running inside one. This relaxes rules that are only unsafe outside a txn and
-# tightens those (e.g. CREATE INDEX CONCURRENTLY) that cannot run inside one.
+# running inside one. This relaxes rules that are only unsafe outside a txn.
 assume_in_transaction = true
+
+# The two concurrent-index rules are structurally unsatisfiable under our
+# migration model: CREATE/DROP INDEX CONCURRENTLY cannot run inside a
+# transaction, but goose wraps every migration in one (assume_in_transaction
+# above). Squawk v2.56.0 still suggests CONCURRENTLY regardless, so the rules
+# can never go green for any index migration here — excluding files would just
+# grow without bound. Single-user lab DB with tiny tables: a plain CREATE INDEX
+# briefly blocking writes is acceptable. require-timeout-settings is kept (it
+# IS satisfiable in-txn — migrations set lock/statement timeouts explicitly).
+excluded_rules = [
+    "require-concurrent-index-creation",
+    "require-concurrent-index-deletion",
+]
 
 # Minimum supported Postgres for prod (TimescaleDB pg17). Lets version-gated
 # rules (e.g. safe non-CONCURRENTLY operations on newer PG) judge correctly.
