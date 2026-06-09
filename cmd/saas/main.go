@@ -4,9 +4,8 @@
 // the four repositories + epoch.Service + api.Handlers, and runs Gin
 // on cfg.Server.HTTPListen with graceful shutdown.
 //
-// One process, one DB, in-process per-(strategy, pair) mutex. Scaling
-// to multi-instance is out of scope for the prototype (would need a
-// Redis or DB-row advisory lock — see project notes).
+// One process, one DB, single trading account. Multi-replica is out of
+// scope for this system (single-user design).
 package main
 
 import (
@@ -26,15 +25,12 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"github.com/redis/go-redis/v9"
-
 	"quantlab/internal/api"
 	"quantlab/internal/api/middleware"
 	"quantlab/internal/data"
 	"quantlab/internal/migrate"
 	"quantlab/internal/repository"
 	"quantlab/internal/saas/agentauth"
-	"quantlab/internal/saas/agentstatus"
 	"quantlab/internal/saas/auth"
 	"quantlab/internal/saas/config"
 	"quantlab/internal/saas/cron"
@@ -269,9 +265,7 @@ func main() {
 	// Phase 7 WS Hub. Agent tokens live in agent_tokens; hub uses the
 	// gorm-backed store so revocation + last_seen are persistent across
 	// restarts. OnAgentMessage routes Ack / OrderUpdate envelopes to
-	// TradeRepo so SaaS persists the order lifecycle. OnConnectionState
-	// fans out to Redis (when configured) so other processes can query
-	// `agent:{accountID}:status` per protocol §7.2.
+	// TradeRepo so SaaS persists the order lifecycle.
 	agentAuthSvc := agentauth.NewService(agentauth.NewGormTokenStore(db))
 	agentMsgs := newAgentMessageHandler(tradeRepo, instanceRepo, portfolioRepo, reconRepo, nil)
 	// Auto-freeze thresholds from config (default 200bps / N=2); tunable per
@@ -279,25 +273,8 @@ func main() {
 	agentMsgs.freezeToleranceBps = cfg.Reconcile.FreezeToleranceBps
 	agentMsgs.freezeDebounceReports = cfg.Reconcile.FreezeDebounceReports
 
-	var statusReporter agentstatus.Reporter = agentstatus.NopReporter{}
-	if cfg.Redis.Addr == "" {
-		log.Printf("saas: redis.addr empty — Agent online status will not be published")
-	} else {
-		rdb := redis.NewClient(&redis.Options{
-			Addr:     cfg.Redis.Addr,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
-		})
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			log.Fatalf("saas: redis ping %s: %v", cfg.Redis.Addr, err)
-		}
-		defer rdb.Close()
-		statusReporter = agentstatus.NewRedisReporter(rdb, agentstatus.DefaultTTL)
-	}
-
 	hub := wshub.New(agentAuthSvc, wshub.Config{
-		OnAgentMessage:    agentMsgs.Hook,
-		OnConnectionState: makeConnectionStateHook(statusReporter),
+		OnAgentMessage: agentMsgs.Hook,
 		// Reconcile positions immediately on reconnect — no need to wait 60s
 		// for the first delta_report to see the agent's latest holdings.
 		OnStateSync: agentMsgs.handleStateSync,

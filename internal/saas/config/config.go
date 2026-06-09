@@ -40,7 +40,6 @@ func (r AppRole) IsValid() bool {
 type Config struct {
 	AppRole   AppRole         `yaml:"app_role"`
 	Database  DatabaseConfig  `yaml:"database"`
-	Redis     RedisConfig     `yaml:"redis"`
 	JWT       JWTConfig       `yaml:"jwt"`
 	Server    ServerConfig    `yaml:"server"`
 	Friction  FrictionConfig  `yaml:"friction"`
@@ -118,12 +117,6 @@ func (d DatabaseConfig) DSN() string {
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		d.Host, d.Port, d.User, d.Password, d.Database, ssl,
 	)
-}
-
-type RedisConfig struct {
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
 }
 
 type JWTConfig struct {
