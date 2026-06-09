@@ -23,7 +23,7 @@
 ```
 1. wire 协议层  — 消息类型 / 信封 / 编码 / 字段语义
 2. 连接生命周期 — TLS / 握手 / 鉴权 / 状态同步 / 心跳 / 重连 / 优雅停机
-3. 资源约束     — 端口 / Redis 在线状态 / Agent token 持久化 / config.agent.yaml schema
+3. 资源约束     — 端口 / Agent token 持久化 / config.agent.yaml schema
 ```
 
 **不**约束：
@@ -582,7 +582,7 @@ SaaS:
 ```
 Hub: 30s ping × 3 次无 pong → STALE
   ├─ AuditLog{action=agent.heartbeat_stale, subject=agent:<id>}
-  ├─ Redis: agent:{accountID}:status = "stale"（§7.2）
+  ├─ agent_tokens.last_seen_at 更新（§7.2）
   ├─ 暂停下发 trade_command（Manager 端通过 Resolver 查 status 跳过 dispatch）
   └─ 主动 close conn
 Agent 端:
@@ -620,23 +620,13 @@ SaaS 收 N2 → TradeRecord.Status=acked, exchange_order_id=42
 
 退役 `docs/系统总体拓扑结构.md` §1.1 端口分配 `[INVENTED v1]` 标记。已在 `internal/saas/config/config.go:166-167` 默认 `:8081`。
 
-### 7.2 Agent 在线状态 `[v1 — frozen: Redis agent:{accountID}:status, TTL 60s]`
+### 7.2 Agent 在线状态 `[已移除 2026-06-09]`
 
-退役 `docs/系统总体拓扑结构.md` §4.2 `[INVENTED v1]` 行。
+~~frozen: Redis agent:{accountID}:status, TTL 60s~~
 
-Redis 键：
+**移除理由**：系统定位为单用户单账户，多副本横向查询需求不存在。原有实现仅有写路径（`Set`/`Delete`），无任何 HTTP handler 或业务逻辑读取该 Redis 键，属于无消费者的死数据。
 
-```
-key:   agent:{accountID}:status
-value: JSON { agent_id, connection_state, last_seen_ms, last_msg_id }
-TTL:   60s（每次收到 pong 或任何 Agent → SaaS 消息时刷新）
-```
-
-`connection_state` enum: `connecting` | `authed` | `ready` | `stale` | `disconnected`。
-
-**TTL 60s 与 §4.4 90s STALE 判定**：TTL 短一些，让"Agent 在线"在心跳停止 60s 后自动消失；90s 是 Hub 显式标记 STALE 的阈值。两个数值并存因为：Redis TTL 用于横向查询（"实例所属 Agent 在线吗？"），STALE 用于纵向决策（"这条连接要不要踢掉？"）。
-
-**回源策略（铁律 6）**：Redis miss → 回源 `agent_tokens.last_seen_at`（最多 30s 前的快照）。
+**现状**：`agent_tokens.last_seen_at`（Postgres）承担 agent 最后活跃时间记录，由 Hub pong 回调更新（wshub 的 `OnConnectionState` hook 保留，可接其他用途）。`connection_state` 生命周期事件（authed/ready/stale/disconnected）仍由 Hub 内部维护并可通过 hook 扩展，不依赖 Redis。
 
 ### 7.3 Hub 包结构 `[v1 — frozen: internal/saas/wshub/]`
 
@@ -719,7 +709,7 @@ CREATE INDEX idx_idem_last_updated ON idempotency(last_updated_ms);
 | 10 | `internal/saas/instance/manager.go:73-104` | `LogDispatcher` 作为 stub | 保留（用于 dev/test），新增 `wshub.Dispatcher`（Phase 7/8 实施层） |
 | 11 | `docs/系统总体拓扑结构.md` §1.1 | 端口 8081 是 [INVENTED v1] | 在 §548 待审清单中划掉 §1.1 端口 |
 | 12 | `docs/系统总体拓扑结构.md` §2 矩阵 | `WS Agent 心跳超时 [INVENTED v1] 30s/n/a/60s` | 注释指向本稿 §4.4（30s ping × 3 = 90s STALE 是真值） |
-| 13 | `docs/系统总体拓扑结构.md` §4.2 | `Agent 在线状态 [INVENTED v1] Redis agent:{accountID}:status TTL 60s` | 注释指向本稿 §7.2 |
+| 13 | `docs/系统总体拓扑结构.md` §4.2 | `Agent 在线状态 [INVENTED v1] Redis agent:{accountID}:status TTL 60s` | ~~注释指向本稿 §7.2~~ **Redis 已移除 2026-06-09**，agent_tokens.last_seen_at 替代 |
 | 14 | `docs/系统总体拓扑结构.md` §5 全章 | `[INVENTED v1 — needs architect review]` | 章首加 banner：本章已被 saas-ws-protocol-v1.md §3-§5 取代；本章保留作历史归档 |
 | 15 | `docs/系统总体拓扑结构.md` §6.3 | `[INVENTED v1]` 重连退避 | 注释指向本稿 §4.5（数值未变，仅增加 jitter + fatal 行为） |
 | 16 | `docs/系统总体拓扑结构.md` §548 待审清单 | 6 条 | 全部划掉，注脚指向本稿 |
