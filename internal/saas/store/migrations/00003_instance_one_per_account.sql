@@ -13,6 +13,9 @@
 
 -- +goose Up
 
+SET lock_timeout = '3s';
+SET statement_timeout = '60s';
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_inst_one_per_account
     ON strategy_instances (owner_user_id, account_id)
     WHERE status != 'retired';
