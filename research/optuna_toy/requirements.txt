@@ -1,0 +1,7 @@
+# Pinned deps for quantlab_to_optuna.py + optuna-dashboard (Analysis page :8088).
+# Reproduce env:  python -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Verified versions: Python 3.13, captured 2026-06-10 from the live venv.
+optuna==4.8.0
+optuna-dashboard==0.20.0
+psycopg[binary]==3.3.4
+PyYAML==6.0.3

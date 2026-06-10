@@ -1,7 +1,7 @@
 # 决策备忘录 — Analysis 页面（:8088 optuna-dashboard）生产级完整化
 
-Status: **OPEN — 待一起研究拍板**（本文仅列缺口 + 候选方案 + 倾向，未定稿）
-Date: 2026-06-09
+Status: **全部 5 缺口（#1–#5）已实施（2026-06-10）；P0=#1/#5，G3=#4，G1/G2=#2/#3**（详见文末 §决议）
+Date: 2026-06-09（决议追加 2026-06-10）
 Owner: 待定
 Related:
 - `web/src/App.tsx:19` — `Analysis ↗` 外链（`OPTUNA_URL`）
@@ -185,3 +185,41 @@ SPA 的 Champions/Challenger Review 页覆盖，optuna 这边主打"参数空间
 3. 可接受的数据延迟上限？（决定 #3 cron 周期；以及要不要消除 wipe 窗口）
 4. 分析页要不要藏到 saas 同源反代之后（安全/暴露面）？（决定 #4 走 A 还是 B）
 5. Python 依赖收敛范围：只 optuna_toy 还是整个 research/？（#5 的边界）
+
+---
+
+## 决议（2026-06-10）
+
+5 个待决问题已逐条定向（讨论结论，非正式拍板，实施时可再调）：
+
+| # | 问题 | 定向 | 备注 |
+|---|---|---|---|
+| Q1 | 保留 winners 视角？ | **不保留，走 A**（traces 覆盖 phase1.db） | winners 的 promote 一览价值已被原生 SPA 的 Champions/Challenger Review 覆盖；optuna 主打参数空间探索，traces 更对口 |
+| Q2 | 核心 vs 可选诊断？ | **可选诊断组件** | :8088 挂不影响交易/进化（只读离线快照）；runbook 里进"可选组件"一节，SLA 低于 saas/agent，但仍上 systemd（self-heal 便宜） |
+| Q3 | 数据延迟上限？ | **15–30 min cron + atomic `mv` 消 wipe 窗口** | GA epoch 长跑，分钟级延迟体感为零；事件驱动（B）跨语言耦合原型期不值 |
+| Q4 | 藏到同源反代之后？ | ~~mainnet 前升 B（反代+复用 auth）~~ → **改定为 A′：localhost bind + SSH 隧道 + URL 外置**（见下「Q4 复核」） | ⚠️**与正文 #4 倾向分歧**：正文列 P2/A（便利项），本决议判定 optuna-dashboard 零鉴权裸暴露 = 泄露完整策略参数空间 + champion 历史，对 mainnet 是**安全项**非便利项。**反代方案（B）经实施前复核被否**——见下 |
+
+#### Q4 复核（2026-06-10，实施 G3 时）
+
+原 Q4 定的「同源反代 + 复用 JWT」(B) 在动手时撞上两个被略过的技术事实，**改定为 A′（localhost bind + SSH 隧道）**：
+
+1. **optuna-dashboard 0.20.0 无 `--base-url`/前缀支持**（默认还绑 `127.0.0.1`）。资源/API/websocket 全是根路径绝对引用 → 塞进同源子路径 `/analysis/` 必须重写响应体，脆弱高成本。
+2. **现有 auth 是 Bearer-JWT**（localStorage，仅 XHR 带）。浏览器导航/iframe 到 `/analysis` 不带 header → 「复用 auth 门」技术上行不通，反代得新引入 Cookie session 或 Basic Auth（新鉴权面 + CSRF）。
+
+**A′ 的安全等价性**：localhost bind 让 optuna **网络上彻底不可达**（比反代+鉴权更强——无暴露面即无攻击面），代价仅是运维机需先开 SSH 隧道（单操作员、可选诊断组件，可接受）。零后端代码、零新鉴权面、零 optuna 子路径问题。
+| Q5 | 依赖收敛范围？ | **只 optuna_toy，走 A**（requirements.txt） | research/ 目前仅此一个子目录，不上 uv/pyproject/docker |
+
+### 已实施 — P0（2026-06-10）
+
+- **#5 ✅**：`research/optuna_toy/requirements.txt` 已建，pin `optuna==4.8.0` / `optuna-dashboard==0.20.0` / `psycopg[binary]==3.3.4` / `PyYAML==6.0.3`。**尚未提交**——当前 git 分支与本项无关，留待与 #2/#3 的 runbook 改动打成一个 analysis-page 提交。
+- **#1 ✅**：`python quantlab_to_optuna.py --mode traces` 重导，**15256 trials / 3 studies**，主 study `sigmoid_v1__BTCUSDT__1h__traces` = **15000 trials**（best=1.700，对上当前 champion）。dashboard 已重启指向新库（旧进程开着被 wipe 的旧 inode → kill → 新进程在 :8088），`http://192.168.67.129:8088/` 验证活。
+
+### 已实施 — P1（2026-06-10，G1+G2）
+
+- **#2 ✅ DONE（G1）** systemd unit `scripts/quantlab-optuna-dashboard.service`（开机自启 + 崩溃重拉 + 绑 localhost 注释强制）；runbook「分析页（可选诊断组件）」节加一次性安装步骤。
+- **#3 ✅ DONE（G2）** 导出脚本 `quantlab_to_optuna.py` 改 **temp + `os.replace` 原子替换**（重建期不再让在跑的 dashboard 读半成品）+ 打 `study.user_attrs.exported_at` 时效戳；`scripts/optuna_export_cron.sh` 包装「重导 → 重启 dashboard 拉新数据」，runbook 给 `*/20 * * * *` cron 示例。实跑验证：15256 trials 原子替换、无 `.tmp` 残留、3 study 均带 exported_at。
+- **#4 ✅ DONE 2026-06-10（G3，走 A′ 非 B）**：前端 `App.tsx` 的 `OPTUNA_URL` 外置为 `import.meta.env.VITE_OPTUNA_URL`（默认 `http://localhost:8088/`）+ `web/.env.example` + `web/src/vite-env.d.ts` 类型；mainnet 安全 = optuna **绑 localhost + SSH 隧道**（runbook「分析页（可选诊断组件）」节），非同源反代（Q4 复核否决 B）。`npm run build` 绿。
+
+> **5 缺口（#1–#5）现已全部完成。**
+
+> 后端/运维缺口的全量清单（含本页 P1/P2）汇总在 `docs/pre-live-trading-gaps.md`。

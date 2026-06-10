@@ -15,8 +15,12 @@ import InstancesPage from './pages/InstancesPage'
 import InstanceLivePage from './pages/InstanceLivePage'
 
 // "Analysis" is a deep link out to optuna-dashboard, per intent (a): the
-// native UI never rebuilds the analysis scene.
-const OPTUNA_URL = 'http://192.168.67.129:8088/'
+// native UI never rebuilds the analysis scene. The target is build-time
+// configurable (G3) — it used to be a hardcoded VM IP. On mainnet
+// optuna-dashboard binds localhost only (it has zero auth, so it is never
+// network-exposed); operators reach it through an SSH tunnel, hence the
+// localhost default. Override per deploy with VITE_OPTUNA_URL (web/.env.example).
+const OPTUNA_URL = import.meta.env.VITE_OPTUNA_URL ?? 'http://localhost:8088/'
 
 function NavItem({ to, label }: { to: string; label: string }) {
   return (
