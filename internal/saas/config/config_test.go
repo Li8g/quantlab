@@ -292,3 +292,20 @@ func TestDatabaseDSN(t *testing.T) {
 		t.Errorf("DSN mismatch:\n  got=%q\n  want=%q", got, want)
 	}
 }
+
+func TestOrdersConfig_EffectivePriceCapBps(t *testing.T) {
+	// Absent (nil) → DefaultPriceCapBps (protection on).
+	if got := (OrdersConfig{}).EffectivePriceCapBps(); got != DefaultPriceCapBps {
+		t.Errorf("nil cap = %v, want default %v", got, DefaultPriceCapBps)
+	}
+	// Explicit 0 → disabled (must be distinguishable from absent).
+	zero := 0.0
+	if got := (OrdersConfig{PriceCapBps: &zero}).EffectivePriceCapBps(); got != 0 {
+		t.Errorf("explicit 0 cap = %v, want 0 (disabled)", got)
+	}
+	// Explicit value honored.
+	v := 120.0
+	if got := (OrdersConfig{PriceCapBps: &v}).EffectivePriceCapBps(); got != 120 {
+		t.Errorf("explicit cap = %v, want 120", got)
+	}
+}

@@ -738,3 +738,29 @@ func TestSubmitLimit_MissingOrderID(t *testing.T) {
 		t.Errorf("err = %v, want 'missing orderId'", err)
 	}
 }
+
+func TestNormalizeTimeInForce(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", "GTC", false},    // absent ⇒ GTC (pre-B2 default)
+		{"ioc", "IOC", false}, // case-insensitive
+		{"GTC", "GTC", false},
+		{"FOK", "FOK", false},
+		{"bogus", "", true},
+	}
+	for _, c := range cases {
+		got, err := normalizeTimeInForce(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("normalizeTimeInForce(%q): want error", c.in)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("normalizeTimeInForce(%q) = (%q,%v), want (%q,nil)", c.in, got, err, c.want)
+		}
+	}
+}

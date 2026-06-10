@@ -19,6 +19,9 @@ type ExchangeOrder struct {
 	OrderType     string // "market" | "limit"
 	Quantity      decimal.Decimal
 	LimitPrice    decimal.Decimal // zero for market
+	// TimeInForce is honored for limit orders only. Empty ⇒ GTC (pre-B2
+	// default). The dispatcher stamps IOC on B2 marketable limits.
+	TimeInForce string
 }
 
 // ExchangeSubmitResult is the outcome of one Submit call.

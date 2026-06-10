@@ -45,6 +45,16 @@ type Config struct {
 	ExpectedEnvironment string
 	RejectEnvMismatch   bool
 
+	// PriceCapBps is the B2 price-protection cap (decision-b2-limit-order-
+	// price-protection.md). When > 0, the dispatcher rewrites each market
+	// OrderIntent as a marketable LIMIT IOC priced at latestClose×(1±cap/1e4),
+	// so a fill worse than the cap is rejected by the exchange instead of
+	// executing at a flash price. 0 (the zero value) disables protection —
+	// orders pass through as market, the pre-B2 behavior. Strategy-emitted
+	// limit orders are never rewritten. The 50bps deployment default lives in
+	// the saas config layer, not here, so wshub unit tests stay market-only.
+	PriceCapBps float64
+
 	// Logger; nil → slog.Default().
 	Logger *slog.Logger
 
@@ -130,6 +140,7 @@ type Hub struct {
 
 	expectedEnv       string
 	rejectEnvMismatch bool
+	priceCapBps       float64
 
 	onStateSync       func(ctx context.Context, accountID string, payload json.RawMessage) error
 	onStale           func(ctx context.Context, accountID string) error
@@ -156,6 +167,7 @@ func New(auth *agentauth.Service, cfg Config) *Hub {
 		writeTimeout:      cfg.WriteTimeout,
 		expectedEnv:       cfg.ExpectedEnvironment,
 		rejectEnvMismatch: cfg.RejectEnvMismatch,
+		priceCapBps:       cfg.PriceCapBps,
 		onStateSync:       cfg.OnStateSync,
 		onStale:           cfg.OnStale,
 		onAgentMessage:    cfg.OnAgentMessage,
@@ -259,7 +271,7 @@ func (h *Hub) Dispatch(ctx context.Context, instanceID, accountID, symbol string
 		return ErrAccountNotConnected
 	}
 	for _, oi := range orders {
-		tc, err := buildTradeCommand(oi, instanceID, symbol, latestClose, h.nowMs())
+		tc, err := buildTradeCommand(oi, instanceID, symbol, latestClose, h.nowMs(), h.priceCapBps)
 		if err != nil {
 			return fmt.Errorf("wshub.Dispatch: build %s: %w", oi.ClientOrderID, err)
 		}
@@ -332,10 +344,21 @@ func (h *Hub) SendKillSwitch(accountID string, ks wire.KillSwitch) error {
 // latestClose. ClientOrderID falls through if non-empty; otherwise the
 // caller is expected to assign one (Manager will).
 //
+// B2 price protection: when priceCapBps > 0 a *market* intent is rewritten
+// as a marketable LIMIT IOC priced at latestClose×(1±cap/1e4) — the same
+// latestClose used for the quantity conversion, so price and quantity are
+// anchored to one decision-time reference (decision-b2-limit-order-price-
+// protection.md §4.5). This is a dispatch-layer guardrail only: the strategy
+// and backtest never see the cap, and because the backtest fills at
+// close×(1±slippage) with cap ≥ slippage, the limit is numerically identical
+// to the market fill it replaces (D3-a, no fitness_version event). A
+// strategy-emitted limit order keeps its own price and GTC; only market
+// intents are wrapped. cap == 0 passes market intents through unchanged.
+//
 // 8 decimal places matches Binance BTC step size; deeper precision would
 // be silently truncated downstream. Symbol-specific step tables are
 // Phase 8 polish.
-func buildTradeCommand(oi strategy.OrderIntent, instanceID, symbol string, latestClose float64, nowMs int64) (wire.TradeCommand, error) {
+func buildTradeCommand(oi strategy.OrderIntent, instanceID, symbol string, latestClose float64, nowMs int64, priceCapBps float64) (wire.TradeCommand, error) {
 	if oi.ClientOrderID == "" {
 		return wire.TradeCommand{}, errors.New("OrderIntent.ClientOrderID empty")
 	}
@@ -344,19 +367,49 @@ func buildTradeCommand(oi strategy.OrderIntent, instanceID, symbol string, lates
 	}
 	qty := oi.QuantityUSD / latestClose
 	qtyStr := strconv.FormatFloat(qty, 'f', 8, 64)
+
+	orderType := oi.OrderType
+	limitPrice := oi.LimitPrice
+	timeInForce := ""
+	if oi.OrderType == strategy.OrderTypeMarket && priceCapBps > 0 {
+		capPrice, err := capLimitPrice(oi.Side, latestClose, priceCapBps)
+		if err != nil {
+			return wire.TradeCommand{}, fmt.Errorf("OrderIntent %s: %w", oi.ClientOrderID, err)
+		}
+		orderType = strategy.OrderTypeLimit
+		limitPrice = capPrice
+		timeInForce = wire.TimeInForceIOC
+	}
+
 	tc := wire.TradeCommand{
 		IntentKind:      wire.IntentKind(oi.Kind),
 		ClientOrderID:   oi.ClientOrderID,
 		InstanceID:      instanceID,
 		Symbol:          symbol,
 		Side:            string(oi.Side),
-		OrderType:       string(oi.OrderType),
+		OrderType:       string(orderType),
 		QuantityDecimal: qtyStr,
+		TimeInForce:     timeInForce,
 		ValidUntilMs:    oi.ValidUntilMs,
 		NowMsAtSaaS:     nowMs,
 	}
-	if oi.OrderType == strategy.OrderTypeLimit {
-		tc.LimitPriceDecimal = strconv.FormatFloat(oi.LimitPrice, 'f', 8, 64)
+	if orderType == strategy.OrderTypeLimit {
+		tc.LimitPriceDecimal = strconv.FormatFloat(limitPrice, 'f', 8, 64)
 	}
 	return tc, nil
+}
+
+// capLimitPrice returns the marketable-limit price for a market intent under
+// B2 price protection: buy → latestClose×(1+cap), sell → latestClose×(1−cap),
+// so any fill is no worse than cap bps from latestClose. An unrecognized side
+// is an error (the cap direction is undefined), not a silent passthrough.
+func capLimitPrice(side strategy.OrderSide, latestClose, capBps float64) (float64, error) {
+	switch side {
+	case strategy.OrderSideBuy:
+		return latestClose * (1 + capBps/1e4), nil
+	case strategy.OrderSideSell:
+		return latestClose * (1 - capBps/1e4), nil
+	default:
+		return 0, fmt.Errorf("invalid side %q for price cap", side)
+	}
 }

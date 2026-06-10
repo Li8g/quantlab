@@ -124,6 +124,7 @@ func (c *Client) handleTradeCommand(ctx context.Context, conn wsconn.Conn, env w
 		OrderType:     tc.OrderType,
 		Quantity:      qty,
 		LimitPrice:    limit,
+		TimeInForce:   tc.TimeInForce,
 	})
 	if err != nil {
 		_ = c.idempotency.UpdateStatus(tc.ClientOrderID, IdempotencyStatusRejected, "", c.nowMs())

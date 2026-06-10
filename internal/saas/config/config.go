@@ -47,6 +47,7 @@ type Config struct {
 	DataFeed  DataFeedConfig  `yaml:"data_feed"`
 	Reconcile ReconcileConfig `yaml:"reconcile"`
 	Live      LiveConfig      `yaml:"live"`
+	Orders    OrdersConfig    `yaml:"orders"`
 }
 
 // LiveConfig tunes the live-trading fleet boundary.
@@ -195,6 +196,36 @@ type DataFeedConfig struct {
 	MaxBarStaleness time.Duration `yaml:"max_bar_staleness"`
 }
 
+// DefaultPriceCapBps is the B2 price-protection cap applied when
+// orders.price_cap_bps is omitted. [INVENTED v1] — tune per deployment.
+const DefaultPriceCapBps = 50
+
+// OrdersConfig tunes the live-trading order execution layer (B2 price
+// protection, decision-b2-limit-order-price-protection.md). It is a
+// human-held execution guardrail in the same family as
+// reconcile.freeze_tolerance_bps — it never enters the GA or the backtest.
+type OrdersConfig struct {
+	// PriceCapBps caps how far a marketable-limit order's price may sit from
+	// the decision-time close. The SaaS dispatcher rewrites each market
+	// intent as a marketable LIMIT IOC at close×(1±cap/1e4); a fill worse than
+	// the cap is rejected by the exchange rather than executing at a flash
+	// price. A pointer so "absent" (→ DefaultPriceCapBps, protection on) is
+	// distinguishable from an explicit 0 (protection off, market passthrough).
+	// Invariant: cap ≥ the deployed champion's effective slippage_bps,
+	// enforced at deploy-champion (otherwise the backtest's normal fill price
+	// would itself be rejected live).
+	PriceCapBps *float64 `yaml:"price_cap_bps"`
+}
+
+// EffectivePriceCapBps resolves the configured cap: an explicit value (incl.
+// 0 = disabled) is honored; absent (nil) falls back to DefaultPriceCapBps.
+func (o OrdersConfig) EffectivePriceCapBps() float64 {
+	if o.PriceCapBps == nil {
+		return DefaultPriceCapBps
+	}
+	return *o.PriceCapBps
+}
+
 // Load reads, parses, and applies defaults to the YAML at path.
 // If path is empty, it falls back to $CONFIG_PATH then ./config.yaml.
 func Load(path string) (*Config, error) {
@@ -302,6 +333,9 @@ func (c *Config) Validate() error {
 	}
 	if c.DataFeed.MaxBarStaleness < 0 {
 		return errors.New("data_feed.max_bar_staleness must be >= 0 (0 → default)")
+	}
+	if c.Orders.PriceCapBps != nil && *c.Orders.PriceCapBps < 0 {
+		return errors.New("orders.price_cap_bps must be >= 0 (omit → default 50; 0 → disabled)")
 	}
 	switch c.Live.ExpectedEnvironment {
 	case "", wire.EnvironmentMainnet, wire.EnvironmentTestnet, wire.EnvironmentMock:

@@ -17,7 +17,7 @@ Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合
 | # | 缺口 | 层 | 严重度 | 阻塞 mainnet? | 状态 |
 |---|---|---|---|---|---|
 | **B1** | kill 无服务端持久 latch（选项 B） | 后端 | 🔴 安全 | ~~是~~ | ✅ MERGED main（PR #18, f4537a0） |
-| B2 | 无 limit order 价格保护路径 | 后端 | 🟡 中 | 否（market+③+reconcile 兜底） | OPEN，未规格化 |
+| B2 | limit order 价格保护（marketable-limit IOC cap） | 后端 | 🟡 中 | 否（market+③+reconcile 兜底） | ✅ 实现完成（本分支；决策见 decision-b2-limit-order-price-protection.md，待 PR） |
 | B3 | per-order 价格分歧守卫（⑥ 选项 A） | 后端/agent | 🟢 低 | 否 | 延后（等真盘数据调阈值） |
 | B4 | datafeeder 中段空洞无 heal | 后端 | 🟢 低 | 否（概率极低） | 已文档化局限 |
 | B5 | datafeeder cron 运营局限 | 运维 | 🟢 低 | 否 | 已文档化（runbook §G） |
@@ -26,7 +26,7 @@ Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合
 | **G3** | 分析页 :8088 零鉴权裸暴露 + URL 硬编码 | 前端+运维 | 🔴 安全(mainnet)/🟢(dev) | ~~是~~ | ✅ MERGED main（PR #20；A′：localhost+SSH 隧道+URL 外置） |
 | F1 | 前端 eslint 遗留债 | 前端 | 🟢 低 | 否 | 已知，不 gate build |
 
-> ~~真正在 mainnet 前必须处理的只有 **B1**（安全 latch）与 **G3**（暴露面）。~~ **B1 与 G3 均已于 2026-06-10 闭环并合并 main**（见下）。**mainnet 前已无安全级硬阻塞。** 剩余唯一中优先项是 **B2**（limit order 价格保护，需先规格化）；其余为低优先或已延后/已文档化。
+> ~~真正在 mainnet 前必须处理的只有 **B1**（安全 latch）与 **G3**（暴露面）。~~ **B1 与 G3 均已于 2026-06-10 闭环并合并 main**（见下）。**mainnet 前已无安全级硬阻塞。** ~~剩余唯一中优先项是 **B2**（limit order 价格保护，需先规格化）；~~ **B2 已规格化并实现（marketable-limit IOC，决策 D1–D6 全拍板，见 decision-b2-limit-order-price-protection.md，本分支待 PR）。** 其余为低优先或已延后/已文档化。
 
 ---
 
@@ -48,13 +48,15 @@ Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合
 
 ---
 
-### B2 — 无 limit order 价格保护路径（🟡 中）
+### B2 — limit order 价格保护（🟡 中，✅ 实现完成）
 
-**现状**: 下单全走 market order。Backlog ⑥ §4 的结论把"flash crash 价格保护"明确指向 **limit order（带策略选定的价格带）**，但 limit-order 路径**尚未实现**——策略只产 market 意图。
+**实现**: SaaS dispatcher 把每个 market 意图改写成 **marketable limit IOC**，限价 = `latestClose×(1±cap/1e4)`（买 +、卖 −）。flash 把价推过 cap → 交易所拒成交（IOC 撤余量，无挂单、无锁仓），而非按盘口任意差价成交。cap 是执行层护栏（`orders.price_cap_bps`，缺省 50bps，0=退回 market），不进 GA、不进回测。决策 D1–D6 全拍板见 `decision-b2-limit-order-price-protection.md`。
 
-**影响**: 高波动瞬间，market order 按当时盘口成交（③ 按真实价吸收，账本不错），但没有"价格超出带就不成交"的保护。原型期可接受；真盘想要价格保护时这是前置。
+**回测中性（关键）**: 因为回测按 `close×(1±slippage)` 成交且不变量 1 保证 `cap ≥ slippage_bps`（deploy-champion 时校验），marketable limit 在回测里与 market **数值恒等** → ScoreTotal 零变化、不 bump `fitness_version`、champion 免重测。保护纯活在实盘路径。
 
-**注意**: 这不是用 per-order 守卫(B3)硬阻 market 单——backlog-6 已论证那是把正确性风险换成可用性风险。正解是 limit order，需策略层 + wire + agent 三处协同，**未规格化**。
+**改动面**: wire 加 additive `time_in_force`（omitempty 缺省 GTC）；dispatcher `buildTradeCommand` 转换；agent `SubmitLimit` 支持 IOC；deploy-champion 校验 cap≥slippage + 审计行。**策略代码与回测 simulator 零改动。** EXPIRED→cancelled 终态映射 UDS 路径本已存在。
+
+**未做（明确）**: 被动 maker 挂价（D1-b，做市另一产品）、回测 intrabar 撮合（D3-b，会触发版本事件）、cap 进基因（"执行层进化"独立大项目）。per-order 价格分歧守卫(B3)仍延后（等真盘数据）。
 
 ---
 
@@ -129,6 +131,8 @@ systemd unit `scripts/quantlab-optuna-dashboard.service`（开机自启 + 崩溃
 2. ~~**G3（:8088 暴露面 + URL）**~~ — 走 A′：optuna 绑 localhost + SSH 隧道 + 前端 `VITE_OPTUNA_URL` 外置（非反代，理由见决策文档 Q4 复核）（PR #20, e2ba58e）。
 3. ~~**G1 + G2（systemd + cron）**~~ — systemd unit + 原子导出 + cron 自动刷新（PR #20，同批含 `requirements.txt`）。
 
+**✅ 2026-06-10 实现完成（本分支，待 PR）：**
+4. ~~**B2（limit order）**~~ — marketable-limit IOC，dispatcher 转换 + `orders.price_cap_bps` 护栏 + wire `time_in_force` + agent IOC + deploy 校验 cap≥slippage；回测中性不 bump（decision-b2-limit-order-price-protection.md）。**策略与回测零改动。**
+
 **剩余（按需）：**
-4. **B2（limit order）** — 中优先，但需先规格化（策略层 + wire + agent），单独立项。
 5. B3 / B4 / B5 / F1 — 低优先或已文档化，按需。

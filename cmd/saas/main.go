@@ -294,6 +294,10 @@ func main() {
 		// B1: re-assert the durable kill_switch latch on (re)connect so a
 		// killed agent stays HALTED across restarts (auth_ok.Frozen).
 		OnFrozenLookup: auditRepo.IsAccountFrozen,
+		// B2: cap dispatched market orders as marketable LIMIT IOC at
+		// close×(1±cap) so a flash fill worse than the cap is rejected.
+		// Absent config → 50bps (protection on); explicit 0 → market passthrough.
+		PriceCapBps: cfg.Orders.EffectivePriceCapBps(),
 	})
 	// Auto-freeze control plane (kill_switch Option 3): the delta_report
 	// drift detector reaches back through the hub to halt a drifting agent.
@@ -350,6 +354,10 @@ func main() {
 			}
 			return instance.DefaultMaxBarStaleness.Milliseconds()
 		}(),
+		// B2: the same cap the Hub dispatches with; DeployChampion enforces
+		// cap ≥ champion slippage_bps and records the deploy provenance row.
+		PriceCapBps:  cfg.Orders.EffectivePriceCapBps(),
+		Audit:        auditRepo,
 		AuthRequired: middleware.AuthRequired(authSvc),
 		RequireOperator: middleware.RequireRole(
 			store.UserRoleOperator, store.UserRoleAdmin,

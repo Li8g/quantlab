@@ -205,17 +205,34 @@ func mapSide(s string) (string, error) {
 	return "", fmt.Errorf("binance: invalid side %q", s)
 }
 
-// SubmitLimit places a LIMIT GTC order on Binance Spot. The shape is
+// normalizeTimeInForce validates a wire time_in_force and returns the
+// Binance value. Empty ⇒ GTC (pre-B2 default, when SaaS omits the field).
+// IOC is the B2 marketable-limit mode. FOK is accepted defensively since
+// Binance supports it, though SaaS does not currently emit it.
+func normalizeTimeInForce(tif string) (string, error) {
+	switch strings.ToUpper(tif) {
+	case "":
+		return "GTC", nil
+	case "GTC", "IOC", "FOK":
+		return strings.ToUpper(tif), nil
+	default:
+		return "", fmt.Errorf("unsupported time_in_force %q", tif)
+	}
+}
+
+// SubmitLimit places a LIMIT order on Binance Spot (GTC by default, IOC for
+// B2 marketable limits — see normalizeTimeInForce). The shape is
 // identical to SubmitMarket except:
 //
 //  1. No BookTicker round-trip — protocol §5.10 fixes MarketRef =
 //     LimitPrice for limit orders, so the snapshot isn't needed.
-//  2. price + timeInForce=GTC are added to the params.
-//  3. Inline fills are usually empty (status=NEW) — the order rests
+//  2. price + timeInForce (GTC/IOC) are added to the params.
+//  3. Inline fills are usually empty (status=NEW) for GTC — the order rests
 //     on the book and asynchronous fills arrive via the User Data
 //     Stream. A limit order that immediately crosses the book returns
 //     status=FILLED with inline fills, decoded identically to
-//     SubmitMarket.
+//     SubmitMarket. An IOC marketable limit either crosses immediately
+//     (inline fills) or is dropped (status=EXPIRED, no resting order).
 func (c *Client) SubmitLimit(ctx context.Context, order agent.ExchangeOrder) (*agent.ExchangeSubmitResult, error) {
 	if order.OrderType != "limit" {
 		return nil, fmt.Errorf("binance.SubmitLimit: order_type=%q, want limit", order.OrderType)
@@ -251,14 +268,21 @@ func (c *Client) SubmitLimit(ctx context.Context, order agent.ExchangeOrder) (*a
 		return nil, err
 	}
 
+	tif, err := normalizeTimeInForce(order.TimeInForce)
+	if err != nil {
+		return nil, fmt.Errorf("binance.SubmitLimit: %w", err)
+	}
+
 	params := url.Values{}
 	params.Set("symbol", order.Symbol)
 	params.Set("side", binSide)
 	params.Set("type", "LIMIT")
-	// GTC = Good Till Cancel. IOC / FOK are out of scope for v1; the
-	// protocol doesn't surface either to SaaS yet, so committing to GTC
-	// keeps the wire contract one-dimensional.
-	params.Set("timeInForce", "GTC")
+	// timeInForce: GTC unless the dispatcher requested IOC (B2 marketable
+	// limit — an unfilled order is dropped by the exchange, no resting order
+	// or locked balance). An IOC remainder cancellation surfaces as Binance
+	// EXPIRED, which the User Data Stream already maps to wire `cancelled`
+	// (uds_stream.go decodeExecutionReport).
+	params.Set("timeInForce", tif)
 	params.Set("quantity", order.Quantity.String())
 	params.Set("price", order.LimitPrice.String())
 	params.Set("newClientOrderId", order.ClientOrderID)
