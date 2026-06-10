@@ -1,6 +1,6 @@
 # 决策备忘录 — Analysis 页面（:8088 optuna-dashboard）生产级完整化
 
-Status: **全部 5 缺口（#1–#5）已实施（2026-06-10）；P0=#1/#5，G3=#4，G1/G2=#2/#3**（详见文末 §决议）
+Status: **已归档（2026-06-11）** — 全部 5 缺口（#1–#5）已实施并合并 main（PR #20, e2ba58e；P0=#1/#5，G3=#4，G1/G2=#2/#3，详见文末 §决议）。Q1–Q5 五问已逐条定向落地（Q4 实施时复核改定 A′）。决策文档，非规格；保留供审计。运维执行步骤见 `docs/mainnet-runbook.md`「分析页（可选诊断组件）」节，缺口清单状态见 `docs/pre-live-trading-gaps.md`（G1/G2/G3）。
 Date: 2026-06-09（决议追加 2026-06-10）
 Owner: 待定
 Related:
@@ -211,7 +211,7 @@ SPA 的 Champions/Challenger Review 页覆盖，optuna 这边主打"参数空间
 
 ### 已实施 — P0（2026-06-10）
 
-- **#5 ✅**：`research/optuna_toy/requirements.txt` 已建，pin `optuna==4.8.0` / `optuna-dashboard==0.20.0` / `psycopg[binary]==3.3.4` / `PyYAML==6.0.3`。**尚未提交**——当前 git 分支与本项无关，留待与 #2/#3 的 runbook 改动打成一个 analysis-page 提交。
+- **#5 ✅**：`research/optuna_toy/requirements.txt` 已建，pin `optuna==4.8.0` / `optuna-dashboard==0.20.0` / `psycopg[binary]==3.3.4` / `PyYAML==6.0.3`。**已随 PR #20（e2ba58e）合并 main**（与 #2/#3 的 runbook 改动 + #4 打成一个 analysis-page 提交）。
 - **#1 ✅**：`python quantlab_to_optuna.py --mode traces` 重导，**15256 trials / 3 studies**，主 study `sigmoid_v1__BTCUSDT__1h__traces` = **15000 trials**（best=1.700，对上当前 champion）。dashboard 已重启指向新库（旧进程开着被 wipe 的旧 inode → kill → 新进程在 :8088），`http://192.168.67.129:8088/` 验证活。
 
 ### 已实施 — P1（2026-06-10，G1+G2）
