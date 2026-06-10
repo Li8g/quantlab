@@ -273,6 +273,11 @@ func main() {
 	agentMsgs.freezeToleranceBps = cfg.Reconcile.FreezeToleranceBps
 	agentMsgs.freezeDebounceReports = cfg.Reconcile.FreezeDebounceReports
 
+	// kill_switch action trail (Option 3 step 5) — first AuditLog writer.
+	// Constructed before the hub because the handshake's B1 frozen-latch
+	// lookup (OnFrozenLookup) reads it back.
+	auditRepo := repository.NewAuditRepo(db)
+
 	hub := wshub.New(agentAuthSvc, wshub.Config{
 		OnAgentMessage: agentMsgs.Hook,
 		// Reconcile positions immediately on reconnect — no need to wait 60s
@@ -286,13 +291,14 @@ func main() {
 		// backlog ⑥ observability: record the rejection as an AgentError so
 		// it surfaces in the /live recent_errors panel.
 		OnHandshakeReject: makeHandshakeRejectHook(instanceRepo, reconRepo),
+		// B1: re-assert the durable kill_switch latch on (re)connect so a
+		// killed agent stays HALTED across restarts (auth_ok.Frozen).
+		OnFrozenLookup: auditRepo.IsAccountFrozen,
 	})
 	// Auto-freeze control plane (kill_switch Option 3): the delta_report
 	// drift detector reaches back through the hub to halt a drifting agent.
 	// Injected post-construction to break the hub↔handler cycle.
 	agentMsgs.SetKillSwitchSender(hub)
-	// kill_switch action trail (Option 3 step 5) — first AuditLog writer.
-	auditRepo := repository.NewAuditRepo(db)
 	agentMsgs.auditor = auditRepo
 
 	tickManager := instance.New(

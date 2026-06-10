@@ -313,9 +313,12 @@ type AgentToken struct {
 ```json
 {
   "server_now_ms": 1700000000000,        // Agent 用此校准时钟漂移（仅日志，不参与决策）
-  "agent_id":      "01H..."              // ULID, SaaS 侧绑定的 agent_id（写入审计）
+  "agent_id":      "01H...",             // ULID, SaaS 侧绑定的 agent_id（写入审计）
+  "frozen":        false                 // 可选[additive] — B1 持久 kill 闩锁的 (re)connect 重下发；见下
 }
 ```
+
+`frozen`（增量字段，B1 服务端持久 latch）：握手时 Hub 查询该 account 的持久冻结状态（最近一条 `instance.kill` vs `instance.resume` 审计事件，见 `AuditRepo.IsAccountFrozen`）并回填此字段。Agent 收到 `auth_ok` 即 `frozen.Store(auth_ok.frozen)`——所以一个被 kill 但当时**离线**的 Agent，重启/重连后凭握手即重新进入 HALTED，无需等一条实时 `kill_switch` push；对称地，若离线期间被 resume，则握手把它清回未冻结。这堵上了「kill 仅是传输层 WS 推送、闩锁只活在 Agent 进程内存→重连即解冻」的失控窗口。缺省（pre-B1 SaaS 不回填）→ `false`，Agent 维持原未冻结行为，向后兼容。配套：kill/resume 路径先把 latch（审计行）持久化为 load-bearing 写、再 best-effort 推送，故 Agent 离线时点 kill 不再 409 而是「已 latch，重连即冻」。
 
 ### 5.5 `auth_fail`（SaaS → Agent）
 
@@ -513,7 +516,9 @@ SaaS 发完此消息立即 close（500ms 内）。Agent 端收到 `invalid_token
 2. 返回 `ack{status=accepted, exchange_order_id=""}`。
 3. 转入 `frozen` 状态：拒收任何后续 `trade_command`（回 `ack{status=rejected, reason=killed}`），直到 SaaS 端 push 一条 `kill_switch{reason=...,scope=all,symbol=resume}` 解冻。
 
-**Resume（§5.13 v2，已实现）**：SaaS push `kill_switch{symbol=resume}`（复用本消息，非新类型），Agent 清除 `frozen` 硬闩、ack 接收、恢复接单——无需重启进程（v1 的解冻路径是重启 Agent，仍可用）。服务端 `POST /api/v1/instances/:id/resume`（admin-only）发出 resume，并同步：① 清 `driftStreak` 重新武装 auto-freeze（否则漂移仍在时安全网不会再触发），② 记 `instance.resume` 审计事件——`/live` 红 banner 据「最近一条 kill/resume 谁更新」判定，resume 后自动消失。
+**Resume（§5.13 v2，已实现）**：SaaS push `kill_switch{symbol=resume}`（复用本消息，非新类型），Agent 清除 `frozen` 硬闩、ack 接收、恢复接单——无需重启进程。服务端 `POST /api/v1/instances/:id/resume`（admin-only）发出 resume，并同步：① 清 `driftStreak` 重新武装 auto-freeze（否则漂移仍在时安全网不会再触发），② 记 `instance.resume` 审计事件——`/live` 红 banner 据「最近一条 kill/resume 谁更新」判定，resume 后自动消失。
+
+**持久 latch（B1，已实现）**：kill/resume 不再只是传输层 WS 推送。kill 路径**先**把冻结 latch 持久化（即 `instance.kill` 审计行，作 load-bearing 写——失败即 HTTP 500，不算成功），**再** best-effort 推送实时 `kill_switch`；Agent 离线时不再 409，而是「已 latch」并在重连握手时凭 `auth_ok.frozen`（§5.4）重新进入 HALTED。resume 对称地先持久化清位再推送。**重启 Agent 进程不再能解冻**——服务端持久 latch 会在每次 (re)connect 重下发。唯一解冻路径是 admin resume。
 
 ### 5.14 `graceful_shutdown`（SaaS → Agent）
 

@@ -57,7 +57,14 @@ func (c *Client) doHandshake(ctx context.Context, conn wsconn.Conn) error {
 		}
 		return err
 	case wire.TypeAuthOK:
-		// ok
+		// B1: the server is authoritative for the account's frozen latch on
+		// every (re)connect. Restore it from auth_ok so an Agent that
+		// restarted (in-memory latch lost) or reconnected after being killed
+		// while offline re-enters HALTED — and, symmetrically, clears the
+		// latch if the account was resumed during the blip. A pre-B1 server
+		// omits the field → Frozen=false → unfrozen, the prior behavior.
+		ok, _ := wire.DecodePayload[wire.AuthOK](env)
+		c.frozen.Store(ok.Frozen)
 	default:
 		return fmt.Errorf("expected auth_ok or auth_fail, got %q", env.Type)
 	}

@@ -72,6 +72,15 @@ type Config struct {
 	// a structured log line in addition to firing this hook.
 	OnAgentMessage func(ctx context.Context, accountID string, env wire.Envelope) error
 
+	// OnFrozenLookup reports whether accountID is currently kill-latched
+	// (B1 server-side persistent latch). Consulted at handshake just before
+	// auth_ok so the response can carry the durable frozen state, re-arming
+	// an Agent that restarted or reconnected after an offline kill. Nil →
+	// the latch is never re-asserted (pre-B1 behavior). A lookup error is
+	// fail-closed: the connection treats the account as frozen, so a transient
+	// store error can never silently un-kill a halted agent.
+	OnFrozenLookup func(ctx context.Context, accountID string) (bool, error)
+
 	// OnHandshakeReject fires when a connection is rejected during handshake
 	// (e.g. env-mismatch auth_fail). accountID and code are always set; msg
 	// is human-readable. Best-effort — errors are logged, not propagated.
@@ -127,6 +136,7 @@ type Hub struct {
 	onAgentMessage    func(ctx context.Context, accountID string, env wire.Envelope) error
 	onConnectionState func(ctx context.Context, ev ConnectionStateEvent) error
 	onHandshakeReject func(ctx context.Context, accountID, code, msg string) error
+	onFrozenLookup    func(ctx context.Context, accountID string) (bool, error)
 }
 
 // New constructs a Hub with cfg overrides applied to the package defaults.
@@ -151,6 +161,7 @@ func New(auth *agentauth.Service, cfg Config) *Hub {
 		onAgentMessage:    cfg.OnAgentMessage,
 		onConnectionState: cfg.OnConnectionState,
 		onHandshakeReject: cfg.OnHandshakeReject,
+		onFrozenLookup:    cfg.OnFrozenLookup,
 	}
 	if h.log == nil {
 		h.log = slog.Default()

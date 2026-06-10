@@ -46,6 +46,15 @@ type Auth struct {
 type AuthOK struct {
 	ServerNowMs int64  `json:"server_now_ms"`
 	AgentID     string `json:"agent_id"`
+	// Frozen restores the account's durable kill_switch latch on
+	// (re)connect (B1 server-side persistent latch). The SaaS Hub consults
+	// the persisted freeze state (latest instance.kill vs instance.resume)
+	// and sets this so an Agent that restarted/reconnected re-enters HALTED
+	// without waiting for a live kill_switch push — closing the window where
+	// a killed-but-offline Agent would resume trading on reconnect.
+	// Additive/optional: false (omitted) → not frozen, so a pre-B1 SaaS that
+	// never sets it leaves the Agent unfrozen as before.
+	Frozen bool `json:"frozen,omitempty"`
 }
 
 // AuthFailCode enumerates the reasons SaaS rejects an Auth frame. The Agent

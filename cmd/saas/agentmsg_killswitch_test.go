@@ -2,12 +2,30 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
 	"quantlab/internal/saas/store"
 	"quantlab/internal/wire"
 )
+
+// flakyAuditor fails its first `fails` Insert calls, then succeeds — used to
+// prove the B1 latch write is load-bearing (a failed latch must not latch a
+// freeze that didn't persist).
+type flakyAuditor struct {
+	rows  []*store.AuditLog
+	fails int
+}
+
+func (f *flakyAuditor) Insert(_ context.Context, e *store.AuditLog) error {
+	if f.fails > 0 {
+		f.fails--
+		return errors.New("audit insert failed")
+	}
+	f.rows = append(f.rows, e)
+	return nil
+}
 
 // managedSet builds a managed-asset set for the scoped auto-freeze tests.
 func managedSet(assets ...string) map[string]struct{} {
@@ -195,6 +213,77 @@ func TestMaybeAutoFreeze_HonorsConfiguredThresholds(t *testing.T) {
 	h.maybeAutoFreeze(context.Background(), "01HKACCT00000000000000000A", breach, managed)
 	if len(fk.calls) != 1 {
 		t.Fatalf("configured line=100/debounce=1 did not fire on first 150bps breach; calls=%d", len(fk.calls))
+	}
+}
+
+// TestMaybeAutoFreeze_LatchesWhenPushFails pins B1: when the live kill_switch
+// push fails (agent offline, or a connection tearing down), the durable freeze
+// latch (the audit row IsAccountFrozen reads back) MUST still be persisted, and
+// the sentinel MUST still latch so the freeze isn't re-fired — the agent will
+// re-enter HALTED via auth_ok.Frozen on reconnect.
+func TestMaybeAutoFreeze_LatchesWhenPushFails(t *testing.T) {
+	fk := &fakeKiller{err: errors.New("agent offline")}
+	fa := &fakeAuditor{}
+	h := &agentMessageHandler{
+		driftStreak: map[string]int{},
+		killer:      fk,
+		auditor:     fa,
+		logger:      slog.Default(),
+	}
+	const acct = "01HKACCT00000000000000000A"
+	managed := managedSet("BTC")
+	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}}
+
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 1
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 2 → fire: latch ok, push fails
+
+	if len(fa.rows) != 1 {
+		t.Fatalf("freeze latch not persisted when push failed; audit rows=%d, want 1", len(fa.rows))
+	}
+	if fa.rows[0].Action != store.AuditActionInstanceKill {
+		t.Errorf("latch audit action = %q, want instance.kill", fa.rows[0].Action)
+	}
+
+	// Sentinel must suppress repeats despite the push failure — the durable
+	// latch + reconnect freeze is the guarantee, not a retried push.
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 3
+	if len(fa.rows) != 1 {
+		t.Errorf("re-latched after a failed push (no sentinel suppression); audit rows=%d, want 1", len(fa.rows))
+	}
+}
+
+// TestMaybeAutoFreeze_LatchFailureStaysArmed pins the inverse: if the latch
+// WRITE itself fails, no freeze is pushed and the streak stays armed (no
+// sentinel), so a later report with a recovered store still freezes.
+func TestMaybeAutoFreeze_LatchFailureStaysArmed(t *testing.T) {
+	fk := &fakeKiller{}
+	fa := &flakyAuditor{fails: 1} // first latch write fails, then recovers
+	h := &agentMessageHandler{
+		driftStreak: map[string]int{},
+		killer:      fk,
+		auditor:     fa,
+		logger:      slog.Default(),
+	}
+	const acct = "01HKACCT00000000000000000A"
+	managed := managedSet("BTC")
+	breach := []driftResult{{Asset: "BTC", DriftBps: 300, Flagged: true}}
+
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 1
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 2 → latch FAILS
+	if len(fk.calls) != 0 {
+		t.Fatalf("pushed a freeze whose latch failed to persist; calls=%d, want 0", len(fk.calls))
+	}
+	if len(fa.rows) != 0 {
+		t.Fatalf("audit rows=%d, want 0 (the latch write failed)", len(fa.rows))
+	}
+
+	// Streak stayed armed (not sentinel) → next breach with a working store fires.
+	h.maybeAutoFreeze(context.Background(), acct, breach, managed) // 3 → latch ok, fire
+	if len(fk.calls) != 1 {
+		t.Errorf("did not retry freeze after the latch recovered; calls=%d, want 1", len(fk.calls))
+	}
+	if len(fa.rows) != 1 {
+		t.Errorf("audit rows=%d, want 1 (the successful retry)", len(fa.rows))
 	}
 }
 
