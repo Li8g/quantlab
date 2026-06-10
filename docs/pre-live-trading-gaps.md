@@ -1,8 +1,8 @@
 # 距实盘测试的已知缺口清单（前端 + 后端）
 
 Status: **工作清单（live inventory）** — 供逐项排期，不是规格文档
-Date: 2026-06-10
-用途: 安全机制代码已全部到位（kill_switch Option 3、对账自动冻结、env 一致性断言、③账本吸收成交均已 shipped）。本清单收拢「从当前 dev/原型可跑」到「mainnet 实盘安全」之间**已知**的前后端缺口，明天逐项过。
+Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合并 main）
+用途: 安全机制代码已全部到位（kill_switch Option 3、对账自动冻结、env 一致性断言、③账本吸收成交均已 shipped）。本清单收拢「从当前 dev/原型可跑」到「mainnet 实盘安全」之间**已知**的前后端缺口。**2026-06-10 已闭环并合并 main：B1（PR #18）、G3+G1+G2（PR #20）、手动 Kill 按钮（PR #17）——mainnet 前已无安全级硬阻塞。** 剩余均为中/低优先或已延后/文档化。
 
 相关源文档（细节不在本页复制，按需跳转）:
 - `docs/mainnet-runbook.md` — 部署步骤 + 运维 + 已知运营局限（§G datafeeder）
@@ -16,17 +16,17 @@ Date: 2026-06-10
 
 | # | 缺口 | 层 | 严重度 | 阻塞 mainnet? | 状态 |
 |---|---|---|---|---|---|
-| **B1** | kill 无服务端持久 latch（选项 B） | 后端 | 🔴 安全 | ~~是~~ | ✅ DONE 2026-06-10（feat/manual-kill-button） |
+| **B1** | kill 无服务端持久 latch（选项 B） | 后端 | 🔴 安全 | ~~是~~ | ✅ MERGED main（PR #18, f4537a0） |
 | B2 | 无 limit order 价格保护路径 | 后端 | 🟡 中 | 否（market+③+reconcile 兜底） | OPEN，未规格化 |
 | B3 | per-order 价格分歧守卫（⑥ 选项 A） | 后端/agent | 🟢 低 | 否 | 延后（等真盘数据调阈值） |
 | B4 | datafeeder 中段空洞无 heal | 后端 | 🟢 低 | 否（概率极低） | 已文档化局限 |
 | B5 | datafeeder cron 运营局限 | 运维 | 🟢 低 | 否 | 已文档化（runbook §G） |
-| **G1** | 分析页 dashboard 不持久（手工 nohup） | 运维 | 🟡 中 | 部分（重启即 502） | ✅ DONE 2026-06-10（systemd unit） |
-| **G2** | 分析页快照不自动刷新 | 运维 | 🟢 低 | 否 | ✅ DONE 2026-06-10（原子导出+cron） |
-| **G3** | 分析页 :8088 零鉴权裸暴露 + URL 硬编码 | 前端+运维 | 🔴 安全(mainnet)/🟢(dev) | ~~是~~ | ✅ DONE 2026-06-10（A′：localhost+SSH 隧道+URL 外置） |
+| **G1** | 分析页 dashboard 不持久（手工 nohup） | 运维 | 🟡 中 | 部分（重启即 502） | ✅ MERGED main（PR #20, e2ba58e；systemd unit） |
+| **G2** | 分析页快照不自动刷新 | 运维 | 🟢 低 | 否 | ✅ MERGED main（PR #20；原子导出+cron） |
+| **G3** | 分析页 :8088 零鉴权裸暴露 + URL 硬编码 | 前端+运维 | 🔴 安全(mainnet)/🟢(dev) | ~~是~~ | ✅ MERGED main（PR #20；A′：localhost+SSH 隧道+URL 外置） |
 | F1 | 前端 eslint 遗留债 | 前端 | 🟢 低 | 否 | 已知，不 gate build |
 
-> ~~真正在 mainnet 前必须处理的只有 **B1**（安全 latch）与 **G3**（暴露面）。~~ **B1 与 G3 均已于 2026-06-10 完成**（见下）。mainnet 前已无安全级硬阻塞；其余为中/低优先或已延后/已文档化。
+> ~~真正在 mainnet 前必须处理的只有 **B1**（安全 latch）与 **G3**（暴露面）。~~ **B1 与 G3 均已于 2026-06-10 闭环并合并 main**（见下）。**mainnet 前已无安全级硬阻塞。** 剩余唯一中优先项是 **B2**（limit order 价格保护，需先规格化）；其余为低优先或已延后/已文档化。
 
 ---
 
@@ -122,10 +122,13 @@ systemd unit `scripts/quantlab-optuna-dashboard.service`（开机自启 + 崩溃
 
 ---
 
-## 5. 明天的建议顺序
+## 5. 进度与剩余顺序
 
-1. ~~**B1（kill 服务端 latch）**~~ — ✅ DONE 2026-06-10（复用 audit_logs + `auth_ok.frozen` 握手下发）。
-2. **G3 后端半边（反代 + auth）** — 现唯一安全级 mainnet 阻塞项；前端半边（VITE_OPTUNA_URL）顺带。
-3. **G1 + G2（systemd + cron）** — 同一节 runbook，工程量小，与未提交的 `requirements.txt` 打成一个 analysis-page 提交。
+**✅ 2026-06-10 已闭环并合并 main：**
+1. ~~**B1（kill 服务端 latch）**~~ — 复用 audit_logs + `auth_ok.frozen` 握手下发 + fail-closed（PR #18, f4537a0）。
+2. ~~**G3（:8088 暴露面 + URL）**~~ — 走 A′：optuna 绑 localhost + SSH 隧道 + 前端 `VITE_OPTUNA_URL` 外置（非反代，理由见决策文档 Q4 复核）（PR #20, e2ba58e）。
+3. ~~**G1 + G2（systemd + cron）**~~ — systemd unit + 原子导出 + cron 自动刷新（PR #20，同批含 `requirements.txt`）。
+
+**剩余（按需）：**
 4. **B2（limit order）** — 中优先，但需先规格化（策略层 + wire + agent），单独立项。
 5. B3 / B4 / B5 / F1 — 低优先或已文档化，按需。

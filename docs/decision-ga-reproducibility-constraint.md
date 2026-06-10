@@ -164,7 +164,13 @@ evaluations (`evaluation_traces`), 12,513 distinct scores, all non-fatal.
 **Caveats:**
 - Dataset is thin (36 challengers). As epochs accumulate, the minimum
   `gene_records` gap will shrink. Recalibrate when challenger count >> 100 or
-  if the champion-vs-#2 gap narrows below 3×ε.
+  if the champion-vs-#2 gap narrows below 2×ε. *(2026-06-10 correction: the
+  binding invariant is `ε < gap`, which held at calibration with a 2.88×
+  margin — ε=1e-4, gap=2.88e-4. An earlier draft set this early-warning band at
+  3×ε, but 3×ε = 3.0e-4 already exceeded the measured 2.88e-4 gap, so the alarm
+  would have fired at birth. ε is a soft tolerance, not a rigid interval, so
+  the warning band is 2×ε [= 2.0e-4 here] — tripped only if the margin actually
+  narrows toward ε, not at the moment of calibration.)*
 - ε is a relative threshold on `ScoreTotal.Value`. The comparison logic remains
   `CompareFitness` with no epsilon — ε only governs the version-event decision,
   not the sort.
