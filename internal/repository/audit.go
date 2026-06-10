@@ -44,3 +44,20 @@ func (r *AuditRepo) LatestKillOrResume(ctx context.Context, accountID string) (*
 	}
 	return &row, nil
 }
+
+// IsAccountFrozen reports whether an account is currently kill-latched
+// (B1 server-side persistent latch): true iff the most recent kill/resume
+// audit event is a kill. This is the durable freeze state the WS handshake
+// re-asserts to a (re)connecting Agent via auth_ok.Frozen, so a killed
+// agent stays HALTED across restarts. (nil, never-killed) → not frozen.
+//
+// The kill/resume audit row IS the latch event — the same record that
+// powers the /live banner — so reusing it keeps a single source of truth
+// for "is this account frozen?" with no separate enforcement table.
+func (r *AuditRepo) IsAccountFrozen(ctx context.Context, accountID string) (bool, error) {
+	row, err := r.LatestKillOrResume(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	return row != nil && row.Action == store.AuditActionInstanceKill, nil
+}

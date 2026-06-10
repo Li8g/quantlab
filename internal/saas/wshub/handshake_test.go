@@ -122,6 +122,50 @@ func waitReady(t *testing.T, hub *Hub, accountID string) {
 	t.Fatalf("connection not Ready within 1s")
 }
 
+// TestHandshake_AuthOKCarriesFrozenLatch pins B1: the handshake consults the
+// durable freeze latch (OnFrozenLookup) and reports it in auth_ok.Frozen, so a
+// reconnecting agent re-enters HALTED without a live kill_switch push. A lookup
+// error fails closed (frozen) — a transient store error must never un-kill an
+// agent; a nil hook leaves the agent unfrozen (pre-B1 behavior).
+func TestHandshake_AuthOKCarriesFrozenLatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		lookup     func(context.Context, string) (bool, error)
+		wantFrozen bool
+	}{
+		{"frozen latch re-asserted", func(context.Context, string) (bool, error) { return true, nil }, true},
+		{"not frozen", func(context.Context, string) (bool, error) { return false, nil }, false},
+		{"lookup error fails closed", func(context.Context, string) (bool, error) { return false, errors.New("store down") }, true},
+		{"nil hook → unfrozen", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, token, _, accountID := authFixture(t)
+			hub := New(svc, Config{
+				AuthTimeout:      2 * time.Second,
+				StateSyncTimeout: 2 * time.Second,
+				WriteTimeout:     2 * time.Second,
+				Clock:            newFakeClock(time.Unix(1700000000, 0)),
+				MsgIDFn:          stableMsgID(),
+				NowFn:            func() time.Time { return time.Unix(1700000000, 0) },
+				OnFrozenLookup:   tc.lookup,
+			})
+			pc := newPipeConn()
+			cancel, wg := runConnInBg(hub, pc)
+			defer func() { cancel(); _ = pc.Close(); wg.Wait() }()
+
+			authOK, _ := driveHandshake(t, pc, accountID, token)
+			ok, err := wire.DecodePayload[wire.AuthOK](authOK)
+			if err != nil {
+				t.Fatalf("decode auth_ok: %v", err)
+			}
+			if ok.Frozen != tc.wantFrozen {
+				t.Errorf("auth_ok.Frozen = %v, want %v", ok.Frozen, tc.wantFrozen)
+			}
+		})
+	}
+}
+
 func TestHandshake_RejectsBadSchema(t *testing.T) {
 	hub, _, _, accountID := newTestHub(t)
 	pc := newPipeConn()

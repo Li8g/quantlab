@@ -79,8 +79,10 @@ type Client struct {
 
 	// frozen latches true when a kill_switch arrives. Client-scoped (NOT
 	// connection-scoped) so it SURVIVES reconnect — a kill is a hard latch
-	// cleared either by a resume kill_switch (Symbol=="resume", §5.13 v2)
-	// or by restarting the process (the v1 path). While frozen the Agent
+	// cleared only by a resume kill_switch (Symbol=="resume", §5.13 v2).
+	// Restarting the process no longer clears it: the SaaS Hub persists the
+	// latch and re-asserts it via auth_ok.Frozen on every (re)connect (B1),
+	// so a killed Agent stays HALTED across restarts. While frozen the Agent
 	// rejects new trade_commands (HALTED semantics) yet still services the
 	// read loop, heartbeats, async fills, and delta_reports; it does NOT
 	// auto-cancel or auto-liquidate (that is a human decision via the SaaS

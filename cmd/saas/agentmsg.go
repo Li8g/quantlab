@@ -733,21 +733,33 @@ func (h *agentMessageHandler) maybeAutoFreeze(ctx context.Context, accountID str
 		OperatorUserID: "system", // [INVENTED v1] auto-trigger sentinel, not a human
 		Scope:          wire.KillSwitchScopeAll,
 	}
-	if err := h.killer.SendKillSwitch(accountID, ks); err != nil {
-		// Account offline or send failed — leave the streak armed so the
-		// next report retries; alert out-of-band (the agent is unmanaged).
-		h.logger.Error("auto_freeze_send_failed",
+	// B1: persist the durable freeze latch FIRST and treat it as
+	// load-bearing. The kill audit row is the latch the WS handshake reads
+	// back (IsAccountFrozen) to re-arm a reconnecting agent — so a drifting
+	// agent that is offline (or disconnects) still freezes on reconnect. If
+	// the latch write fails, leave the streak armed so the next report
+	// retries; do NOT push or latch a freeze we couldn't persist.
+	if err := recordKillAudit(ctx, h.auditor, h.logger, "system", accountID, ks,
+		map[string]any{"trigger": "auto", "max_drift_bps": maxBps}); err != nil {
+		h.logger.Error("auto_freeze_latch_failed",
 			"account_id", accountID, "max_drift_bps", maxBps, "err", err)
 		return
 	}
+	// Latch persisted → suppress repeats. Any SendKillSwitch failure mode
+	// (offline, or a SendFrame error meaning the connection is tearing down)
+	// resolves to the agent reconnecting and freezing via auth_ok.Frozen, so
+	// the latch is the guarantee and the live push below is best-effort.
 	h.freezeMu.Lock()
 	h.driftStreak[accountID] = killedSentinel
 	h.freezeMu.Unlock()
+	if err := h.killer.SendKillSwitch(accountID, ks); err != nil {
+		h.logger.Error("auto_freeze_send_failed",
+			"account_id", accountID, "max_drift_bps", maxBps, "err", err,
+			"note", "latched; agent will freeze on reconnect")
+	}
 	h.logger.Warn("auto_freeze_triggered",
 		"account_id", accountID, "max_drift_bps", maxBps,
 		"debounce_reports", h.effFreezeDebounceReports())
-	recordKillAudit(ctx, h.auditor, h.logger, "system", accountID, ks,
-		map[string]any{"trigger": "auto", "max_drift_bps": maxBps})
 }
 
 // ClearDriftStreak resets the auto-freeze debounce counter for accountID,

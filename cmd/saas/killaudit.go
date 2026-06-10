@@ -22,35 +22,44 @@ type auditSink interface {
 //
 // actor is "user:<id>" (manual) or "system" (auto). Subject is the
 // account (kill is account-scoped); extra folds trigger/drift detail into
-// DataJSON alongside the reason/scope/operator. Best-effort: a sink error
-// is logged but never blocks the kill — the freeze has already been sent.
+// DataJSON alongside the reason/scope/operator.
+//
+// B1: this row is also the durable freeze latch (AuditRepo.IsAccountFrozen
+// reads it back to re-arm a reconnecting agent), so callers that need the
+// latch to persist MUST treat the returned error as load-bearing — a failed
+// insert means the kill did NOT durably latch. The error is returned, not
+// swallowed; the caller decides (the HTTP path fails the request, the
+// auto-freeze path stays armed to retry).
 func recordKillAudit(
 	ctx context.Context, sink auditSink, logger *slog.Logger,
 	actor, accountID string, ks wire.KillSwitch, extra map[string]any,
-) {
-	recordKillSwitchAudit(ctx, sink, logger, store.AuditActionInstanceKill, actor, accountID, ks, extra)
+) error {
+	return recordKillSwitchAudit(ctx, sink, logger, store.AuditActionInstanceKill, actor, accountID, ks, extra)
 }
 
 // recordResumeAudit appends one instance.resume AuditLog event — the
 // inverse trail of a kill (§5.13 v2). Same shape as recordKillAudit; the
-// distinct action lets the /live banner reader tell "frozen now" from
-// "was frozen, since resumed" (see AuditRepo.LatestKillOrResume).
+// distinct action lets the /live banner reader (and IsAccountFrozen) tell
+// "frozen now" from "was frozen, since resumed". The returned error is
+// load-bearing for the same B1 reason: a failed resume insert means the
+// latch did NOT durably clear.
 func recordResumeAudit(
 	ctx context.Context, sink auditSink, logger *slog.Logger,
 	actor, accountID string, ks wire.KillSwitch, extra map[string]any,
-) {
-	recordKillSwitchAudit(ctx, sink, logger, store.AuditActionInstanceResume, actor, accountID, ks, extra)
+) error {
+	return recordKillSwitchAudit(ctx, sink, logger, store.AuditActionInstanceResume, actor, accountID, ks, extra)
 }
 
 // recordKillSwitchAudit is the shared writer for kill/resume audit rows.
-// Best-effort: a sink error is logged but never blocks the action — the
-// kill_switch has already been sent.
+// Returns the sink error (also logged) so callers can treat the latch write
+// as load-bearing (B1). A nil sink is a no-op returning nil — auditing is
+// optional in tests, but production always wires one.
 func recordKillSwitchAudit(
 	ctx context.Context, sink auditSink, logger *slog.Logger,
 	action store.AuditAction, actor, accountID string, ks wire.KillSwitch, extra map[string]any,
-) {
+) error {
 	if sink == nil {
-		return
+		return nil
 	}
 	data := map[string]any{
 		"reason":           string(ks.Reason),
@@ -67,8 +76,12 @@ func recordKillSwitchAudit(
 		Subject:  fmt.Sprintf("account:%s", accountID),
 		DataJSON: blob,
 	}
-	if err := sink.Insert(ctx, e); err != nil && logger != nil {
-		logger.Error("kill_audit_insert_failed",
-			"account_id", accountID, "actor", actor, "action", string(action), "err", err)
+	if err := sink.Insert(ctx, e); err != nil {
+		if logger != nil {
+			logger.Error("kill_audit_insert_failed",
+				"account_id", accountID, "actor", actor, "action", string(action), "err", err)
+		}
+		return err
 	}
+	return nil
 }

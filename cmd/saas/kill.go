@@ -41,16 +41,30 @@ func (k *hubInstanceKiller) Kill(ctx context.Context, instanceID string, operato
 		OperatorUserID: strconv.FormatUint(uint64(operatorUserID), 10),
 		Scope:          wire.KillSwitchScopeAll,
 	}
-	err = k.hub.SendKillSwitch(inst.AccountID, ks)
-	if errors.Is(err, wshub.ErrAccountNotConnected) {
-		return api.ErrKillAgentOffline
-	}
-	if err != nil {
+	// B1: persist the durable freeze latch FIRST and treat it as
+	// load-bearing. The kill audit row is the latch the handshake reads back
+	// (IsAccountFrozen) to re-arm a reconnecting agent, so it must be durable
+	// before we claim success. If it fails the kill did not latch → surface
+	// the error (HTTP 500); the operator retries.
+	if err := recordKillAudit(ctx, k.audit, k.logger,
+		fmt.Sprintf("user:%d", operatorUserID), inst.AccountID, ks,
+		map[string]any{"trigger": "manual", "instance_id": instanceID}); err != nil {
 		return err
 	}
-	recordKillAudit(ctx, k.audit, k.logger,
-		fmt.Sprintf("user:%d", operatorUserID), inst.AccountID, ks,
-		map[string]any{"trigger": "manual", "instance_id": instanceID})
+	// Best-effort live push. An offline agent is no longer an error: the
+	// latch is persisted, so the agent re-enters HALTED via auth_ok.Frozen on
+	// reconnect. Other send failures are logged but not surfaced — the latch
+	// (the safety guarantee) already holds.
+	if err := k.hub.SendKillSwitch(inst.AccountID, ks); err != nil {
+		if errors.Is(err, wshub.ErrAccountNotConnected) {
+			k.logger.Warn("kill_latched_agent_offline",
+				"account_id", inst.AccountID, "instance_id", instanceID,
+				"note", "frozen latch persisted; agent will freeze on reconnect")
+		} else {
+			k.logger.Error("kill_push_failed_latch_holds",
+				"account_id", inst.AccountID, "instance_id", instanceID, "err", err)
+		}
+	}
 	return nil
 }
 
@@ -91,17 +105,29 @@ func (r *hubInstanceResumer) Resume(ctx context.Context, instanceID string, oper
 		Scope:          wire.KillSwitchScopeAll,
 		Symbol:         wire.KillSwitchSymbolResume,
 	}
-	err = r.hub.SendKillSwitch(inst.AccountID, ks)
-	if errors.Is(err, wshub.ErrAccountNotConnected) {
-		return api.ErrKillAgentOffline
-	}
-	if err != nil {
+	// B1: clear the durable freeze latch FIRST (load-bearing). The resume
+	// audit row flips IsAccountFrozen back to false, so a reconnecting agent
+	// is told unfrozen via auth_ok.Frozen. If the insert fails the latch did
+	// not clear → surface the error (HTTP 500); the account stays frozen,
+	// which is the safe outcome.
+	if err := recordResumeAudit(ctx, r.audit, r.logger,
+		fmt.Sprintf("user:%d", operatorUserID), inst.AccountID, ks,
+		map[string]any{"trigger": "manual", "instance_id": instanceID}); err != nil {
 		return err
 	}
-	// Lift the auto-freeze latch so a recurring drift can re-trigger.
+	// Lift the in-memory auto-freeze latch so a recurring drift can re-trigger.
 	r.streaks.ClearDriftStreak(inst.AccountID)
-	recordResumeAudit(ctx, r.audit, r.logger,
-		fmt.Sprintf("user:%d", operatorUserID), inst.AccountID, ks,
-		map[string]any{"trigger": "manual", "instance_id": instanceID})
+	// Best-effort live push. Offline is no longer an error: the latch is
+	// cleared, so the agent reconnects unfrozen via auth_ok.Frozen.
+	if err := r.hub.SendKillSwitch(inst.AccountID, ks); err != nil {
+		if errors.Is(err, wshub.ErrAccountNotConnected) {
+			r.logger.Warn("resume_latch_cleared_agent_offline",
+				"account_id", inst.AccountID, "instance_id", instanceID,
+				"note", "frozen latch cleared; agent reconnects unfrozen")
+		} else {
+			r.logger.Error("resume_push_failed_latch_cleared",
+				"account_id", inst.AccountID, "instance_id", instanceID, "err", err)
+		}
+	}
 	return nil
 }

@@ -420,10 +420,28 @@ func (c *Connection) doHandshake(ctx context.Context) error {
 			"expected_environment", c.hub.expectedEnv)
 	}
 
+	// B1: re-assert the account's durable kill_switch latch on (re)connect.
+	// Consult the persisted freeze state and carry it in auth_ok so a killed
+	// Agent that restarted (in-memory latch lost) or reconnected after an
+	// offline kill re-enters HALTED. Fail closed: a lookup error defaults to
+	// frozen so a transient store error never silently un-kills the agent.
+	frozen := false
+	if c.hub.onFrozenLookup != nil {
+		f, ferr := c.hub.onFrozenLookup(ctx, c.AccountID)
+		if ferr != nil {
+			c.hub.log.Warn("frozen_lookup_failed_fail_closed",
+				"account_id", c.AccountID, "err", ferr)
+			frozen = true
+		} else {
+			frozen = f
+		}
+	}
+
 	// Step 5: send auth_ok
 	if err := c.sendTyped(ctx, wire.TypeAuthOK, wire.AuthOK{
 		ServerNowMs: c.hub.nowMs(),
 		AgentID:     verified.AgentID,
+		Frozen:      frozen,
 	}); err != nil {
 		return fmt.Errorf("send auth_ok: %w", err)
 	}
