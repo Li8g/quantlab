@@ -17,16 +17,16 @@ Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合
 | # | 缺口 | 层 | 严重度 | 阻塞 mainnet? | 状态 |
 |---|---|---|---|---|---|
 | **B1** | kill 无服务端持久 latch（选项 B） | 后端 | 🔴 安全 | ~~是~~ | ✅ MERGED main（PR #18, f4537a0） |
-| B2 | limit order 价格保护（marketable-limit IOC cap） | 后端 | 🟡 中 | 否（market+③+reconcile 兜底） | ✅ 实现完成（本分支；决策见 decision-b2-limit-order-price-protection.md，待 PR） |
+| **B2** | limit order 价格保护（marketable-limit IOC cap） | 后端 | 🟡 中 | 否（market+③+reconcile 兜底） | ✅ MERGED main（PR #23 c76791b + #24 aef0b6d；cap 默认 5bps mainnet；gate 真服务器验证通过） |
 | B3 | per-order 价格分歧守卫（⑥ 选项 A） | 后端/agent | 🟢 低 | 否 | 延后（等真盘数据调阈值） |
 | B4 | datafeeder 中段空洞无 heal | 后端 | 🟢 低 | 否（概率极低） | 已文档化局限 |
 | B5 | datafeeder cron 运营局限 | 运维 | 🟢 低 | 否 | 已文档化（runbook §G） |
 | **G1** | 分析页 dashboard 不持久（手工 nohup） | 运维 | 🟡 中 | 部分（重启即 502） | ✅ MERGED main（PR #20, e2ba58e；systemd unit） |
 | **G2** | 分析页快照不自动刷新 | 运维 | 🟢 低 | 否 | ✅ MERGED main（PR #20；原子导出+cron） |
 | **G3** | 分析页 :8088 零鉴权裸暴露 + URL 硬编码 | 前端+运维 | 🔴 安全(mainnet)/🟢(dev) | ~~是~~ | ✅ MERGED main（PR #20；A′：localhost+SSH 隧道+URL 外置） |
-| F1 | 前端 eslint 遗留债 | 前端 | 🟢 低 | 否 | 已知，不 gate build |
+| F1 | 前端 eslint 遗留债 | 前端 | 🟢 低 | 否 | ✅ DONE 2026-06-10（`Date.now()` purity → 提到 `lib/format.ts` 模块级；eslint exit 0） |
 
-> ~~真正在 mainnet 前必须处理的只有 **B1**（安全 latch）与 **G3**（暴露面）。~~ **B1 与 G3 均已于 2026-06-10 闭环并合并 main**（见下）。**mainnet 前已无安全级硬阻塞。** ~~剩余唯一中优先项是 **B2**（limit order 价格保护，需先规格化）；~~ **B2 已规格化并实现（marketable-limit IOC，决策 D1–D6 全拍板，见 decision-b2-limit-order-price-protection.md，本分支待 PR）。** 其余为低优先或已延后/已文档化。
+> ~~真正在 mainnet 前必须处理的只有 **B1**（安全 latch）与 **G3**（暴露面）。~~ **B1 与 G3 均已于 2026-06-10 闭环并合并 main**（见下）。**mainnet 前已无安全级硬阻塞。** ~~剩余唯一中优先项是 **B2**（limit order 价格保护，需先规格化）；~~ **B2 已规格化、实现并合并 main（marketable-limit IOC，决策 D1–D6 全拍板，见 decision-b2-limit-order-price-protection.md；PR #23 + #24，cap 默认 5bps mainnet）。** 其余为低优先或已延后/已文档化。
 
 ---
 
@@ -48,7 +48,7 @@ Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合
 
 ---
 
-### B2 — limit order 价格保护（🟡 中，✅ 实现完成）
+### B2 — limit order 价格保护（🟡 中，✅ MERGED main — PR #23 + #24）
 
 **实现**: SaaS dispatcher 把每个 market 意图改写成 **marketable limit IOC**，限价 = `latestClose×(1±cap/1e4)`（买 +、卖 −）。flash 把价推过 cap → 交易所拒成交（IOC 撤余量，无挂单、无锁仓），而非按盘口任意差价成交。cap 是执行层护栏（`orders.price_cap_bps`，缺省 5bps mainnet，0=退回 market），不进 GA、不进回测。决策 D1–D6 全拍板见 `decision-b2-limit-order-price-protection.md`。
 
@@ -58,9 +58,7 @@ Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合
 
 **未做（明确）**: 被动 maker 挂价（D1-b，做市另一产品）、回测 intrabar 撮合（D3-b，会触发版本事件）、cap 进基因（"执行层进化"独立大项目）。per-order 价格分歧守卫(B3)仍延后（等真盘数据）。
 
----
-
-### B3 — per-order 价格分歧守卫（⑥ 选项 A，🟢 低，已延后）
+**已合并 + 验证**: PR #23（c76791b，核心实现）+ PR #24（aef0b6d，trade_records fidelity 修 + cap 默认校准 50→**5bps mainnet**=默认 slippage_bps、`cap≥slippage` 最紧值）。IOC 已真 testnet 验证、全链路 L1→L2 跑通；**5bps cap gate 真服务器 deploy-champion 端到端验证通过**（边界 slip=5→200、throwaway slip=6→422、audit 行 price_cap_bps=5）。⚠️当前 champion 7550b6 slippage=5 正卡边界零余量，slippage>5 的新 champion 在默认 cap 下会被 deploy 拒。
 
 **现状**: SaaS 按 kline close 定 qty，agent 按盘口成交，两价分歧。**已延后**——misconfig 半边已被 env 一致性断言（⑥ v1，已 ship）覆盖；flash 半边交给 limit order(B2)。
 
@@ -105,11 +103,11 @@ systemd unit `scripts/quantlab-optuna-dashboard.service`（开机自启 + 崩溃
 
 ## 3. 前端缺口
 
-### F1 — 前端 eslint 遗留债（🟢 低，不 gate）
+### F1 — 前端 eslint 遗留债 ✅ DONE 2026-06-10
 
-`eslint` 报 `web/src/auth/AuthContext.tsx:85` `useAuth` 导出触发 `react-refresh/only-export-components`。**与功能无关**，`npm run build`=tsc+vite 不 gate lint。卫生项，可顺手清。
+~~`eslint` 报 `web/src/auth/AuthContext.tsx:85` ...~~ 该条（`react-refresh/only-export-components`）早已修（commit 5bbd64e 把 `useAuth` 拆到 `auth/context.ts`）。剩余真实债是 ⑤ staleness badge 引入的 **2 条 `react-hooks/purity`**（`InstanceLivePage.tsx:297/304` 在 render 中调 `Date.now()`）。**已清**：把两个内联 helper 提到 `lib/format.ts` 模块级 `stalenessClass`/`stalenessLabel`（与既有 `formatAge` 同模式——purity 规则只查组件体内的 `Date.now()`，模块级 helper 不触发）。`eslint .` exit 0、`npm run build`(tsc+vite) 绿。
 
-> 前端 F2 live monitor（Tier M 监控 + F2.3 干预 + Tier L 对账/error 流 + 手动 Kill 按钮）已全完结，无功能缺口。手动 Kill 按钮 = PR #17（base main，2026-06-10）。
+> 前端 F2 live monitor（Tier M 监控 + F2.3 干预 + Tier L 对账/error 流 + 手动 Kill 按钮）已全完结，无功能缺口。手动 Kill 按钮 = PR #17（base main，2026-06-10）。**前端现无任何开放缺口（功能 + lint 全清）。**
 
 ---
 
@@ -130,9 +128,7 @@ systemd unit `scripts/quantlab-optuna-dashboard.service`（开机自启 + 崩溃
 1. ~~**B1（kill 服务端 latch）**~~ — 复用 audit_logs + `auth_ok.frozen` 握手下发 + fail-closed（PR #18, f4537a0）。
 2. ~~**G3（:8088 暴露面 + URL）**~~ — 走 A′：optuna 绑 localhost + SSH 隧道 + 前端 `VITE_OPTUNA_URL` 外置（非反代，理由见决策文档 Q4 复核）（PR #20, e2ba58e）。
 3. ~~**G1 + G2（systemd + cron）**~~ — systemd unit + 原子导出 + cron 自动刷新（PR #20，同批含 `requirements.txt`）。
-
-**✅ 2026-06-10 实现完成（本分支，待 PR）：**
-4. ~~**B2（limit order）**~~ — marketable-limit IOC，dispatcher 转换 + `orders.price_cap_bps` 护栏 + wire `time_in_force` + agent IOC + deploy 校验 cap≥slippage；回测中性不 bump（decision-b2-limit-order-price-protection.md）。**策略与回测零改动。**
+4. ~~**B2（limit order）**~~ — marketable-limit IOC，dispatcher 转换 + `orders.price_cap_bps` 护栏（默认 5bps mainnet）+ wire `time_in_force` + agent IOC + deploy 校验 cap≥slippage；回测中性不 bump（decision-b2-limit-order-price-protection.md）。**策略与回测零改动。**（PR #23 c76791b + #24 aef0b6d；gate 真服务器验证通过）
 
 **剩余（按需）：**
-5. B3 / B4 / B5 / F1 — 低优先或已文档化，按需。
+5. B3 / B4 / B5 — 低优先或已文档化，按需。（F1 lint 债已于 2026-06-10 清，前端无开放缺口。）

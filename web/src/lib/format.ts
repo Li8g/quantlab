@@ -33,3 +33,18 @@ export function formatAge(ms: number | undefined | null): string {
   if (hr < 24) return `${hr}h ago`
   return `${Math.round(hr / 24)}d ago`
 }
+
+// stalenessClass returns the tailwind colour for a mark-price age: amber past
+// 50% of the staleness threshold, red past it (mirrors the server-side guard).
+export function stalenessClass(markPriceMs: number, thresholdMs: number): string {
+  const ageMs = Date.now() - markPriceMs
+  if (ageMs >= thresholdMs) return 'text-red-600 font-medium'
+  if (ageMs >= thresholdMs * 0.5) return 'text-amber-600'
+  return 'text-slate-500'
+}
+
+// stalenessLabel returns the trailing "data stale" suffix once the mark price
+// is past the staleness threshold, else null.
+export function stalenessLabel(markPriceMs: number, thresholdMs: number): string | null {
+  return Date.now() - markPriceMs >= thresholdMs ? ' — data stale, trading halted' : null
+}
