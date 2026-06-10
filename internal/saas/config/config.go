@@ -197,8 +197,10 @@ type DataFeedConfig struct {
 }
 
 // DefaultPriceCapBps is the B2 price-protection cap applied when
-// orders.price_cap_bps is omitted. [INVENTED v1] — tune per deployment.
-const DefaultPriceCapBps = 50
+// orders.price_cap_bps is omitted. Calibrated to 5bps for mainnet (matches the
+// default friction.slippage_bps, the tightest cap that still satisfies the
+// cap ≥ slippage deploy invariant). Tune per deployment.
+const DefaultPriceCapBps = 5
 
 // OrdersConfig tunes the live-trading order execution layer (B2 price
 // protection, decision-b2-limit-order-price-protection.md). It is a
@@ -335,7 +337,7 @@ func (c *Config) Validate() error {
 		return errors.New("data_feed.max_bar_staleness must be >= 0 (0 → default)")
 	}
 	if c.Orders.PriceCapBps != nil && *c.Orders.PriceCapBps < 0 {
-		return errors.New("orders.price_cap_bps must be >= 0 (omit → default 50; 0 → disabled)")
+		return errors.New("orders.price_cap_bps must be >= 0 (omit → default 5; 0 → disabled)")
 	}
 	switch c.Live.ExpectedEnvironment {
 	case "", wire.EnvironmentMainnet, wire.EnvironmentTestnet, wire.EnvironmentMock:

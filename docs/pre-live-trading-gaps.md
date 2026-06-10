@@ -50,7 +50,7 @@ Date: 2026-06-10（更新：两个 mainnet 安全级阻塞 B1+G3 已闭环并合
 
 ### B2 — limit order 价格保护（🟡 中，✅ 实现完成）
 
-**实现**: SaaS dispatcher 把每个 market 意图改写成 **marketable limit IOC**，限价 = `latestClose×(1±cap/1e4)`（买 +、卖 −）。flash 把价推过 cap → 交易所拒成交（IOC 撤余量，无挂单、无锁仓），而非按盘口任意差价成交。cap 是执行层护栏（`orders.price_cap_bps`，缺省 50bps，0=退回 market），不进 GA、不进回测。决策 D1–D6 全拍板见 `decision-b2-limit-order-price-protection.md`。
+**实现**: SaaS dispatcher 把每个 market 意图改写成 **marketable limit IOC**，限价 = `latestClose×(1±cap/1e4)`（买 +、卖 −）。flash 把价推过 cap → 交易所拒成交（IOC 撤余量，无挂单、无锁仓），而非按盘口任意差价成交。cap 是执行层护栏（`orders.price_cap_bps`，缺省 5bps mainnet，0=退回 market），不进 GA、不进回测。决策 D1–D6 全拍板见 `decision-b2-limit-order-price-protection.md`。
 
 **回测中性（关键）**: 因为回测按 `close×(1±slippage)` 成交且不变量 1 保证 `cap ≥ slippage_bps`（deploy-champion 时校验），marketable limit 在回测里与 market **数值恒等** → ScoreTotal 零变化、不 bump `fitness_version`、champion 免重测。保护纯活在实盘路径。
 

@@ -92,11 +92,12 @@ data_feed:
 # backtest. Invariant: cap ≥ the deployed champion's effective slippage_bps
 # (enforced at deploy-champion), so the backtest's normal fill price is never
 # itself rejected live; the limit is then numerically identical to the market
-# fill it replaces (no fitness_version event). Omit the section → 50bps default
-# (protection on). Set price_cap_bps: 0 to disable (market passthrough).
+# fill it replaces (no fitness_version event). Omit the section → 5bps default
+# (protection on; matches default slippage_bps, the tightest cap the deploy
+# invariant allows). Set price_cap_bps: 0 to disable (market passthrough).
 # See docs/decision-b2-limit-order-price-protection.md.
 orders:
-  price_cap_bps: 50
+  price_cap_bps: 5
 
 # Live-trading fleet boundary.
 live:
