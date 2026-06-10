@@ -21,25 +21,33 @@ import (
 	"quantlab/internal/repository"
 	"quantlab/internal/saas/instance"
 	"quantlab/internal/saas/store"
+	"quantlab/internal/saas/wshub"
 	"quantlab/internal/strategy"
 )
 
 type recordingDispatcher struct {
-	inner  instance.TradeCommandDispatcher
-	trades *repository.TradeRepo
-	logger *slog.Logger
+	inner       instance.TradeCommandDispatcher
+	trades      *repository.TradeRepo
+	priceCapBps float64
+	logger      *slog.Logger
 }
 
-func newRecordingDispatcher(inner instance.TradeCommandDispatcher, trades *repository.TradeRepo, logger *slog.Logger) *recordingDispatcher {
+// priceCapBps is the same B2 cap the inner Hub dispatches with (sourced from
+// cfg.Orders in main), so the pre-insert TradeRecord records the marketable
+// LIMIT IOC actually sent, not the raw market intent.
+func newRecordingDispatcher(inner instance.TradeCommandDispatcher, trades *repository.TradeRepo, priceCapBps float64, logger *slog.Logger) *recordingDispatcher {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &recordingDispatcher{inner: inner, trades: trades, logger: logger}
+	return &recordingDispatcher{inner: inner, trades: trades, priceCapBps: priceCapBps, logger: logger}
 }
 
 func (d *recordingDispatcher) Dispatch(ctx context.Context, instanceID, accountID, symbol string, latestClose float64, orders []strategy.OrderIntent) error {
 	for _, oi := range orders {
-		tr := buildTradeRecord(instanceID, symbol, oi)
+		tr, err := buildTradeRecord(instanceID, symbol, oi, latestClose, d.priceCapBps)
+		if err != nil {
+			return err
+		}
 		if err := d.trades.InsertTradeRecord(ctx, tr); err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
 				d.logger.Info("trade_record_duplicate_ignored",
@@ -53,25 +61,33 @@ func (d *recordingDispatcher) Dispatch(ctx context.Context, instanceID, accountI
 	return d.inner.Dispatch(ctx, instanceID, accountID, symbol, latestClose, orders)
 }
 
-// buildTradeRecord maps OrderIntent → store.TradeRecord. now_ms_at_saas
-// is left at 0 because it is also written into the wire frame by
-// wshub.buildTradeCommand (already the source of truth for the
-// dispatched timestamp); SaaS doesn't need a second copy at this stage.
-// Phase 8 polish can stamp it here for end-to-end latency analysis.
-func buildTradeRecord(instanceID, symbol string, oi strategy.OrderIntent) *store.TradeRecord {
+// buildTradeRecord maps OrderIntent → store.TradeRecord, recording the order
+// as actually dispatched after B2 price-cap conversion (a market intent under
+// a positive cap becomes a marketable LIMIT IOC at latestClose×(1±cap)) via
+// the same wshub.EffectiveDispatchedOrder the wire frame uses — so the ledger
+// row matches the exchange order the Agent's Ack/OrderUpdate update it with.
+//
+// now_ms_at_saas is left at 0 because it is also written into the wire frame
+// by wshub.buildTradeCommand (already the source of truth for the dispatched
+// timestamp); SaaS doesn't need a second copy at this stage.
+func buildTradeRecord(instanceID, symbol string, oi strategy.OrderIntent, latestClose, priceCapBps float64) (*store.TradeRecord, error) {
+	eff, err := wshub.EffectiveDispatchedOrder(oi, latestClose, priceCapBps)
+	if err != nil {
+		return nil, err
+	}
 	tr := &store.TradeRecord{
 		ClientOrderID: oi.ClientOrderID,
 		InstanceID:    instanceID,
 		Symbol:        symbol,
 		Side:          string(oi.Side),
-		OrderType:     string(oi.OrderType),
+		OrderType:     string(eff.OrderType),
 		QuantityUSD:   oi.QuantityUSD,
 		ValidUntilMs:  oi.ValidUntilMs,
 		Status:        store.TradeStatusPending,
 	}
-	if oi.OrderType == strategy.OrderTypeLimit {
-		lp := oi.LimitPrice
+	if eff.OrderType == strategy.OrderTypeLimit {
+		lp := eff.LimitPrice
 		tr.LimitPrice = &lp
 	}
-	return tr
+	return tr, nil
 }

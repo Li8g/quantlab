@@ -197,6 +197,8 @@ QuantLab 的 promote 前提（`decision-ga-reproducibility-constraint.md`）：*
 | D6 | 手续费 | **无需改动**（marketable limit 仍是 taker） | 事实性结论 |
 | 范围 | B2 边界 | **到"flash 滑点天花板"为止**；做市/更优价、"执行层进化"（cap 进基因）均为独立未来项 | 随 D1/D2 |
 
-仍标 `[INVENTED v1]` 待实现期调整的：cap 起步值 50bps（部署期可调，deploy 校验 `cap ≥ champion slippage_bps` 兜底）。
+~~仍标 `[INVENTED v1]` 待实现期调整的：cap 起步值 50bps~~（部署期可调，deploy 校验 `cap ≥ champion slippage_bps` 兜底）。
+
+**部署期校准（2026-06-10，用户拍板）**：mainnet cap = **5bps**，default 开关保持 **on**（`DefaultPriceCapBps` 50→5，`config.example.yaml` 同步）。5bps 等于默认 `friction.slippage_bps`(5)，是仍满足不变量 1（`cap ≥ slippage`，deploy 校验用 `<` 故 5≥5 通过）的**最紧** cap——比 50bps 的 0.5% 护栏收紧一个数量级，贴合回测的 close±slippage 成交假设。`absent → 5bps`，`0 → 退回 market`。
 
 **下一步**：按 §6 路径出实现草稿（dispatcher 转换 + config + wire TIF 字段 + agent IOC + EXPIRED 映射 + `TestReplayWithinTolerance` 恒等验证）。

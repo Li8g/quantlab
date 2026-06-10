@@ -368,17 +368,9 @@ func buildTradeCommand(oi strategy.OrderIntent, instanceID, symbol string, lates
 	qty := oi.QuantityUSD / latestClose
 	qtyStr := strconv.FormatFloat(qty, 'f', 8, 64)
 
-	orderType := oi.OrderType
-	limitPrice := oi.LimitPrice
-	timeInForce := ""
-	if oi.OrderType == strategy.OrderTypeMarket && priceCapBps > 0 {
-		capPrice, err := capLimitPrice(oi.Side, latestClose, priceCapBps)
-		if err != nil {
-			return wire.TradeCommand{}, fmt.Errorf("OrderIntent %s: %w", oi.ClientOrderID, err)
-		}
-		orderType = strategy.OrderTypeLimit
-		limitPrice = capPrice
-		timeInForce = wire.TimeInForceIOC
+	eff, err := EffectiveDispatchedOrder(oi, latestClose, priceCapBps)
+	if err != nil {
+		return wire.TradeCommand{}, fmt.Errorf("OrderIntent %s: %w", oi.ClientOrderID, err)
 	}
 
 	tc := wire.TradeCommand{
@@ -387,29 +379,49 @@ func buildTradeCommand(oi strategy.OrderIntent, instanceID, symbol string, lates
 		InstanceID:      instanceID,
 		Symbol:          symbol,
 		Side:            string(oi.Side),
-		OrderType:       string(orderType),
+		OrderType:       string(eff.OrderType),
 		QuantityDecimal: qtyStr,
-		TimeInForce:     timeInForce,
+		TimeInForce:     eff.TimeInForce,
 		ValidUntilMs:    oi.ValidUntilMs,
 		NowMsAtSaaS:     nowMs,
 	}
-	if orderType == strategy.OrderTypeLimit {
-		tc.LimitPriceDecimal = strconv.FormatFloat(limitPrice, 'f', 8, 64)
+	if eff.OrderType == strategy.OrderTypeLimit {
+		tc.LimitPriceDecimal = strconv.FormatFloat(eff.LimitPrice, 'f', 8, 64)
 	}
 	return tc, nil
 }
 
-// capLimitPrice returns the marketable-limit price for a market intent under
-// B2 price protection: buy → latestClose×(1+cap), sell → latestClose×(1−cap),
-// so any fill is no worse than cap bps from latestClose. An unrecognized side
-// is an error (the cap direction is undefined), not a silent passthrough.
-func capLimitPrice(side strategy.OrderSide, latestClose, capBps float64) (float64, error) {
-	switch side {
-	case strategy.OrderSideBuy:
-		return latestClose * (1 + capBps/1e4), nil
-	case strategy.OrderSideSell:
-		return latestClose * (1 - capBps/1e4), nil
-	default:
-		return 0, fmt.Errorf("invalid side %q for price cap", side)
+// EffectiveOrder is the order shape actually dispatched to the Agent after B2
+// price-cap conversion: order_type, limit price (valid when OrderType==limit),
+// and time_in_force ("" ⇒ GTC). It is the single source of truth shared by the
+// wire TradeCommand and SaaS's pre-insert TradeRecord, so the ledger records
+// what was dispatched (a marketable LIMIT IOC), not the raw market intent.
+type EffectiveOrder struct {
+	OrderType   strategy.OrderType
+	LimitPrice  float64
+	TimeInForce string
+}
+
+// EffectiveDispatchedOrder applies B2 price protection to one OrderIntent:
+// a market intent under a positive cap becomes a marketable LIMIT IOC priced
+// at latestClose×(1±cap/1e4) (buy +, sell −); everything else (cap==0, or a
+// strategy-emitted limit) passes through unchanged. An unrecognized side on
+// the cap path is an error (the cap direction is undefined), not a silent
+// passthrough.
+func EffectiveDispatchedOrder(oi strategy.OrderIntent, latestClose, priceCapBps float64) (EffectiveOrder, error) {
+	eff := EffectiveOrder{OrderType: oi.OrderType, LimitPrice: oi.LimitPrice}
+	if oi.OrderType != strategy.OrderTypeMarket || priceCapBps <= 0 {
+		return eff, nil
 	}
+	switch oi.Side {
+	case strategy.OrderSideBuy:
+		eff.LimitPrice = latestClose * (1 + priceCapBps/1e4)
+	case strategy.OrderSideSell:
+		eff.LimitPrice = latestClose * (1 - priceCapBps/1e4)
+	default:
+		return EffectiveOrder{}, fmt.Errorf("invalid side %q for price cap", oi.Side)
+	}
+	eff.OrderType = strategy.OrderTypeLimit
+	eff.TimeInForce = wire.TimeInForceIOC
+	return eff, nil
 }
