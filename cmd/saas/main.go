@@ -310,7 +310,7 @@ func main() {
 		&instance.DefaultBarLoader{DB: db},
 		&instance.DefaultStrategyResolver{Registry: registry},
 		&instance.DefaultChampionGeneLoader{Challengers: challengerRepo},
-		newRecordingDispatcher(hub, tradeRepo, nil), // TradeCommandDispatcher with pre-insert
+		newRecordingDispatcher(hub, tradeRepo, cfg.Orders.EffectivePriceCapBps(), nil), // pre-insert; B2 cap so the ledger matches the dispatched LIMIT IOC
 		nil, // logger: slog.Default
 	)
 	// ⑤ Don't trade on stale klines: if the datafeeder falls behind, the

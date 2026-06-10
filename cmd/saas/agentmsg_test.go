@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"testing"
 
 	"quantlab/internal/saas/store"
@@ -300,7 +301,11 @@ func TestBuildTradeRecord_LimitOrderCopiesPrice(t *testing.T) {
 		ClientOrderID: "01HKCOID000000000000000007",
 		ValidUntilMs:  1714000000000,
 	}
-	tr := buildTradeRecord("01HKINST00000000000000000A", "BTCUSDT", oi)
+	// cap=0: a strategy-emitted limit passes through with its own price.
+	tr, err := buildTradeRecord("01HKINST00000000000000000A", "BTCUSDT", oi, 50000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if tr.Status != store.TradeStatusPending {
 		t.Errorf("Status = %q, want pending", tr.Status)
 	}
@@ -321,8 +326,43 @@ func TestBuildTradeRecord_MarketOrderLeavesLimitNil(t *testing.T) {
 		QuantityUSD:   500,
 		ClientOrderID: "01HKCOID000000000000000008",
 	}
-	tr := buildTradeRecord("inst", "BTCUSDT", oi)
-	if tr.LimitPrice != nil {
-		t.Errorf("LimitPrice = %v, want nil for market order", tr.LimitPrice)
+	// cap=0 (protection off): market intent stays market, no limit price.
+	tr, err := buildTradeRecord("inst", "BTCUSDT", oi, 50000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.OrderType != "market" || tr.LimitPrice != nil {
+		t.Errorf("got order_type=%q limit=%v, want market/nil", tr.OrderType, tr.LimitPrice)
+	}
+}
+
+// B2: under a positive cap, a market intent is recorded as the marketable
+// LIMIT IOC actually dispatched — order_type=limit + limit_price=close×(1±cap)
+// — so the ledger matches the exchange order (the fidelity gap the testnet
+// pass surfaced).
+func TestBuildTradeRecord_MarketUnderCapBecomesLimit(t *testing.T) {
+	buy := strategy.OrderIntent{
+		Side: strategy.OrderSideBuy, OrderType: strategy.OrderTypeMarket,
+		QuantityUSD: 500, ClientOrderID: "coid-buy",
+	}
+	tr, err := buildTradeRecord("inst", "BTCUSDT", buy, 50000, 50) // cap 50bps
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 50000 × (1 + 50/1e4) = 50250 (within float tolerance).
+	if tr.OrderType != "limit" || tr.LimitPrice == nil || math.Abs(*tr.LimitPrice-50250) > 1e-6 {
+		t.Errorf("buy under cap: got order_type=%q limit=%v, want limit/50250", tr.OrderType, tr.LimitPrice)
+	}
+
+	sell := buy
+	sell.Side = strategy.OrderSideSell
+	sell.ClientOrderID = "coid-sell"
+	tr, err = buildTradeRecord("inst", "BTCUSDT", sell, 50000, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 50000 × (1 − 50/1e4) = 49750 (within float tolerance).
+	if tr.LimitPrice == nil || math.Abs(*tr.LimitPrice-49750) > 1e-6 {
+		t.Errorf("sell under cap: got limit=%v, want 49750", tr.LimitPrice)
 	}
 }
