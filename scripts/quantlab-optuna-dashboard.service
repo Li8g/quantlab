@@ -1,0 +1,35 @@
+# quantlab-optuna-dashboard.service — analysis page (:8088) as a managed
+# service (G1). optuna-dashboard serves the read-only parameter-space view.
+#
+# It is an OPTIONAL diagnostic component: if it is down, trading and evolution
+# are unaffected (it reads an offline sqlite snapshot). Install only if you want
+# the "Analysis ↗" deep link to work; its SLA is below saas/agent.
+#
+# SECURITY (G3): optuna-dashboard has NO authentication. It MUST stay bound to
+# localhost (the default) — never add `--host 0.0.0.0`. Reach it over an SSH
+# tunnel: `ssh -L 8088:127.0.0.1:8088 <server>`, then open http://localhost:8088/.
+#
+# Install (substitute <USER> and <QUANTLAB_DIR> = absolute repo path):
+#   sudo cp scripts/quantlab-optuna-dashboard.service /etc/systemd/system/
+#   sudo ${EDITOR:-vi} /etc/systemd/system/quantlab-optuna-dashboard.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now quantlab-optuna-dashboard
+#
+# Prereq: the venv exists (research/optuna_toy/requirements.txt) and an initial
+# export has run (`python quantlab_to_optuna.py --mode traces`).
+
+[Unit]
+Description=QuantLab optuna-dashboard (analysis page, :8088, optional diagnostic)
+After=network.target
+
+[Service]
+Type=simple
+User=<USER>
+WorkingDirectory=<QUANTLAB_DIR>/research/optuna_toy
+# Binds 127.0.0.1 by default — do NOT pass --host 0.0.0.0 (zero-auth, G3).
+ExecStart=<QUANTLAB_DIR>/research/optuna_toy/.venv/bin/optuna-dashboard sqlite:///<QUANTLAB_DIR>/research/optuna_toy/quantlab_phase1.db --port 8088
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -21,8 +21,8 @@ Date: 2026-06-10
 | B3 | per-order 价格分歧守卫（⑥ 选项 A） | 后端/agent | 🟢 低 | 否 | 延后（等真盘数据调阈值） |
 | B4 | datafeeder 中段空洞无 heal | 后端 | 🟢 低 | 否（概率极低） | 已文档化局限 |
 | B5 | datafeeder cron 运营局限 | 运维 | 🟢 低 | 否 | 已文档化（runbook §G） |
-| **G1** | 分析页 dashboard 不持久（手工 nohup） | 运维 | 🟡 中 | 部分（重启即 502） | OPEN（P1） |
-| **G2** | 分析页快照不自动刷新 | 运维 | 🟢 低 | 否 | OPEN（P1） |
+| **G1** | 分析页 dashboard 不持久（手工 nohup） | 运维 | 🟡 中 | 部分（重启即 502） | ✅ DONE 2026-06-10（systemd unit） |
+| **G2** | 分析页快照不自动刷新 | 运维 | 🟢 低 | 否 | ✅ DONE 2026-06-10（原子导出+cron） |
 | **G3** | 分析页 :8088 零鉴权裸暴露 + URL 硬编码 | 前端+运维 | 🔴 安全(mainnet)/🟢(dev) | ~~是~~ | ✅ DONE 2026-06-10（A′：localhost+SSH 隧道+URL 外置） |
 | F1 | 前端 eslint 遗留债 | 前端 | 🟢 低 | 否 | 已知，不 gate build |
 
@@ -82,15 +82,13 @@ Date: 2026-06-10
 
 > P0（#1 traces 重导 + #5 requirements.txt）已于 2026-06-10 完成。下列为剩余 P1/P2。
 
-### G1 — dashboard 不持久（🟡 中，P1）
+### G1 — dashboard 持久化 ✅ DONE 2026-06-10
 
-**现状**: dashboard + 导出都是手工 `nohup` 起的临时进程，机器重启即丢；runbook 通篇不提 :8088。
-**修法**: systemd unit `quantlab-optuna-dashboard.service`（开机自启 + 崩溃重拉）+ runbook 补"分析页（可选组件）"一节。定性 = 可选诊断组件（:8088 挂不影响交易/进化）。
+systemd unit `scripts/quantlab-optuna-dashboard.service`（开机自启 + 崩溃重拉 `Restart=on-failure`；注释强制绑 localhost，禁 `--host 0.0.0.0`）。runbook「分析页（可选诊断组件）」节加一次性安装步骤（venv → 首次导出 → enable）。定性 = 可选诊断组件（:8088 挂不影响交易/进化）。
 
-### G2 — 快照不自动刷新（🟢 低，P1）
+### G2 — 快照自动刷新 ✅ DONE 2026-06-10
 
-**现状**: 导出是 on-demand wipe-rebuild，新 GA 任务跑完页面仍旧快照。
-**修法**: cron 定时 `--mode traces` 重导（15–30 min）；导出脚本写临时文件再原子 `mv` 覆盖，消掉 wipe 期瞬时 502；可附 `user_attrs.exported_at` 标时效。与 G1 同批落 runbook。
+`quantlab_to_optuna.py` 改 **temp + `os.replace` 原子替换**（重建期不再让在跑 dashboard 读半成品，消 wipe 期 502）+ 打 `study.user_attrs.exported_at` 时效戳。`scripts/optuna_export_cron.sh` 包装「重导 → 重启 dashboard 拉新数据」，runbook 给 `*/20` cron 示例（重启需权限：root crontab 或 sudo 免密）。实跑验证：15256 trials 原子替换、无 `.tmp` 残留、3 study 均带 exported_at。
 
 ### G3 — :8088 零鉴权裸暴露 + 前端 URL 硬编码 ✅ DONE 2026-06-10（走 A′，非反代）
 
