@@ -139,6 +139,20 @@ reconcile:
   freeze_tolerance_bps: 200
   freeze_debounce_reports: 2
 
+# 实盘下单价格护栏（B2 marketable-limit IOC）。dispatcher 把每个 market 意图
+# 改写成限价 = latestClose×(1±cap/1e4) 的 LIMIT IOC：flash 把价推过 cap 时
+# 交易所拒成交（IOC 撤余量，无挂单、无锁仓），而非按盘口任意差价成交。
+# 纯实盘护栏——不进 GA、不进回测，不影响 fitness_version。
+#
+# 取值：缺省 5bps（= friction.slippage_bps，仍满足下方不变量的最紧值）。
+# 不变量：cap ≥ 被部署 champion 的 effective slippage_bps，deploy-champion 时硬校验，
+#   违例返回 422 ErrDeployCapBelowSlippage（保证回测的正常成交价不会被实盘护栏拒掉）。
+#   ⚠️ 因此 slippage_bps > 5 的 champion 在缺省 cap 下无法部署——
+#   要么调高本段 price_cap_bps，要么部署 slippage ≤ cap 的 champion。
+# price_cap_bps: 0 = 禁用护栏退回 market passthrough（不推荐主网）。
+orders:
+  price_cap_bps: 5
+
 data_feed:
   binance_archive_base_url: https://data.binance.vision
   binance_api_base_url: https://api.binance.com
@@ -385,6 +399,8 @@ curl -s -X POST http://<服务器IP>:8080/api/v1/instances/$INST/start \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+> **deploy-champion 返回 422 `price_cap_bps is below the champion's slippage_bps`：** 该 champion 的 effective `slippage_bps` 高于本部署的 `orders.price_cap_bps`（缺省 5bps）。要么调高 `config.yaml` 的 `orders.price_cap_bps` 至 ≥ 该 slippage 后重启，要么部署 slippage ≤ cap 的 champion。详见步骤 B 的 `orders` 段。
+
 **预期（L2）：** `trade_records` + `spot_executions` 有行；`/instances/$INST/live` 的 `recent_trades` 出现成交。
 
 ---
@@ -493,6 +509,7 @@ chmod +x scripts/optuna_export_cron.sh   # 已带 +x，确认一下
 | 实例 Tick 后不下单，日志 `scheduler_tick_skipped_stale_data` | datafeeder cron 没跑或跑失败；检查 `/var/log/datafeeder.log`；手动跑 `datafeeder stats` 确认最新 bar 时间 |
 | delta_report 对账超阈值，自动 kill | 查 `delta_report_reconcile_summary` 日志里 `max_managed_drift_bps`；正常 in-flight fill 引起的瞬时漂移可调高 `freeze_tolerance_bps` |
 | `/instances/$INST/start` 返回 422 | 可能无 deployed champion；先 deploy-champion |
+| `deploy-champion` 返回 422 `price_cap_bps is below the champion's slippage_bps` | champion 的 effective `slippage_bps` > `orders.price_cap_bps`（缺省 5bps）；调高 `orders.price_cap_bps` 至 ≥ 该 slippage 后重启，或换 slippage ≤ cap 的 champion |
 
 ---
 
