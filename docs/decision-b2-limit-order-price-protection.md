@@ -1,6 +1,6 @@
 # 决策讨论 — B2：limit order 价格保护
 
-Status: **已拍板（2026-06-10，D1–D6 全部落定，见 §7 拍板记录）** — 决策文档，非规格。实现落地时把 §4.5 cap 不变量提炼进 CLAUDE.md，本文归档。
+Status: **已实现并归档（2026-06-10）** — D1–D6 全部落定（§7 拍板记录），按 §6 路径实现完成（dispatcher 转换 + `orders.price_cap_bps` + wire `time_in_force` + agent IOC + deploy-champion 校验/审计 + 测试），§4.5 cap 不变量已提炼进 `CLAUDE.md`「Key Invariants」。决策文档，非规格；保留供审计。
 Date: 2026-06-10（同日讨论 + 拍板）
 Owner: 待定
 Related:

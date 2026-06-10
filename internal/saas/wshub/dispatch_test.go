@@ -137,6 +137,70 @@ func TestDispatch_InvalidLatestClose(t *testing.T) {
 	}
 }
 
+// TestBuildTradeCommand_PriceCap exercises the B2 marketable-limit IOC
+// conversion in isolation (buildTradeCommand is the dispatch-layer guardrail;
+// decision-b2-limit-order-price-protection.md §4.5).
+func TestBuildTradeCommand_PriceCap(t *testing.T) {
+	const close = 50000.0
+	mkt := func(side strategy.OrderSide) strategy.OrderIntent {
+		return strategy.OrderIntent{
+			Kind: strategy.OrderKindMacro, Side: side, OrderType: strategy.OrderTypeMarket,
+			QuantityUSD: 1000, ClientOrderID: "01HKCOID000000000000000001",
+		}
+	}
+
+	t.Run("cap_disabled_passes_market_through", func(t *testing.T) {
+		tc, err := buildTradeCommand(mkt(strategy.OrderSideBuy), "i", "BTCUSDT", close, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.OrderType != "market" || tc.LimitPriceDecimal != "" || tc.TimeInForce != "" {
+			t.Errorf("cap=0: got type=%q limit=%q tif=%q, want market/empty/empty",
+				tc.OrderType, tc.LimitPriceDecimal, tc.TimeInForce)
+		}
+	})
+
+	t.Run("buy_caps_above_close", func(t *testing.T) {
+		tc, err := buildTradeCommand(mkt(strategy.OrderSideBuy), "i", "BTCUSDT", close, 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 50000 × (1 + 50/1e4) = 50250.
+		if tc.OrderType != "limit" || tc.LimitPriceDecimal != "50250.00000000" || tc.TimeInForce != wire.TimeInForceIOC {
+			t.Errorf("buy cap=50: got type=%q limit=%q tif=%q, want limit/50250.00000000/IOC",
+				tc.OrderType, tc.LimitPriceDecimal, tc.TimeInForce)
+		}
+	})
+
+	t.Run("sell_caps_below_close", func(t *testing.T) {
+		tc, err := buildTradeCommand(mkt(strategy.OrderSideSell), "i", "BTCUSDT", close, 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 50000 × (1 − 50/1e4) = 49750.
+		if tc.LimitPriceDecimal != "49750.00000000" || tc.TimeInForce != wire.TimeInForceIOC {
+			t.Errorf("sell cap=50: got limit=%q tif=%q, want 49750.00000000/IOC",
+				tc.LimitPriceDecimal, tc.TimeInForce)
+		}
+	})
+
+	t.Run("strategy_limit_order_untouched", func(t *testing.T) {
+		oi := strategy.OrderIntent{
+			Kind: strategy.OrderKindMicro, Side: strategy.OrderSideSell, OrderType: strategy.OrderTypeLimit,
+			QuantityUSD: 500, LimitPrice: 51000, ClientOrderID: "01HKCOID000000000000000002",
+		}
+		tc, err := buildTradeCommand(oi, "i", "BTCUSDT", close, 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A strategy-chosen limit keeps its own price and stays GTC (no IOC stamp).
+		if tc.LimitPriceDecimal != "51000.00000000" || tc.TimeInForce != "" {
+			t.Errorf("strategy limit: got limit=%q tif=%q, want 51000.00000000/empty",
+				tc.LimitPriceDecimal, tc.TimeInForce)
+		}
+	})
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

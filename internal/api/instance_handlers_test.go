@@ -333,6 +333,91 @@ func TestDeployChampion_SetsActiveChampID(t *testing.T) {
 	}
 }
 
+// fakeAudit captures AuditLog rows for assertion.
+type fakeAudit struct {
+	rows []*store.AuditLog
+	err  error
+}
+
+func (f *fakeAudit) Insert(_ context.Context, e *store.AuditLog) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.rows = append(f.rows, e)
+	return nil
+}
+
+// TestDeployChampion_RejectsCapBelowSlippage: B2 invariant 1 — a cap tighter
+// than the champion's effective slippage_bps would reject the backtest's own
+// normal fill price live, so deploy is refused (422) and ActiveChampID stays.
+func TestDeployChampion_RejectsCapBelowSlippage(t *testing.T) {
+	insts := newFakeInstances()
+	insts.byID["inst-1"] = &store.StrategyInstance{
+		InstanceID: "inst-1", Status: store.InstanceStatusIdle,
+	}
+	h := &Handlers{
+		Instances:   insts,
+		IDIssuer:    &fakeIssuer{next: "x"},
+		Challengers: &fakeChallengers{rec: &store.GeneRecord{ChallengerID: "ch-001", SlippageBPS: 80}},
+		PriceCapBps: 50, // 50 < 80 → violates cap ≥ slippage
+	}
+	r := withClaimsHandlers(h, &auth.Claims{UserID: 1, Role: "operator"})
+
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/deploy-champion",
+		bytesReader([]byte(`{"challenger_id":"ch-001"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("Code = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	if insts.byID["inst-1"].ActiveChampID != nil {
+		t.Errorf("ActiveChampID = %v, want nil (deploy must not mutate on reject)", insts.byID["inst-1"].ActiveChampID)
+	}
+}
+
+// TestDeployChampion_CapAtOrAboveSlippage_RecordsAudit: cap ≥ slippage passes
+// and writes the deploy provenance row carrying the cap in effect.
+func TestDeployChampion_CapAtOrAboveSlippage_RecordsAudit(t *testing.T) {
+	insts := newFakeInstances()
+	insts.byID["inst-1"] = &store.StrategyInstance{
+		InstanceID: "inst-1", Status: store.InstanceStatusIdle,
+	}
+	audit := &fakeAudit{}
+	h := &Handlers{
+		Instances:   insts,
+		IDIssuer:    &fakeIssuer{next: "x"},
+		Challengers: &fakeChallengers{rec: &store.GeneRecord{ChallengerID: "ch-001", SlippageBPS: 20}},
+		PriceCapBps: 50, // 50 ≥ 20 → OK
+		Audit:       audit,
+	}
+	r := withClaimsHandlers(h, &auth.Claims{UserID: 7, Role: "operator"})
+
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/deploy-champion",
+		bytesReader([]byte(`{"challenger_id":"ch-001"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if ac := insts.byID["inst-1"].ActiveChampID; ac == nil || *ac != "ch-001" {
+		t.Errorf("ActiveChampID = %v, want ch-001", ac)
+	}
+	if len(audit.rows) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(audit.rows))
+	}
+	row := audit.rows[0]
+	if row.Action != store.AuditActionInstanceDeployChampion {
+		t.Errorf("audit action = %q, want %q", row.Action, store.AuditActionInstanceDeployChampion)
+	}
+	if !strings.Contains(string(row.DataJSON), `"price_cap_bps":50`) {
+		t.Errorf("audit DataJSON = %s, want price_cap_bps=50", row.DataJSON)
+	}
+}
+
 func TestDeployChampion_RefusedReturns422(t *testing.T) {
 	insts := newFakeInstances()
 	insts.byID["inst-1"] = &store.StrategyInstance{

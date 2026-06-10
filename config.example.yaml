@@ -84,6 +84,20 @@ data_feed:
   # Set above your datafeeder import cadence + margin. Omit/0 → 15m default.
   max_bar_staleness: 15m
 
+# Live-trading order execution (B2 price protection). The dispatcher rewrites
+# every market intent as a marketable LIMIT IOC priced at latestClose×(1±cap),
+# so a flash fill worse than the cap is rejected by the exchange instead of
+# executing at a runaway price (IOC ⇒ no resting order, no locked balance).
+# This is a human-held execution guardrail — it never enters the GA or the
+# backtest. Invariant: cap ≥ the deployed champion's effective slippage_bps
+# (enforced at deploy-champion), so the backtest's normal fill price is never
+# itself rejected live; the limit is then numerically identical to the market
+# fill it replaces (no fitness_version event). Omit the section → 50bps default
+# (protection on). Set price_cap_bps: 0 to disable (market passthrough).
+# See docs/decision-b2-limit-order-price-protection.md.
+orders:
+  price_cap_bps: 50
+
 # Live-trading fleet boundary.
 live:
   # expected_environment: the trading environment this deployment's agents must

@@ -17,8 +17,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -68,6 +70,13 @@ var (
 	// unretired champion for the target instance's (strategy_id, pair), or
 	// the target instance is terminal. → 422 Unprocessable Entity.
 	ErrDeployChampionRefused = errors.New("deploy champion refused")
+
+	// ErrDeployCapBelowSlippage: the configured B2 price cap is tighter than
+	// the champion's effective slippage_bps, so the backtest's own "normal"
+	// fill price would be rejected live (invariant 1, decision-b2-limit-order-
+	// price-protection.md §4.5). Raise orders.price_cap_bps or pick a champion
+	// evaluated with lower slippage. → 422 Unprocessable Entity.
+	ErrDeployCapBelowSlippage = errors.New("price_cap_bps is below the champion's slippage_bps")
 
 	// ErrImportActive: a Create for an (symbol, interval) pair that
 	// already has a queued/running import job. The partial unique index
@@ -251,6 +260,18 @@ type Handlers struct {
 	// in /live so the frontend can colour-code the mark-price age badge.
 	// Zero → the frontend falls back to its own default (15 min).
 	DataStalenessMs int64
+
+	// PriceCapBps is the B2 price-protection cap (decision-b2-limit-order-
+	// price-protection.md), the same value the Hub applies when dispatching.
+	// DeployChampion enforces cap ≥ the champion's effective slippage_bps so
+	// the backtest's normal fill price can't itself be rejected live. 0 ⇒
+	// protection disabled (market passthrough), so the invariant is skipped.
+	PriceCapBps float64
+
+	// Audit, when non-nil, records the instance.deploy_champion provenance
+	// row (including the cap in effect). Best-effort — a failed write logs
+	// but does not fail the deploy. Nil-skippable (handler tests omit it).
+	Audit AuditWriter
 
 	// AuthRequired wraps protected routes. When non-nil, it is
 	// installed on the /instances/* group during Register. Tests
@@ -734,9 +755,20 @@ func (h *Handlers) StopInstance(c *gin.Context) {
 	})
 }
 
+// AuditWriter records an AuditLog row. Satisfied by *repository.AuditRepo.
+// Kept narrow so DeployChampion stays unit-testable with a fake (or nil).
+type AuditWriter interface {
+	Insert(ctx context.Context, e *store.AuditLog) error
+}
+
 // DeployChampion: POST /api/v1/instances/:instance_id/deploy-champion.
 // Sets ActiveChampID on the instance. Per B2 frozen: Promote ⊥ Deploy
 // — this is the only API that touches ActiveChampID.
+//
+// B2 price protection: before activating, enforce invariant 1 (cap ≥ the
+// champion's effective slippage_bps) so the dispatcher's marketable-limit
+// guardrail can never reject the very fills the backtest treated as normal.
+// On success, record the cap in effect as deploy provenance.
 func (h *Handlers) DeployChampion(c *gin.Context) {
 	id := c.Param("instance_id")
 	if id == "" {
@@ -752,14 +784,69 @@ func (h *Handlers) DeployChampion(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err)
 		return
 	}
+
+	// Load the champion to enforce the cap ≥ slippage invariant and to record
+	// its slippage in the deploy provenance row. Loaded whenever a reader is
+	// wired (always in production); handler tests that omit Challengers skip
+	// the B2 checks entirely.
+	var rec *store.GeneRecord
+	if h.Challengers != nil {
+		var err error
+		rec, err = h.Challengers.Get(c.Request.Context(), req.ChallengerID)
+		if err != nil {
+			writeError(c, mapReadErr(err), err)
+			return
+		}
+	}
+	if h.PriceCapBps > 0 && rec != nil && h.PriceCapBps < rec.SlippageBPS {
+		writeError(c, http.StatusUnprocessableEntity, fmt.Errorf("%w: cap=%.4g slippage=%.4g",
+			ErrDeployCapBelowSlippage, h.PriceCapBps, rec.SlippageBPS))
+		return
+	}
+
 	if err := h.Instances.SetActiveChampion(c.Request.Context(), id, req.ChallengerID); err != nil {
 		writeError(c, mapInstanceWriteErr(err), err)
 		return
 	}
+
+	h.recordDeployAudit(c, id, req.ChallengerID, rec)
 	c.JSON(http.StatusOK, gin.H{
 		"instance_id":        id,
 		"active_champion_id": req.ChallengerID,
 	})
+}
+
+// recordDeployAudit appends one instance.deploy_champion provenance row,
+// folding the cap in effect + the champion's slippage into DataJSON. Best-
+// effort: a nil sink or a write error logs and is swallowed — the deploy has
+// already succeeded and must not be undone by an audit failure. rec may be
+// nil (no Challengers reader wired), in which case slippage is omitted.
+func (h *Handlers) recordDeployAudit(c *gin.Context, instanceID, challengerID string, rec *store.GeneRecord) {
+	if h.Audit == nil {
+		return
+	}
+	actor := "system"
+	if uid, ok := ownerFromContext(c); ok {
+		actor = fmt.Sprintf("user:%d", uid)
+	}
+	data := map[string]any{
+		"challenger_id": challengerID,
+		"price_cap_bps": h.PriceCapBps,
+	}
+	if rec != nil {
+		data["slippage_bps"] = rec.SlippageBPS
+	}
+	blob, _ := json.Marshal(data)
+	e := &store.AuditLog{
+		Actor:    actor,
+		Action:   store.AuditActionInstanceDeployChampion,
+		Subject:  fmt.Sprintf("instance:%s", instanceID),
+		DataJSON: blob,
+	}
+	if err := h.Audit.Insert(c.Request.Context(), e); err != nil {
+		slog.Warn("deploy_champion_audit_insert_failed",
+			"instance_id", instanceID, "challenger_id", challengerID, "err", err)
+	}
 }
 
 // transitionInstance is the shared body of StartInstance / StopInstance.
