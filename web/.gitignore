@@ -16,6 +16,10 @@ dist/*
 dist-ssr
 *.local
 
+# The repo-root .gitignore excludes .env.* (real env files / secrets).
+# Re-include the committed template — it carries no secrets.
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

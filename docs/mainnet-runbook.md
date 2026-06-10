@@ -434,6 +434,35 @@ curl -s -X POST http://<服务器IP>:8080/api/v1/instances/$INST/resume \
 
 ---
 
+## 分析页（可选诊断组件，optuna-dashboard）
+
+**定位**：`Analysis ↗` 是指向 optuna-dashboard 的只读参数空间探索页（`:8088`）。它是**可选诊断组件**——挂掉不影响交易/进化（saas + agent 照常运行），SLA 低于核心服务。
+
+**⚠️ 安全（G3，mainnet 必须）**：optuna-dashboard **自身零鉴权**。`--host 0.0.0.0` 裸暴露 = 任何能摸到端口的人可读**完整策略参数空间 + champion 历史**。mainnet 一律**只绑 localhost**（默认即 `127.0.0.1`，**不要**传 `--host 0.0.0.0`），通过 SSH 隧道访问：
+
+```bash
+# 服务器上启动（绑 localhost，仅本机可达）
+cd research/optuna_toy
+.venv/bin/optuna-dashboard sqlite:///quantlab_phase1.db --port 8088   # 默认 127.0.0.1
+
+# 运维机上开隧道，然后浏览器开 http://localhost:8088/
+ssh -L 8088:127.0.0.1:8088 <user>@<mainnet-server>
+```
+
+**前端深链（G3）**：`web/src/App.tsx` 的 `Analysis ↗` 目标已外置为构建期变量 `VITE_OPTUNA_URL`（不再硬编码 IP）。mainnet 走隧道 → 默认 `http://localhost:8088/` 即可（不设也是这个 fallback）。构建前按 `web/.env.example` 设置：
+
+```bash
+# mainnet（隧道，默认值，可省略）
+echo 'VITE_OPTUNA_URL=http://localhost:8088/' > web/.env
+cd web && npm run build   # 产物经 go:embed 进 saas 二进制
+```
+
+**环境依赖（一次性）**：`python -m venv research/optuna_toy/.venv && research/optuna_toy/.venv/bin/pip install -r research/optuna_toy/requirements.txt`（pin 版本见该文件）。
+
+**数据刷新**：导出是 on-demand `python quantlab_to_optuna.py --mode traces`（wipe-rebuild）。开机自启（systemd）+ 定时重导（cron）是后续 P1 项（G1/G2，见 `docs/pre-live-trading-gaps.md`）；当前为手工拉起。
+
+---
+
 ## 故障排查
 
 | 现象 | 原因 / 处理 |
