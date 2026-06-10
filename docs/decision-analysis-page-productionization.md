@@ -1,6 +1,6 @@
 # 决策备忘录 — Analysis 页面（:8088 optuna-dashboard）生产级完整化
 
-Status: **方向已定 + P0 与 #4/G3 已实施（2026-06-10）；P1（#2/#3 = G1/G2 systemd+cron）待排期**（详见文末 §决议）
+Status: **全部 5 缺口（#1–#5）已实施（2026-06-10）；P0=#1/#5，G3=#4，G1/G2=#2/#3**（详见文末 §决议）
 Date: 2026-06-09（决议追加 2026-06-10）
 Owner: 待定
 Related:
@@ -214,10 +214,12 @@ SPA 的 Champions/Challenger Review 页覆盖，optuna 这边主打"参数空间
 - **#5 ✅**：`research/optuna_toy/requirements.txt` 已建，pin `optuna==4.8.0` / `optuna-dashboard==0.20.0` / `psycopg[binary]==3.3.4` / `PyYAML==6.0.3`。**尚未提交**——当前 git 分支与本项无关，留待与 #2/#3 的 runbook 改动打成一个 analysis-page 提交。
 - **#1 ✅**：`python quantlab_to_optuna.py --mode traces` 重导，**15256 trials / 3 studies**，主 study `sigmoid_v1__BTCUSDT__1h__traces` = **15000 trials**（best=1.700，对上当前 champion）。dashboard 已重启指向新库（旧进程开着被 wipe 的旧 inode → kill → 新进程在 :8088），`http://192.168.67.129:8088/` 验证活。
 
-### 待排期 — P1 / P2
+### 已实施 — P1（2026-06-10，G1+G2）
 
-- **#2（P1）** systemd unit（`quantlab-optuna-dashboard.service`）+ runbook 补"分析页（可选组件）"一节。
-- **#3（P1）** cron 定时 `--mode traces` 重导（15–30 min）+ 导出脚本写临时文件再原子 `mv` 覆盖消 wipe 窗口；可附带 study `user_attrs.exported_at` 标数据时效。
+- **#2 ✅ DONE（G1）** systemd unit `scripts/quantlab-optuna-dashboard.service`（开机自启 + 崩溃重拉 + 绑 localhost 注释强制）；runbook「分析页（可选诊断组件）」节加一次性安装步骤。
+- **#3 ✅ DONE（G2）** 导出脚本 `quantlab_to_optuna.py` 改 **temp + `os.replace` 原子替换**（重建期不再让在跑的 dashboard 读半成品）+ 打 `study.user_attrs.exported_at` 时效戳；`scripts/optuna_export_cron.sh` 包装「重导 → 重启 dashboard 拉新数据」，runbook 给 `*/20 * * * *` cron 示例。实跑验证：15256 trials 原子替换、无 `.tmp` 残留、3 study 均带 exported_at。
 - **#4 ✅ DONE 2026-06-10（G3，走 A′ 非 B）**：前端 `App.tsx` 的 `OPTUNA_URL` 外置为 `import.meta.env.VITE_OPTUNA_URL`（默认 `http://localhost:8088/`）+ `web/.env.example` + `web/src/vite-env.d.ts` 类型；mainnet 安全 = optuna **绑 localhost + SSH 隧道**（runbook「分析页（可选诊断组件）」节），非同源反代（Q4 复核否决 B）。`npm run build` 绿。
+
+> **5 缺口（#1–#5）现已全部完成。**
 
 > 后端/运维缺口的全量清单（含本页 P1/P2）汇总在 `docs/pre-live-trading-gaps.md`。

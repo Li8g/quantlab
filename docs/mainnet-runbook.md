@@ -441,12 +441,24 @@ curl -s -X POST http://<服务器IP>:8080/api/v1/instances/$INST/resume \
 **⚠️ 安全（G3，mainnet 必须）**：optuna-dashboard **自身零鉴权**。`--host 0.0.0.0` 裸暴露 = 任何能摸到端口的人可读**完整策略参数空间 + champion 历史**。mainnet 一律**只绑 localhost**（默认即 `127.0.0.1`，**不要**传 `--host 0.0.0.0`），通过 SSH 隧道访问：
 
 ```bash
-# 服务器上启动（绑 localhost，仅本机可达）
-cd research/optuna_toy
-.venv/bin/optuna-dashboard sqlite:///quantlab_phase1.db --port 8088   # 默认 127.0.0.1
-
 # 运维机上开隧道，然后浏览器开 http://localhost:8088/
 ssh -L 8088:127.0.0.1:8088 <user>@<mainnet-server>
+```
+
+**一次性安装**：
+
+```bash
+# 1. 建 venv + 装 pin 依赖
+python -m venv research/optuna_toy/.venv
+research/optuna_toy/.venv/bin/pip install -r research/optuna_toy/requirements.txt
+
+# 2. 首次导出（建 quantlab_phase1.db）
+cd research/optuna_toy && .venv/bin/python quantlab_to_optuna.py --mode traces && cd -
+
+# 3. 装 systemd 服务（G1，开机自启 + 崩溃重拉，绑 localhost）
+sudo cp scripts/quantlab-optuna-dashboard.service /etc/systemd/system/
+sudo ${EDITOR:-vi} /etc/systemd/system/quantlab-optuna-dashboard.service   # 填 <USER> / <QUANTLAB_DIR>
+sudo systemctl daemon-reload && sudo systemctl enable --now quantlab-optuna-dashboard
 ```
 
 **前端深链（G3）**：`web/src/App.tsx` 的 `Analysis ↗` 目标已外置为构建期变量 `VITE_OPTUNA_URL`（不再硬编码 IP）。mainnet 走隧道 → 默认 `http://localhost:8088/` 即可（不设也是这个 fallback）。构建前按 `web/.env.example` 设置：
@@ -457,9 +469,15 @@ echo 'VITE_OPTUNA_URL=http://localhost:8088/' > web/.env
 cd web && npm run build   # 产物经 go:embed 进 saas 二进制
 ```
 
-**环境依赖（一次性）**：`python -m venv research/optuna_toy/.venv && research/optuna_toy/.venv/bin/pip install -r research/optuna_toy/requirements.txt`（pin 版本见该文件）。
+**数据自动刷新（G2，cron）**：导出脚本会**原子替换** sqlite（temp + `os.replace`，重建期不影响在跑的 dashboard），并打 `exported_at` 时效戳。`scripts/optuna_export_cron.sh` 包装「重导 → 重启 dashboard 拉新数据」：
 
-**数据刷新**：导出是 on-demand `python quantlab_to_optuna.py --mode traces`（wipe-rebuild）。开机自启（systemd）+ 定时重导（cron）是后续 P1 项（G1/G2，见 `docs/pre-live-trading-gaps.md`）；当前为手工拉起。
+```bash
+chmod +x scripts/optuna_export_cron.sh   # 已带 +x，确认一下
+# 每 20min 刷新（重启 unit 需权限：root crontab，或给 cron 用户 sudo systemctl restart 的免密）
+*/20 * * * * /path/to/quantlab/scripts/optuna_export_cron.sh >> /var/log/optuna_export.log 2>&1
+```
+
+> 重启会有几秒空窗（可选诊断组件，可接受）。原子替换保证**重导过程中**旧页面始终是完整快照，不再有 in-place wipe 的半成品 502。
 
 ---
 

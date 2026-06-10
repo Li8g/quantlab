@@ -23,7 +23,9 @@ no incremental state, no drift. Reads DB DSN from QuantLab's config.yaml.
 """
 import argparse
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import optuna
@@ -251,11 +253,16 @@ def main():
 
     dsn = load_db_dsn(Path(args.config))
     out_path = Path(args.output)
-    storage_url = f"sqlite:///{out_path}"
+    # G2: build into a temp sibling, then os.replace() it into place at the end
+    # (atomic within one filesystem). The old in-place wipe-rebuild left a window
+    # where the live dashboard read a half-rebuilt file (partial data / 502);
+    # writing to a temp and swapping eliminates that window for new readers.
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    storage_url = f"sqlite:///{tmp_path}"
+    exported_at = datetime.now(timezone.utc).isoformat()
 
-    if out_path.exists():
-        out_path.unlink()
-        print(f"wiped {out_path}")
+    if tmp_path.exists():
+        tmp_path.unlink()
 
     if args.mode == "winners":
         sql = WINNERS_SQL.format(where_clause="" if args.include_deleted else "WHERE g.deleted_at IS NULL")
@@ -295,6 +302,7 @@ def main():
         study.set_user_attr("pair", pair)
         study.set_user_attr("interval", interval)
         study.set_user_attr("source", suffix)
+        study.set_user_attr("exported_at", exported_at)  # G2: data-freshness stamp
         n_added = 0
         for row in group:
             tr = build(row)
@@ -310,9 +318,16 @@ def main():
             pass  # all trials Fatal → best_value raises
         print(f"  {study_name:<55}  trials={n_added}  best={best!r}")
 
-    print(f"\nwrote {total_added} trials → {out_path}")
-    print(f"launch dashboard:")
-    print(f"  .venv/bin/optuna-dashboard sqlite:///{out_path} --host 0.0.0.0 --port 8088")
+    # G2: atomic swap — the live dashboard's next sqlite connection sees the
+    # fully-built file, never a partial one. (A long-lived dashboard process
+    # may keep the old inode open until restarted; the systemd cron in the
+    # runbook restarts it after the swap to pick up fresh data.)
+    os.replace(tmp_path, out_path)
+
+    print(f"\nwrote {total_added} trials → {out_path} (atomic replace; exported_at={exported_at})")
+    print("launch dashboard (binds localhost by default — keep it off public interfaces, G3):")
+    print(f"  .venv/bin/optuna-dashboard sqlite:///{out_path} --port 8088")
+    print("  # dev on a remote VM reached from the host browser: append --host 0.0.0.0")
 
 
 if __name__ == "__main__":
