@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import { useAuth } from '../auth/context'
 import { SudoModal } from '../auth/SudoModal'
 import { apiFetch, ApiError } from '../lib/api'
-import { formatAge, formatBtc, formatMs, formatNum, formatUsd } from '../lib/format'
+import { formatAge, formatBtc, formatMs, formatNum, formatUsd, stalenessClass, stalenessLabel } from '../lib/format'
 import {
   ConnectionBadge,
   InstanceStatusBadge,
@@ -292,20 +292,6 @@ function EquityCard({
 }) {
   const threshold = maxBarStalenessMs ?? DEFAULT_STALENESS_MS
 
-  // Staleness colour: yellow when age > 50% of threshold, red when past threshold.
-  function ageClass(markPriceMs: number): string {
-    const ageMs = Date.now() - markPriceMs
-    if (ageMs >= threshold) return 'text-red-600 font-medium'
-    if (ageMs >= threshold * 0.5) return 'text-amber-600'
-    return 'text-slate-500'
-  }
-
-  function staleLabel(markPriceMs: number): string | null {
-    const ageMs = Date.now() - markPriceMs
-    if (ageMs >= threshold) return ' — data stale, trading halted'
-    return null
-  }
-
   return (
     <Card title="Equity">
       {portfolio?.equity != null ? (
@@ -315,9 +301,9 @@ function EquityCard({
             <span className="text-sm font-normal text-slate-400">USDT</span>
           </div>
           {portfolio.mark_price_ms != null && (
-            <p className={`mt-1 text-xs ${ageClass(portfolio.mark_price_ms)}`}>
+            <p className={`mt-1 text-xs ${stalenessClass(portfolio.mark_price_ms, threshold)}`}>
               marked @ {formatUsd(portfolio.mark_price)} · {formatAge(portfolio.mark_price_ms)}
-              {staleLabel(portfolio.mark_price_ms)}
+              {stalenessLabel(portfolio.mark_price_ms, threshold)}
             </p>
           )}
         </>
