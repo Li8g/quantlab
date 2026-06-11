@@ -4,70 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Behavioral Guidelines
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+Bias toward caution over speed; for trivial tasks use judgment.
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+1. **Think before coding** — State assumptions explicitly; if uncertain or multiple interpretations exist, ask, don't pick silently. Push back when a simpler approach exists.
+2. **Simplicity first** — Minimum code that solves the problem, nothing speculative: no unrequested features/abstractions/flexibility/error-handling. If 200 lines could be 50, rewrite.
+3. **Surgical changes** — Every changed line traces to the request; match existing style; don't refactor what isn't broken. Remove only orphans YOUR change created; flag pre-existing dead code, don't delete it. Exception: `gofmt`/`goimports` on a file you're *already* editing is fine (separate commit; flag tree-wide sweeps — repo has no formatter gate).
+4. **Goal-driven** — Turn tasks into verifiable goals (write the failing/reproducing test first; ensure tests pass before and after). State a brief step→verify plan for multi-step work.
 
-### 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-### 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-### 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting by hand (re-wrapping, renaming, reordering).
-- **Exception — canonical auto-formatters:** running `gofmt`/`goimports` on a file you're *already* editing is fine, even if it touches pre-existing drift; it's deterministic and zero-logic-risk, and the repo has no formatter gate so drift would otherwise accumulate. Keep it to a *separate* commit so the feature diff stays clean. A tree-wide format sweep is a deliberate standalone cleanup — flag it, don't fold it in silently.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+Working if: fewer unnecessary diff lines, fewer overcomplication rewrites, clarifying questions before mistakes not after.
 
 ---
 
@@ -136,17 +80,7 @@ Package split for boundary types (all under `internal/`):
 
 ### Core Interfaces
 
-**`EvolvableStrategy`** (14 verbs — engine only calls these):
-`StrategyID`, `Segments`, `Sample`, `Clamp`, `Validate`, `Crossover`, `Mutate`, `Fingerprint`, `Evaluate`, `ReviewBacktest`, `EncodeResult`, `DecodeElite`, `MinEvalBars`, `NewAdapter`
-
-**`Adapter`**:
-```go
-type Adapter interface {
-    Reset(plan *EvaluablePlan) error
-    Evaluate(gene Gene) (*RawEvaluateResult, error)  // NO ScoreTotal field
-    Close() error
-}
-```
+`EvolvableStrategy` (14 verbs the engine calls) and `Adapter` (`Reset(plan)` / `Evaluate(gene) → *RawEvaluateResult` / `Close`) are defined in `internal/strategy`.
 
 ### Evaluation Pipeline (Two-Stage — Critical Separation)
 
@@ -174,14 +108,7 @@ Evaluation runs in fixed order: `6m → 2y → 5y → 10y`. On Fatal (`MDD >= Fa
 
 ### Result Package Structure
 
-```
-ChallengerResultPackage
-├── core         (ResultCore: champion_gene, spawn_point, reproducibility_metadata, ga_config)
-├── evaluation   (EvaluationLayer: window_scores, score_total [engine-filled], friction_actual)
-├── verification (VerificationLayer: oos_result [status ∈ ok|insufficient_data|failed|not_run], dsr_summary, review_summary)
-├── diagnostics  (DiagnosticsLayer: mutation_ramp_log, fatal_audit_samples, ...)
-└── promote      (PromoteLayer: decision_status ∈ {pending, promoted, rejected})
-```
+`ChallengerResultPackage` = `core` / `evaluation` / `verification` / `diagnostics` / `promote` layers (full shape in `internal/resultpkg/types.go`). Load-bearing: `score_total` is **engine-filled** (strategies can't write it); `oos_result.status ∈ {ok, insufficient_data, failed, not_run}`; `decision_status ∈ {pending, promoted, rejected}`.
 
 ### Version Constants (schema v5.3.3 baseline)
 
@@ -240,60 +167,22 @@ event. Above ε, bump `fitness_version`.
 
 ## HTTP API
 
-Engine / evolution:
-```
-POST /api/v1/evolution/tasks
-GET  /api/v1/evolution/tasks/:task_id
-GET  /api/v1/challengers/:challenger_id
-GET  /api/v1/challengers/:challenger_id/package
-POST /api/v1/challengers/:challenger_id/promote   (admin only)
-POST /api/v1/champions/:champion_id/retire        (admin only)
-GET  /api/v1/champions/history
-GET  /api/v1/genome/champion
-GET  /api/v1/ga/sharpebank/stats
-```
+Routes are registered in `internal/api` (engine/evolution + auth + data import) and the Tier-2 instance handlers — grep the router for the current list. Non-obvious gating:
+- `POST /challengers/:id/promote` + `/champions/:id/retire` — **admin only** (operator explicitly excluded).
+- Data import (`/data/coverage|gaps|import`...) — `AppRole=saas`-gated + admin.
+- Tier-2 fleet: start/stop/deploy-champion = operator; `/instances/:id/kill` = admin.
+- Auth: `POST /auth/login`, sudo-style step-up (default viewer 24h; admin explicit + 10min TTL).
 
-Auth (sudo-style step-up; default viewer 24h, admin explicit + 10min TTL):
-```
-POST /api/v1/auth/login
-```
-
-Data import (async jobs, AppRole=saas gated + admin):
-```
-GET  /api/v1/data/coverage
-GET  /api/v1/data/gaps
-POST /api/v1/data/import
-GET  /api/v1/data/imports
-GET  /api/v1/data/import/:job_id
-POST /api/v1/data/import/:job_id/cancel
-```
-
-Tier 2 live-trading fleet (instance-scoped; start/stop/deploy = operator, kill = admin):
-```
-GET  /api/v1/instances
-GET  /api/v1/instances/:instance_id
-GET  /api/v1/instances/:instance_id/live
-GET  /api/v1/instances/:instance_id/trades
-POST /api/v1/instances/:instance_id/start
-POST /api/v1/instances/:instance_id/stop
-POST /api/v1/instances/:instance_id/deploy-champion
-POST /api/v1/instances/:instance_id/kill          (kill-switch; manual admin trigger)
-```
-
-Agent↔server traffic rides a WebSocket channel (see `docs/saas-ws-protocol-v1.md`), not REST.
+Agent↔server traffic rides a WebSocket channel (`docs/saas-ws-protocol-v1.md`), not REST.
 
 ## Database Tables
 
-Postgres via GORM `AutoMigrate` (dev/lab; production `app_role=saas` uses Atlas migrations — see `internal/saas/store/db.go`). Canonical model list: `AllModels()` in `internal/saas/store/models.go` — keep it in sync when adding tables. Table names are GORM-default snake_case plural unless a `TableName()` override exists.
+Postgres via GORM `AutoMigrate` (dev/lab); production `app_role=saas` applies **Goose** versioned migrations (selected by `migration_mode`, see `internal/saas/store/db.go`). Canonical table list: `AllModels()` in `internal/saas/store/models.go` — keep in sync when adding tables. Names are GORM-default snake_case plural unless a `TableName()` override exists.
 
-**Tier 1 (engine / evolution):**
-`evolution_tasks`, `gene_records` (the challenger record — full result package JSON lives in its `full_package_json` column; there is **no** `challengers` or `challenger_result_packages` table), `evaluation_traces`, `klines`, `kline_gaps`, `sharpe_banks`, `champion_histories`.
-
-**Tier 2 (SaaS / live trading):**
-`users`, `strategy_templates`, `strategy_instances`, `portfolio_states`, `runtime_states`, `spot_lots`, `trade_records`, `spot_executions`, `audit_logs`, `agent_tokens`, `reconciliation_discrepancies`, `agent_errors`, `import_jobs`.
-
-Agent-side dedup uses a local SQLite `idempotency` table (`internal/agent/idempotency_sqlite.go`), not the Postgres schema.
+Non-obvious:
+- `gene_records` IS the challenger record — the full result package JSON lives in its `full_package_json` column; there is **no** `challengers`/`challenger_result_packages` table.
+- Agent-side dedup uses a local SQLite `idempotency` table (`internal/agent/idempotency_sqlite.go`), not the Postgres schema.
 
 ## Open Questions / Deferred
 
-Tracked in schema doc Appendix B. Still deferred: `pair` type, `slice_score.reason` enumeration, `risk_bounds` struct (spawn input, not a computed field), `dsr_summary` formalization. Resolved since the prototype: `stress_summary` (SBB Monte Carlo per framework doc §I-4.3, SHIPPED — `internal/verification`), `alpha_breakdown` (IS forward-filled, diagnostics-only), `score_raw` (`Σ weight·score`, consistency-penalty-free weighted sum — `internal/fitness/aggregate.go`); `fatal_reason` (enumerated `mdd_exceeded`/`nav_non_positive` via `resultpkg.FatalReason` + `CrucibleResult.Validate` gate).
+Tracked in schema doc Appendix B. Still deferred: `pair` type, `slice_score.reason` enum, `risk_bounds` struct (spawn input, not a computed field), `dsr_summary` formalization. Several prototype open-questions — `stress_summary`, `alpha_breakdown`, `score_raw`, `fatal_reason` — are now resolved/shipped.
