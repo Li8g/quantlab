@@ -514,6 +514,7 @@ func (s *Service) executeEpoch(
 		OOSPayload:            oosPayload,
 		ReviewPayload:         reviewPayload,
 		FatalAuditSamples:     result.FatalAuditSamples,
+		SearchStats:           &result.SearchStats,
 		AlphaBreakdownPayload: alphaPayload,
 		StressPayload:         stressPayload,
 	}

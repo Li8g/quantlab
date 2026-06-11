@@ -1,0 +1,4 @@
+# exec_deviation.py — pinned to the same versions as research/optuna_toy
+# (the optuna_toy .venv already satisfies these; reusing it is fine).
+psycopg[binary]==3.3.4
+PyYAML==6.0.3

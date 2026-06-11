@@ -130,6 +130,19 @@ func WindowWeights() map[resultpkg.WindowName]float64 {
 	}
 }
 
+// countFatal tallies the Fatal entries in a freshly evaluated score
+// slice (SearchStats bookkeeping). Reads ScoreTotal.Fatal only — never
+// dereferences Value, per the nil-safety rule.
+func countFatal(scores []resultpkg.ScoreTotal) int {
+	c := 0
+	for i := range scores {
+		if scores[i].Fatal {
+			c++
+		}
+	}
+	return c
+}
+
 func calcEliteCount(n int, ratio float64) int {
 	ne := int(float64(n) * ratio)
 	if ne < 1 {
@@ -169,6 +182,12 @@ type EpochResult struct {
 	// index order. Empty when FatalAuditSampleRate == 0 or no Fatal
 	// genes appeared.
 	FatalAuditSamples []resultpkg.AuditSampleSummary
+
+	// SearchStats counts the multiple-testing footprint of this epoch
+	// (evaluations performed, Fatal short-circuits, realized
+	// generations). Pure observation of the GA loop — never feeds back
+	// into scoring or selection. See resultpkg.SearchStats.
+	SearchStats resultpkg.SearchStats
 }
 
 // Engine drives a single EvolvableStrategy through one or more Epochs.
@@ -267,6 +286,14 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 	}
 	auditSamples = e.collectFatalSamples(auditSamples, pop, scores, raws, sampleRng, 0)
 
+	// Multiple-testing footprint (resultpkg.SearchStats): tally every
+	// fresh Adapter.Evaluate the GA loop performs plus how many came
+	// back Fatal. Elite carry-over slots are skipped by
+	// evaluatePopulation and therefore not counted; the final best-gene
+	// re-evaluation below is excluded too (same gene, already counted).
+	evalsTotal := n
+	fatalEvals := countFatal(scores)
+
 	var (
 		bestIdx    int
 		bestFp     string
@@ -334,6 +361,8 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 			return nil, err
 		}
 		auditSamples = e.collectFatalSamples(auditSamples, pop, scores, raws, sampleRng, gen+1)
+		evalsTotal += n - nElite
+		fatalEvals += countFatal(scores[nElite:])
 	}
 
 	// Recover the best gene's *RawEvaluateResult so the SaaS Epoch
@@ -361,6 +390,13 @@ func (e *Engine) RunEpoch(ctx context.Context, plan *domain.EvaluablePlan) (*Epo
 		BestRawEvaluate:   bestRaw,
 		Generations:       actualGens,
 		FatalAuditSamples: auditSamples,
+		SearchStats: resultpkg.SearchStats{
+			PopSize:          e.cfg.PopSize,
+			MaxGenerations:   e.cfg.MaxGenerations,
+			Generations:      actualGens,
+			EvaluationsTotal: evalsTotal,
+			FatalEvaluations: fatalEvals,
+		},
 	}, nil
 }
 

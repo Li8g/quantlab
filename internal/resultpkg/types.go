@@ -274,6 +274,33 @@ type AuditSampleSummary struct {
 	Notes        *string          `json:"notes,omitempty"`
 }
 
+// SearchStats records the multiple-testing footprint of the GA epoch
+// that produced this challenger: how many candidate genes the search
+// actually evaluated before picking the winner. It exists because
+// DSRSummary.NTrials carries the SharpeBank count (champion-level
+// entries per (strategy, pair)) — NOT the per-epoch search volume —
+// so any selection-bias correction (DSR re-derivation, future PBO)
+// needs these counts to be honest about the search size.
+//
+// [INVENTED v1] Additive diagnostics field, not part of the frozen
+// v5.3.3 schema; diagnostic-only (never enters scoring or Promote
+// gates), no consumer yet. Shape may evolve until a reader lands.
+//
+// EvaluationsTotal counts Adapter.Evaluate calls made by the GA loop:
+// elite carry-over slots are skipped (not re-evaluated, so not
+// counted) and the engine's final best-gene re-evaluation is excluded
+// (it re-runs an already-counted gene). FatalEvaluations is the subset
+// of those whose ScoreTotal came back Fatal (cascade short-circuit).
+// Generations is the realized count (early stop may end the run before
+// MaxGenerations).
+type SearchStats struct {
+	PopSize          int `json:"pop_size"`
+	MaxGenerations   int `json:"max_generations"`
+	Generations      int `json:"generations"`
+	EvaluationsTotal int `json:"evaluations_total"`
+	FatalEvaluations int `json:"fatal_evaluations"`
+}
+
 // DiagnosticsLayer is the engine-side diagnostics layer of the result
 // package. All fields are optional; emit only what's measured.
 type DiagnosticsLayer struct {
@@ -283,6 +310,7 @@ type DiagnosticsLayer struct {
 	CrossoverFallback  json.RawMessage      `json:"crossover_fallback,omitempty"`
 	TurnoverMetrics    json.RawMessage      `json:"turnover_metrics,omitempty"`
 	FatalAuditSamples  []AuditSampleSummary `json:"fatal_audit_samples,omitempty"`
+	SearchStats        *SearchStats         `json:"search_stats,omitempty"`
 }
 
 // PromoteLayer records the human-review outcome.
