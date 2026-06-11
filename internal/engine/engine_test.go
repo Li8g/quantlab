@@ -350,3 +350,76 @@ func geneEqual(a, b domain.Gene) bool {
 	}
 	return true
 }
+
+// TestRunEpoch_SearchStatsCounts pins the multiple-testing footprint
+// (resultpkg.SearchStats) on a non-Fatal landscape. With early stop
+// disabled the loop runs all MaxGenerations; evaluations follow
+// PopSize + (Generations-1) × (PopSize - nElite) because elite
+// carry-over slots skip re-evaluation and the final best-gene re-eval
+// is excluded by design. EliteRatio=0.2 on PopSize=10 → nElite=2.
+func TestRunEpoch_SearchStatsCounts(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 10
+	cfg.MaxGenerations = 4
+	cfg.EliteRatio = 0.2
+	cfg.EarlyStopPatience = 0 // run the full loop, deterministic count
+	cfg.EpochSeed = 21
+
+	eng := engine.New(toy.New(), cfg)
+	result, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatalf("RunEpoch: %v", err)
+	}
+
+	ss := result.SearchStats
+	if ss.PopSize != 10 || ss.MaxGenerations != 4 {
+		t.Errorf("config echo mismatch: %+v", ss)
+	}
+	if ss.Generations != 4 {
+		t.Errorf("Generations = %d, want 4", ss.Generations)
+	}
+	if ss.Generations != result.Generations {
+		t.Errorf("SearchStats.Generations=%d != EpochResult.Generations=%d",
+			ss.Generations, result.Generations)
+	}
+	const wantEvals = 10 + 3*(10-2)
+	if ss.EvaluationsTotal != wantEvals {
+		t.Errorf("EvaluationsTotal = %d, want %d", ss.EvaluationsTotal, wantEvals)
+	}
+	if ss.FatalEvaluations != 0 {
+		t.Errorf("FatalEvaluations = %d, want 0 (toy never Fatals)", ss.FatalEvaluations)
+	}
+}
+
+// TestRunEpoch_SearchStatsCountsFatal drives a 100%-Fatal landscape
+// (fatalToy) and asserts every fresh evaluation is tallied as Fatal.
+// PopSize=6 default EliteRatio 0.05 → nElite=1, MaxGen=3 → evals =
+// 6 + 2×(6-1) = 16, all Fatal. (Fatal-audit samples count differently
+// — they re-scan carried elites — so the two diagnostics legitimately
+// disagree; this test pins the evaluation-count semantics.)
+func TestRunEpoch_SearchStatsCountsFatal(t *testing.T) {
+	cfg := engine.DefaultConfig()
+	cfg.PopSize = 6
+	cfg.MaxGenerations = 3
+	cfg.EpochSeed = 13
+	cfg.EarlyStopPatience = 0
+
+	eng := engine.New(&fatalToy{inner: toy.New()}, cfg)
+	result, err := eng.RunEpoch(context.Background(), miniPlan())
+	if err != nil {
+		t.Fatalf("RunEpoch: %v", err)
+	}
+
+	ss := result.SearchStats
+	const wantEvals = 6 + 2*(6-1)
+	if ss.EvaluationsTotal != wantEvals {
+		t.Errorf("EvaluationsTotal = %d, want %d", ss.EvaluationsTotal, wantEvals)
+	}
+	if ss.FatalEvaluations != wantEvals {
+		t.Errorf("FatalEvaluations = %d, want %d (every eval is Fatal)",
+			ss.FatalEvaluations, wantEvals)
+	}
+	if ss.Generations != 3 {
+		t.Errorf("Generations = %d, want 3", ss.Generations)
+	}
+}

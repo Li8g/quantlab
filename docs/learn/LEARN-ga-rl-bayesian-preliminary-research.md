@@ -1,7 +1,7 @@
 # GA / RL / Bayesian 预研报告
 
 状态：预研工作备忘录
-日期：2026-06-08（初稿）；2026-06-08（本次会话补充）
+日期：2026-06-08（初稿）；2026-06-08（本次会话补充）；2026-06-11（§12 下一步行动分析）
 作者：Li8g + Claude
 
 本文整理了关于 QuantLab 三类优化方法的研究讨论：遗传算法（GA）、强化学习（RL）、贝叶斯优化（BO）。
@@ -260,7 +260,7 @@ gene with one segment slightly shifted
 | 一致性惩罚 | 已有（λ_cons=0.3）| 完整 |
 | Clamp/Validate | 已有 | 完整 |
 | SBB 压力测试 | 已有 | 完整 |
-| GT-Score 类 IS/OOS 差距惩罚 | 无 | 可加入 fitness，代价低 |
+| GT-Score 类 IS/OOS 差距惩罚 | 无 | ~~可加入 fitness，代价低~~ 架构代价被低估，见 §12.3.2 |
 | 种群多样性保护（Niching）| 无 | 中等实现代价 |
 | PBO 估算 | 无 | 需要多路径回测 |
 | WFO 滚动验证 | 无 | 改造代价较大 |
@@ -597,14 +597,19 @@ expected_alpha_interval
 
 ---
 
-## 10. 开放问题
+## 10. 问题汇总
+
+### 10.1 开放问题
 
 1. 在当前数据量下，DSR/PBO 类诊断有意义需要最少多少个 Walk-Forward fold 和每个 fold 的交易次数？
 2. QuantLab 应该存储所有已评估基因，还是只存每代摘要加精英候选，用于多重检验诊断？
 3. 第一个健壮性分数应该是简单手动加权分数，还是带校准分量的 GT-Score 启发式复合分数？
 4. 实盘观察期是否应该更新附在冠军历史上的贝叶斯置信记录，还是仅作为独立的 review 制品？
 5. Bandit 控制器的第一个安全动作空间是什么：只有 freeze/reduce，还是也包括小仓位分桶？
-6. ε 容忍度（fitness_version bump 的触发阈值）何时完成校准？校准完成之前应如何保守对待评分变更？
+
+### 10.2 已解决问题
+
+1. ~~ε 容忍度（fitness_version bump 的触发阈值）何时完成校准？校准完成之前应如何保守对待评分变更？~~ **已解决（2026-06-08）**：ε = 1e-4（相对 ScoreTotal），见 `docs/decision-ga-reproducibility-constraint.md` §9。
 
 ---
 
@@ -621,6 +626,52 @@ GA 候选生成
 ```
 
 RL 应在这个层建立之后才引入，且只作为围绕已验证 GA 冠军的约束控制组件。
+
+---
+
+## 12. 下一步行动分析（2026-06-11，结合代码现状核对）
+
+本节是对 §11 的具体化：逐项核对了代码现状后给出的执行排序。背景变化：实盘侧工程缺口已基本关闭（B1 kill 持久 latch、B2 limit-order 价格保护、G1–G3 全部合并 main），mainnet 小资金即将开跑——重心从"把订单边界做对"转向本文档 §11 说的"围绕 GA 的证据层"，且 mainnet 上线本身创造了一条新的观察数据流。
+
+### 12.1 重点观察方向（mainnet 上线后头几周，零开发成本，时机驱动）
+
+**① 实盘 vs 回测的执行偏差。** 5bps cap 刚校准到 cap = slippage 的最紧值，deploy 门是严格 `<`，当前 champion 7550b6 是零余量过门。实盘 IOC 的真实成交价 vs `latestClose` 偏差分布、`EXPIRED`（未成交）频率，直接检验回测 `close×(1±slippage)` 填充假设。数据已落 `trade_records`/`spot_executions`，只缺离线分析脚本。`docs/backlog-6-price-source-divergence.md` 的 per-order 价格守卫（方案 A）当时明确"等真盘数据"——这是第一个该用真数据裁决的遗留项。
+> **✅ 脚本已建（2026-06-11）**：`research/exec_deviation/exec_deviation.py` —— 每单 fill VWAP vs 派发时刻 1m 决策 close 的 side-signed adverse_bps 分布（与回测 slippage_bps 直接可比）+ LIMIT 零成交率（EXPIRED 上界，标注与孤儿清扫混同的 caveat）。两个实现要点：决策时刻锚 `created_at`（`buildTradeRecord` 有意留 `now_ms_at_saa_s=0`，wire 帧才是时间戳真相源）；参考 kline 比决策时刻陈旧 >15min（=staleness guard）的单默认剔除（dispatcher 当时定价就是陈旧的，对 cap 校准无意义）。刻意不用 `actual_slippage_bps` 列做主度量（limit 单以 limit 价为参照，B2 §4.5 恒偏 ≈ −cap）。管线已对 dev DB（testnet 历史 59 单）验证：B2 IOC 单 +2.5bps 对上手算，薄盘扫单极值与 backlog-6 判定一致。**待 mainnet 样本出结论**；`--environment` 必填烙印每行输出。
+
+> **testnet 数据的使用边界**：testnet 历史成交（Phase 2 L1/L2/L3 + B2 IOC 验证）可用于**搭建和验证脚本管线**（join 两表、算偏差 bps、统计 EXPIRED 率、验证 PR #24 fidelity 修复），但**不可用于统计结论**——backlog-6 已判定 testnet 价格偏差是流动性稀薄导致的假象，按它校准 cap/守卫阈值会放得太松。脚本输出须显式标注 environment，结论只从 mainnet 样本出。
+
+**② 实盘超额收益 vs OOS 预测的一致性看板。** 这是 §6.8（观察期贝叶斯更新）的前置。红线不变：实盘数据只做观察期证据，不回流 GA 训练集。
+
+### 12.2 重点改进方向（低代价、高确定性工程项）
+
+**① 多重检验元数据（§5.7 缺口，最该先做）。** 代码核对发现实质问题：`DSRSummary.NTrials` 目前喂的是 SharpeBank.Stats 的 N（`internal/saas/epoch/service.go:405`，当前 N=5，恰好踩在 `MinTrialsForDSR=5` 最低门上），即入库冠军数——而 GA 每个 epoch 实际评估上万基因（`evaluation_traces` 已有 15000 行级记录）。**当前 DSR 对选择偏差的折减严重低估。** 改进便宜：把「pop_size × 代数 × 实际评估基因数 + Fatal 短路数」写进 `DiagnosticsLayer`，一次性让 DSR/未来 PBO 的输入变诚实。不改评分，无 `fitness_version` 事件。
+> **✅ 已实现（2026-06-11）**：`resultpkg.SearchStats`（pop_size / max_generations / generations 实际代数 / evaluations_total / fatal_evaluations）由 `engine.RunEpoch` 计数，经 `EpochResult.SearchStats` → `BuildContext.SearchStats` → `DiagnosticsLayer.search_stats`（additive omitempty，[INVENTED v1] 形状，诊断-only 无消费者）。DSR 公式与 `DSRSummary.NTrials` 语义保持不变（仍 = SharpeBank.N，已在 `dsr.go` 注释澄清）——用搜索量 N 重推 DSR 需先解决"上万高度相关评估 ≠ 独立 trial"的有效试验数问题，留给 PBO 阶段。仅前向填充，旧 challenger 不回填。
+
+**② 接入点 A 落地（§6.2）。** 基础设施比初稿时更现成：`research/optuna_toy/` 已有 Optuna+PG storage+dashboard，`quantlab_to_optuna.py` 已在做 trace 导出。补 `optuna_ga_meta.py`（POST /evolution/tasks → 轮询 → report best_score_total），Go 零改动，1–2 天量级。
+
+**③ 种群 fitness 归一化（§4.1，一行级）。** 只改选择压力、不改 ScoreTotal 语义，不触发 `fitness_version`，但会改变进化轨迹——建议与接入点 A 一起做，让 Optuna 验证它是否真提升收敛。
+
+### 12.3 研究方向（先离线后入引擎）
+
+**① WFO/PBO：最大方法论缺口，但从 research/ 起步。** `evaluation_traces` + `klines` 已够离线复算：先用 Python 做 CPCV/PBO 原型，对历史已有 challenger 算一遍 PBO 分布，看结论是否会推翻过任何一次 Promote。会→再谈引擎级 WFO 改造；不会→降优先级。这也是对 §10 开放问题 1 的实证回答方式。
+
+**② GT-Score：初稿低估了架构代价（修正 §5.8 表）。** 当前硬不变量：OOS 在 `RunEpoch` 返回后才跑，OOS Fatal 永不触碰 IS ScoreTotal。GT-Score 要求 IS/OOS 差距进 fitness 热循环 = 把 OOS 拉进 GA 内层，破坏该边界 + 必然 `fitness_version` bump + 全体 challenger 不可比。降级处理：先做离线证据字段（Promote 时展示 IS/OOS gap，不进 fitness），观察其与实盘存活率的相关性，再裁决是否值得版本事件。
+
+**③ Niching：初稿说"无"不准确。** `internal/engine` 已有两层 diversity rescue（`DiversityRescueLog`）。rescue 是"塌缩后救援"，Niching 是"主动维持"，确实不同——但投入中等实现代价前，应先从 `DiversityRescueLog` 和 traces 量化"种群多快塌缩、塌缩是否伤害最终质量"。先观察，不直接开工。
+
+**④ RL/Bandit：维持 §8 结论不动。** Bandit 分配（Phase E）前提是多冠军 + 足量观察期数据，两者均无。现在唯一该做的是 12.1 的数据积累。
+
+### 12.4 建议执行顺序
+
+| 顺序 | 事项 | 量级 | 依赖 |
+|---|---|---|---|
+| 1 | ~~多重检验元数据进 DiagnosticsLayer（修 DSR NTrials 低估）~~ ✅ 已实现 2026-06-11（§12.2-① 注） | 小，纯增量 | 无 |
+| 2 | ~~实盘执行偏差观察脚本~~ ✅ 脚本已建+testnet 验管线 2026-06-11（§12.1-① 注）；待 mainnet 样本出结论 | 小，research/ | mainnet 数据 |
+| 3 | `optuna_ga_meta.py` 接入点 A（顺带验证 fitness 归一化） | 1–2 天 | GA 计算时长预算 |
+| 4 | CPCV/PBO 离线原型，用历史 challenger 实证 | 中，research/ | 无 |
+| 5 | GT-Score 降级为离线证据字段，观察相关性后再裁决 | 中 | 4 的框架可复用 |
+
+1、2 可立即开始且互不依赖；4 的结论决定是否做引擎级 WFO 改造。
 
 ---
 

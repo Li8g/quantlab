@@ -97,6 +97,13 @@ type BuildContext struct {
 	// DiagnosticsLayer.FatalAuditSamples when non-empty.
 	FatalAuditSamples []resultpkg.AuditSampleSummary
 
+	// SearchStats is the multiple-testing footprint collected by
+	// RunEpoch (EpochResult.SearchStats). The caller passes a pointer
+	// to it; BuildChallengerPackage writes it onto
+	// DiagnosticsLayer.SearchStats when non-nil. nil ⇒ the layer field
+	// stays unset (engine tests / legacy callers).
+	SearchStats *resultpkg.SearchStats
+
 	// AlphaBreakdownPayload is the optional pre-marshalled ISAlphaBreakdown
 	// (backlog A3) from verification.RunISAlphaBreakdown. The SaaS Epoch
 	// service computes it post-epoch and passes the bytes here. Empty ⇒
@@ -179,6 +186,9 @@ func BuildChallengerPackage(
 	diag := &resultpkg.DiagnosticsLayer{}
 	if len(bc.FatalAuditSamples) > 0 {
 		diag.FatalAuditSamples = bc.FatalAuditSamples
+	}
+	if bc.SearchStats != nil {
+		diag.SearchStats = bc.SearchStats
 	}
 
 	repro := resultpkg.ReproducibilityMetadata{

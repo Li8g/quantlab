@@ -402,11 +402,33 @@ func TestE2E_OOSAnchoredHoldoutWrites(t *testing.T) {
 				Notes           *string  `json:"notes,omitempty"`
 			} `json:"oos_result"`
 		} `json:"verification"`
+		Diagnostics struct {
+			SearchStats *resultpkg.SearchStats `json:"search_stats"`
+		} `json:"diagnostics"`
 	}
 	if err := json.Unmarshal(pkgBlob, &pkg); err != nil {
 		t.Fatalf("unmarshal package: %v", err)
 	}
 	got := pkg.Verification.OOSResult
+
+	// SearchStats (multiple-testing footprint) must ride the persisted
+	// package. pop_size=4 / max_generations=2 / elite_ratio=0.25 →
+	// nElite=1; patience(5) > MaxGen(2) so early stop can't trip →
+	// evaluations = 4 + 1×(4-1) = 7 exactly.
+	if ss := pkg.Diagnostics.SearchStats; ss == nil {
+		t.Error("diagnostics.search_stats is nil; want per-epoch search counts")
+	} else {
+		if ss.PopSize != 4 || ss.MaxGenerations != 2 || ss.Generations != 2 {
+			t.Errorf("search_stats config echo = %+v, want pop=4 maxgen=2 gens=2", ss)
+		}
+		if ss.EvaluationsTotal != 7 {
+			t.Errorf("search_stats.evaluations_total = %d, want 7", ss.EvaluationsTotal)
+		}
+		if ss.FatalEvaluations < 0 || ss.FatalEvaluations > ss.EvaluationsTotal {
+			t.Errorf("search_stats.fatal_evaluations = %d out of range [0,%d]",
+				ss.FatalEvaluations, ss.EvaluationsTotal)
+		}
+	}
 
 	if got.Status != string(resultpkg.VerificationStatusOK) {
 		t.Errorf("oos_result.status = %q, want %q; notes=%v",

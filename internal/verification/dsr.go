@@ -35,6 +35,15 @@ import (
 //
 // When N < MinTrialsForDSR the caller skips constructing DSRSummary
 // entirely (VerificationLayer.DSRSummary remains zero-length).
+//
+// NTrials semantics: this is the SharpeBank entry count for
+// (strategy, pair) — i.e. how many champion-level challengers have
+// banked stats — NOT the per-epoch GA search volume (thousands of
+// gene evaluations). It therefore understates the multiple-testing
+// burden of the search itself. The honest per-epoch counts live in
+// resultpkg.DiagnosticsLayer.SearchStats (LEARN-ga-rl-bayesian
+// §12.2-①); any future selection-bias re-derivation (DSR with
+// effective-trial N, PBO) should consume those, not this field.
 type DSRSummary struct {
 	DSR            *float64 `json:"dsr"`
 	ObservedSharpe float64  `json:"observed_sharpe"`

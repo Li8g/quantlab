@@ -250,3 +250,69 @@ func TestBuildChallengerPackage_DSRSummaryPropagates(t *testing.T) {
 			pkg2.Verification.DSRSummary)
 	}
 }
+
+// TestBuildChallengerPackage_SearchStatsPropagates pins the
+// BuildContext.SearchStats → DiagnosticsLayer.SearchStats edge plus
+// its JSON shape (search_stats key, omitempty when nil).
+func TestBuildChallengerPackage_SearchStatsPropagates(t *testing.T) {
+	score := 1.0
+	raw := &resultpkg.RawEvaluateResult{
+		Windows:        []resultpkg.CrucibleResult{{Window: resultpkg.Window6M, Score: resultpkg.SliceScore{Value: &score}}},
+		FrictionActual: resultpkg.FrictionActual{},
+	}
+	st := resultpkg.ScoreTotal{Value: &score}
+	plan := &domain.EvaluablePlan{FatalMDD: 0.5, Friction: domain.FrictionParams{}}
+
+	stats := &resultpkg.SearchStats{
+		PopSize:          300,
+		MaxGenerations:   25,
+		Generations:      18,
+		EvaluationsTotal: 5145,
+		FatalEvaluations: 2100,
+	}
+	bc := BuildContext{Pair: "BTCUSDT", SearchStats: stats}
+
+	pkg, err := BuildChallengerPackage(
+		&fakeEncodeStrategy{id: "fake"},
+		plan, domain.Gene{0.1}, raw, st, DefaultConfig(), bc,
+	)
+	if err != nil {
+		t.Fatalf("BuildChallengerPackage: %v", err)
+	}
+	if pkg.Diagnostics.SearchStats == nil {
+		t.Fatal("Diagnostics.SearchStats is nil, want propagated stats")
+	}
+	if *pkg.Diagnostics.SearchStats != *stats {
+		t.Errorf("Diagnostics.SearchStats = %+v, want %+v",
+			*pkg.Diagnostics.SearchStats, *stats)
+	}
+	blob, err := json.Marshal(pkg.Diagnostics)
+	if err != nil {
+		t.Fatalf("marshal diagnostics: %v", err)
+	}
+	if !bytes.Contains(blob, []byte(`"search_stats"`)) ||
+		!bytes.Contains(blob, []byte(`"evaluations_total":5145`)) {
+		t.Errorf("diagnostics JSON missing search_stats payload: %s", blob)
+	}
+
+	// nil ⇒ field stays unset and the key is omitted from JSON.
+	bc.SearchStats = nil
+	pkg2, err := BuildChallengerPackage(
+		&fakeEncodeStrategy{id: "fake"},
+		plan, domain.Gene{0.1}, raw, st, DefaultConfig(), bc,
+	)
+	if err != nil {
+		t.Fatalf("BuildChallengerPackage (nil SearchStats): %v", err)
+	}
+	if pkg2.Diagnostics.SearchStats != nil {
+		t.Errorf("nil BC.SearchStats should leave field unset, got %+v",
+			*pkg2.Diagnostics.SearchStats)
+	}
+	blob2, err := json.Marshal(pkg2.Diagnostics)
+	if err != nil {
+		t.Fatalf("marshal diagnostics (nil): %v", err)
+	}
+	if bytes.Contains(blob2, []byte(`"search_stats"`)) {
+		t.Errorf("search_stats key should be omitted when nil: %s", blob2)
+	}
+}
