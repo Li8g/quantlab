@@ -1,4 +1,5 @@
-# ridge 基线阶段;--stage optuna 落地时再加 optuna + numba
 numpy
 psycopg[binary]
 PyYAML
+optuna==4.8.0
+numba==0.65.1
