@@ -56,6 +56,11 @@ agent.db
 .DS_Store
 Thumbs.db
 
+# --- Python research scripts ---
+__pycache__/
+*.pyc
+*.pyo
+
 # --- Logs & temp ---
 *.log
 tmp/
